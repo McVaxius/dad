@@ -663,7 +663,10 @@ Visual layout and this live Discord/game test require separate acceptance; headl
   its configuration path/save only from the framework update.
 - Schedule preset rows turn orange when the scheduler's current effective-crew LevelSeek evaluation proves that every
   targeted row already meets its goal and would therefore be skipped. Hover the preset row for the same per-slot
-  evidence used by execution. After required job changes and exact worker readiness, DAD repeats the frozen evaluation
+  evidence used by execution. Pre-wake evaluation uses the planner's merged live and durable offline roster snapshot,
+  including the selected job's XADB ledger, so proven satisfied targets can skip without logging in that character.
+  NPC-duty preflight also checks the explicitly requested job rather than borrowing the currently equipped job's level.
+  After required job changes and exact worker readiness, DAD repeats the frozen evaluation
   from fresh local/peer truth before it can dispatch; missing characters, unknown levels, missing presets, and
   untargeted rows stay normal.
 - The selected Schedule's ordered preset rows show `SKIPPED` badges for exact skips in its active or latest non-dry run,
@@ -726,19 +729,25 @@ Visual layout and this live Discord/game test require separate acceptance; headl
   v1 explicitly reports idle, AutoRetainer is readable
   and idle with Multi Mode off, and suppression is clear or DAD-owned, DAD may prepare from that verified-idle
   compatibility evidence. It revalidates the evidence before reset; final readiness still requires the exact
-  target character and the post-AR gate. Logical wake orders do not expire. The five-second coordinator cadence
+  target character and the post-AR gate. When VERMAXION is confirmed not loaded, readable idle AutoRetainer and clear
+  or DAD-owned suppression allow DAD to acquire and freshly verify its own suppression lease without waiting for a new
+  character-postprocess callback. Multi Mode may remain on during that suppressed preparation and is disabled only
+  after the account's reset GO. An already exact, stable target with Multi Mode off can acknowledge reset without
+  unnecessary AR commands; that account still needs relog GO and final readiness. Account pipelines remain independent,
+  and the actual run still waits for every required slot. Logical wake orders do not expire. The five-second coordinator cadence
   and mini-window snapshots affect status freshness only, not local ownership timing.
 - A connected Client Dad that is logged out can enter one separate title-idle login path only from a fresh exclusive
   ready `_TitleMenu`; Character Select is never eligible. The exact account route and requested catalog character must
   match, all condition flags must be clear, and title movies, connection/navigation, dialogs, multiple, unknown, or
   character-select surfaces remain wait-only. AutoRetainer must be readable and idle with clear ownership,
-  VERMAXION must freshly report exactly `Idle`, and Lifestream must be readable, idle, and freshly prove
+  VERMAXION must freshly report `Idle` or be confirmed `NotLoaded`, and Lifestream must be readable, idle, and freshly prove
   `CanAutoLogin`. If AutoRetainer Multi Mode is on, DAD disables and verifies it once, then recaptures every gate; if
   already off, it skips that mutation. DAD then calls only the acknowledged
   `Lifestream.ConnectAndLogin(Name, HomeWorld)` IPC. Accepted calls never replay; explicit `false` may retry only after
   five seconds and complete fresh proof; an exception or uncertain result blocks without replay. Exact
-  `MovieStaffList` may receive one Escape only while Multi Mode is already off and all three automation owners are
-  readable and idle, and login still waits for a later fresh valid `_TitleMenu`. Busy or unreadable automation keeps
+  `MovieStaffList` may receive one Escape only while Multi Mode is already off, AutoRetainer and Lifestream are
+  readable and idle, and VERMAXION is freshly idle or confirmed absent. Login still waits for a later fresh valid
+  `_TitleMenu`. Busy or unreadable automation keeps
   waiting without a new timeout. The in-world `/ays relog` sequence remains unchanged, while a visiting source
   character's frozen identity, home destination, and relog target stay visible throughout Data Center return travel.
 - The v2 wire format uses string reservation states (`Pending`, `Granting`, `Granted`, `Released`, `Rejected`). DAD

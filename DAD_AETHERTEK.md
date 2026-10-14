@@ -31,7 +31,7 @@ A DAD preset combines the activity with the characters who should perform it. Ea
 - an ADS loot preference: no change, Need, Greed, or Pass;
 - an optional Level seek target.
 
-Level seek is useful for leveling schedules. With **STOP: Target level**, the bottom target applies only to the first selected primary character when that row is blank. A value on that row overrides the bottom target, while every other nonblank row value adds another required target. DAD skips or stops only when all resolved targets are proven. **Any** uses the loaded character's live current job and level; a selected job uses that job's ledger. Missing evidence and levels 0 or 1 are unknown, so the preset continues under its existing safety cap. DAD freezes the resolved characters, jobs, and targets before wake or relog, checks them again after exact readiness and requested-job preparation, and refreshes the evidence after each completed run.
+Level seek is useful for leveling schedules. With **STOP: Target level**, the bottom target applies only to the first selected primary character when that row is blank. A value on that row overrides the bottom target, while every other nonblank row value adds another required target. DAD skips or stops only when all resolved targets are proven. **Any** uses the loaded character's live current job and level; a selected job uses that job's ledger. Pre-wake checks use the planner's merged live and stored roster, including XADB job levels, so a proven satisfied selected-job target can skip even when another character is logged in. Missing evidence and levels 0 or 1 are unknown, so the preset continues under its existing safety cap. DAD freezes the resolved characters, jobs, and targets before wake or relog, checks them again after exact readiness and requested-job preparation, and refreshes the evidence after each completed run.
 
 With other STOP modes, the existing row Level-seek rule is unchanged: DAD skips only when every targeted, bound primary row has a known job level at or above its target. Unknown or below-target rows keep the preset runnable; untargeted and empty placeholder rows are ignored.
 
@@ -140,7 +140,7 @@ The **DAD Dependencies** window stays open while local DAD is enabled and any re
 
 - **XA Database** can provide stored roster and job-level truth. Local runtime and connected DAD snapshots also contribute current roster state.
 - **AutoRetainer** is observed so DAD does not relog or take over while retainer work is still active.
-- **VERMAXION** provides reservation and handoff safety around post-processing, and can launch a selected DAD preset or schedule through DAD's public IPC.
+- **VERMAXION** optionally provides reservation and handoff safety around post-processing, and can launch a selected DAD preset or schedule through DAD's public IPC. When it is confirmed absent, DAD can use readable idle AutoRetainer with its own verified suppression lease; no new character-postprocess callback is required. Busy, unreadable, or conflicting ownership still blocks takeover. The title-login path likewise accepts freshly confirmed VERMAXION absence without bypassing its other safety gates.
 - **Lifestream** supports configured character relog handling.
 - **Fren Rider** is an unconditional DAD dependency and is the default in-duty owner for movement, combat coordination, and exit behavior when that mode is selected.
 - **AI Duty Solver (ADS)** is an unconditional DAD dependency and applies the selected loot configuration to exact workers before multiplayer queue mutation.

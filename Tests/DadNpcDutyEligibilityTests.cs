@@ -7,6 +7,7 @@ namespace dad.Tests;
 // Review M21: GetBlocker is the last gate before committing a character to an NPC duty (5 branches).
 public sealed class DadNpcDutyEligibilityTests
 {
+    private const uint ArcanistJobId = 26;  // combat
     private const uint WhiteMageJobId = 24; // combat
     private const uint FisherJobId = 18;    // non-combat
 
@@ -82,5 +83,47 @@ public sealed class DadNpcDutyEligibilityTests
             4,
             50);
         Assert.Null(blocker);
+    }
+
+    [Fact]
+    public void RequiredJobUsesXadbLedgerWhenCurrentJobIsUnknown()
+    {
+        var blocker = DadNpcDutyEligibility.GetBlocker(
+            Character(null, null, [(ArcanistJobId, 16), (WhiteMageJobId, 90)]),
+            "Sastasha",
+            4,
+            15,
+            ArcanistJobId);
+
+        Assert.Null(blocker);
+    }
+
+    [Fact]
+    public void RequiredJobLevelDoesNotBorrowCurrentJobLevel()
+    {
+        var blocker = DadNpcDutyEligibility.GetBlocker(
+            Character(WhiteMageJobId, 90, [(WhiteMageJobId, 90)]),
+            "Sastasha",
+            4,
+            15,
+            ArcanistJobId);
+
+        Assert.NotNull(blocker);
+        Assert.Contains("no level data for required job #26", blocker);
+    }
+
+    [Fact]
+    public void RequiredJobBelowDutyLevelIsBlocked()
+    {
+        var blocker = DadNpcDutyEligibility.GetBlocker(
+            Character(WhiteMageJobId, 90, [(ArcanistJobId, 14), (WhiteMageJobId, 90)]),
+            "Sastasha",
+            4,
+            15,
+            ArcanistJobId);
+
+        Assert.NotNull(blocker);
+        Assert.Contains("level 14 on required job #26", blocker);
+        Assert.Contains("requires level 15", blocker);
     }
 }

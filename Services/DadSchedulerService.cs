@@ -1641,10 +1641,7 @@ public sealed class DadSchedulerService
         ArgumentNullException.ThrowIfNull(plannerRequestPreview);
 
         var effectiveGroup = BuildEffectiveSchedulerGroup(group, plannerRequestPreview);
-        return DadLevelSeekEvaluationRules.Evaluate(
-            effectiveGroup,
-            plannerRequestPreview.Request?.StopPolicy,
-            characterIntelligenceService.CurrentPool);
+        return DadLevelSeekEvaluationRules.EvaluatePlannerPreflight(effectiveGroup, plannerRequestPreview);
     }
 
     private bool TrySkipSatisfiedPostWakeLevelTargets()
@@ -4738,7 +4735,9 @@ public sealed class DadSchedulerService
                 ? "verified-idle-compatibility"
                 : slot.VermaxionReservationState == DadVermaxionReservationState.Granted
                     ? "v2-grant"
-                    : "character-postprocess";
+                    : string.Equals(slot.ExternalAutomationActivity, "AutoRetainerIdleHandoff", StringComparison.OrdinalIgnoreCase)
+                        ? "verified-ar-idle"
+                        : "character-postprocess";
         log.Information(
             "[dad] Wake route transition: request={SchedulerRunId}, module={ModuleId}, slot={SlotId}, stableAccount={AccountKey}, target={CharacterKey}, contentId={ContentId}, active={ActiveCharacterKey}, exactMatch={ExactCharacterMatch}, worker={WorkerSessionId}, route={RouteStatus}, phase={TakeoverPhase}, stage={TakeoverStage}, ack={AcknowledgementState}, preparation={PreparationAuthority}, reservation={ReservationState}, VERMAXION={VermaxionActivity}/{VermaxionState}, AR={AutoRetainerState}, multiMode={MultiModeState}, cleanup={CleanupResult}.",
             runId,

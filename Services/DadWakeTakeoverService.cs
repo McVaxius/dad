@@ -701,7 +701,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         {
             return ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
         }
-        if (snapshot.MultiModeEnabled && !authenticatedAutoPartyWake)
+        if (snapshot.MultiModeEnabled && !AllowsMultiModeDuringPreparation(snapshot, authenticatedAutoPartyWake))
         {
             operation.Summary = authorization == DadVermaxionMutationAuthorization.Granted
                 ? "VERMAXION grant received; waiting for verified AutoRetainer off/idle state."
@@ -725,7 +725,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         if (!string.IsNullOrWhiteSpace(blocker))
             return Block(operation, blocker, cleanup: true);
         if (!operation.CoordinatorAvailable || !IsWorldMutationSafe(snapshot) ||
-            (snapshot.MultiModeEnabled && !authenticatedAutoPartyWake) || !snapshot.SuppressionReadable ||
+            (snapshot.MultiModeEnabled && !AllowsMultiModeDuringPreparation(snapshot, authenticatedAutoPartyWake)) || !snapshot.SuppressionReadable ||
             snapshot.AutoRetainerSuppressed && !snapshot.DadOwnsSuppression ||
             snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.None)
         {
@@ -746,7 +746,7 @@ public sealed class DadWakeTakeoverService : IDisposable
             return ReturnToReadinessWait(operation, snapshot, BuildReadinessWaitSummary(snapshot), releaseReservation: true);
         }
         if (!acquire.Success || !snapshot.DadOwnsSuppression || !snapshot.AutoRetainerSuppressed ||
-            snapshot.AutoRetainerBusy || (snapshot.MultiModeEnabled && !authenticatedAutoPartyWake) ||
+            snapshot.AutoRetainerBusy || (snapshot.MultiModeEnabled && !AllowsMultiModeDuringPreparation(snapshot, authenticatedAutoPartyWake)) ||
             snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.None)
         {
             var summary = acquire.Success
@@ -893,7 +893,10 @@ public sealed class DadWakeTakeoverService : IDisposable
             return;
         }
 
-        if (!CanContinueCommittedReset(operation, forceExternalRefresh: true, out _))
+        if (!CanContinueCommittedReset(operation, forceExternalRefresh: true, out var initialSnapshot))
+            return;
+
+        if (TryVerifyAlreadyOnlineReset(operation, initialSnapshot))
             return;
 
         if (!operation.MultiModeDisableAttempted)
@@ -908,7 +911,9 @@ public sealed class DadWakeTakeoverService : IDisposable
             }
         }
 
-        if (!CanContinueCommittedReset(operation, forceExternalRefresh: true, out _))
+        if (!CanContinueCommittedReset(operation, forceExternalRefresh: true, out var afterMultiMode))
+            return;
+        if (TryVerifyAlreadyOnlineReset(operation, afterMultiMode))
             return;
         if (!operation.DisableAutoRetainerAttempted)
         {
@@ -966,6 +971,23 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.Acknowledgement = DadWakeAcknowledgementState.Executed;
         operation.Summary = "Coordinated reset executed and verified; waiting for crew reset barrier.";
         operation.UpdatedAtUtc = utcNow();
+        return true;
+    }
+
+    private bool TryVerifyAlreadyOnlineReset(OperationState operation, DadWakeTakeoverTargetSnapshot snapshot)
+    {
+        if (operation.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.AutoRetainerIdle ||
+            snapshot.MultiModeEnabled ||
+            !IsExactStableLiveDestination(snapshot.Participant, operation.ActiveRequest.CharacterKey))
+        {
+            return false;
+        }
+
+        // Preserve the reset acknowledgement even when this account needs no AR
+        // reset. The coordinator must still send this slot's relog GO before Ready.
+        if (!TryFinalizeExecutedReset(operation))
+            return true;
+        operation.Summary = "Already-online idle character verified without AR reset; waiting for the coordinator relog GO.";
         return true;
     }
 
@@ -1684,7 +1706,8 @@ public sealed class DadWakeTakeoverService : IDisposable
            !IsExternalAutomationBlocking(snapshot);
 
     private static bool IsWorldAndLocalServicesSafe(DadWakeTakeoverTargetSnapshot snapshot)
-        => snapshot.AccountMatches &&
+        => snapshot.ClientRouteConnected &&
+           snapshot.AccountMatches &&
            snapshot.CharacterKnownToAccount &&
            IsWorldReadyStable(snapshot) &&
            snapshot.AutoRetainerAvailable &&
@@ -1769,19 +1792,28 @@ public sealed class DadWakeTakeoverService : IDisposable
         return "Waiting for safe takeover readiness; no timeout; cancel to stop.";
     }
 
+    private static bool AllowsMultiModeDuringPreparation(
+        DadWakeTakeoverTargetSnapshot snapshot,
+        bool authenticatedAutoPartyWake)
+        => authenticatedAutoPartyWake ||
+           snapshot.VermaxionMutationAuthorization == DadVermaxionMutationAuthorization.AutoRetainerIdle;
+
     private static bool IsVerifiedReservationPreparation(
         DadWakeTakeoverTargetSnapshot snapshot,
         bool allowEnabledMultiMode = false)
         => snapshot.VermaxionMutationAuthorization != DadVermaxionMutationAuthorization.None &&
            snapshot.AutoRetainerAvailable &&
            !snapshot.AutoRetainerBusy &&
-           (allowEnabledMultiMode || !snapshot.MultiModeEnabled) &&
+           (AllowsMultiModeDuringPreparation(snapshot, allowEnabledMultiMode) ||
+            !snapshot.MultiModeEnabled) &&
            snapshot.SuppressionReadable &&
            snapshot.DadOwnsSuppression &&
            snapshot.AutoRetainerSuppressed;
 
     private static string BuildPreparedSummary(DadVermaxionMutationAuthorization authorization)
-        => authorization == DadVermaxionMutationAuthorization.CompatibilityIdle
+        => authorization == DadVermaxionMutationAuthorization.AutoRetainerIdle
+            ? "AutoRetainer idle handoff: DAD suppression acquired; waiting for the coordinator reset GO; no character postprocess callback required."
+            : authorization == DadVermaxionMutationAuthorization.CompatibilityIdle
             ? "Compatibility handoff: VERMAXION idle / AR idle; DAD suppression acquired; waiting for crew with no timeout; cancel to stop."
             : "VERMAXION handoff granted; AR off/idle and DAD suppression acquired; waiting for crew with no timeout; cancel to stop.";
 

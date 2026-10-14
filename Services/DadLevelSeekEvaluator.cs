@@ -57,6 +57,25 @@ public static class DadLevelSeekDisplayRules
 /// </summary>
 public static class DadLevelSeekEvaluationRules
 {
+    public static DadLevelSeekEvaluation EvaluatePlannerPreflight(
+        DadPlannerGroup effectiveGroup,
+        DadPlannerRunRequestPreview preview)
+    {
+        ArgumentNullException.ThrowIfNull(preview);
+
+        // Planner validation includes durable offline job ledgers. Use that same
+        // snapshot for pre-wake skips, rather than the runtime-only character pool.
+        return Evaluate(
+            effectiveGroup,
+            preview.Request?.StopPolicy ?? preview.StopPolicy,
+            new DadCharacterPool
+            {
+                Characters = preview.PlannerPreview.AvailableCharacters
+                    .Select(static character => character.Clone())
+                    .ToList(),
+            });
+    }
+
     public static DadLevelSeekEvaluation Evaluate(
         DadPlannerGroup effectiveGroup,
         DadRunStopPolicy? stopPolicy,

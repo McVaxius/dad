@@ -21,7 +21,7 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void NotLoadedVermaxionUsesAutoRetainerCharacterPostprocessBoundary()
+    public void NotLoadedVermaxionAcquiresIdleSuppressionWithoutCharacterPostprocess()
     {
         var target = FakeTarget.Valid(wrongCharacter: true);
         target.LegacyStatus = Legacy(DadVermaxionReadinessKind.NotLoaded);
@@ -31,19 +31,11 @@ public sealed class DadWakeTakeoverServiceTests
         var waiting = service.Handle(Request());
 
         Assert.Equal(DadVermaxionReservationState.NotLoaded, waiting.VermaxionReservationState);
-        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, waiting.Phase);
-        Assert.Equal(DadWakeTakeoverStage.AwaitingArHook, waiting.Stage);
-        Assert.Equal(["Arm"], target.Actions);
-        Assert.DoesNotContain("AcquireSuppression", target.Actions);
-
-        target.Snapshot.DadOwnsCharacterPostprocess = true;
-        service.OnCharacterPostprocessReady();
-        var prepared = service.Handle(Request());
-
-        Assert.Equal(DadWakeTakeoverPhase.Prepared, prepared.Phase);
-        Assert.Contains("AcquireSuppression", target.Actions);
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, waiting.Phase);
+        Assert.Equal(["AcquireSuppression"], target.Actions);
+        Assert.DoesNotContain("Arm", target.Actions);
         Assert.DoesNotContain("ReleaseReservation", target.Actions);
-        Assert.DoesNotContain("ReservationRenewal", prepared.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("no character postprocess callback required", waiting.Summary);
         Assert.DoesNotContain(target.Actions, IsMutation);
     }
 
@@ -71,11 +63,15 @@ public sealed class DadWakeTakeoverServiceTests
         Assert.DoesNotContain(target.Actions, IsMutation);
     }
 
-    [Fact]
-    public void TitleIdleWithoutLoggedInPriorCharacterUsesExactOwnedLoginPath()
+    [Theory]
+    [InlineData(DadVermaxionReadinessKind.Idle)]
+    [InlineData(DadVermaxionReadinessKind.NotLoaded)]
+    public void TitleIdleWithoutLoggedInPriorCharacterUsesExactOwnedLoginPath(DadVermaxionReadinessKind vermaxionKind)
     {
         var target = FakeTarget.Valid(wrongCharacter: true);
         ConfigureTitleIdle(target);
+        target.LegacyStatus = Legacy(vermaxionKind);
+        target.Snapshot.VermaxionStatusKind = vermaxionKind;
         var service = new DadWakeTakeoverService(target);
 
         var preparing = service.Handle(Request());
@@ -1841,6 +1837,211 @@ public sealed class DadWakeTakeoverServiceTests
         request.CommitKind = kind;
         request.ExecutionTimeUtc = at;
         return request;
+    }
+
+    [Fact]
+    public void AlreadyOnlineIdleAccountWaitsForCrewGoWithoutResetOrRelog()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: false);
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.NotLoaded);
+        target.Snapshot.MultiModeEnabled = false;
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, service.Handle(Request()).Phase);
+        clock.Advance(TimeSpan.FromHours(1));
+        service.Update();
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, service.Handle(StatusRequest()).Phase);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+
+        ExecuteGo(service, clock, DadWakeCommitKind.Reset);
+        Assert.Equal(DadWakeTakeoverPhase.ResetVerified, service.Handle(StatusRequest()).Phase);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+        ExecuteGo(service, clock, DadWakeCommitKind.Relog);
+
+        Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+        Assert.DoesNotContain("Arm", target.Actions);
+        Assert.False(target.Snapshot.DadOwnsSuppression);
+    }
+
+    [Fact]
+    public void FourAccountIdleCrewUsesSchedulerPipelinesAndRelogsOnlyDifferentCharacters()
+    {
+        var clock = new TestClock();
+        var targets = Enumerable.Range(0, 4).Select(index =>
+        {
+            var target = FakeTarget.Valid(wrongCharacter: index >= 2);
+            target.LegacyStatus = Legacy(DadVermaxionReadinessKind.NotLoaded);
+            target.Snapshot.MultiModeEnabled = false;
+            target.UtcNow = clock.UtcNow;
+            return target;
+        }).ToArray();
+        var services = targets.Select(target => new DadWakeTakeoverService(target, clock.UtcNow)).ToArray();
+        var requests = Enumerable.Range(0, 4).Select(index =>
+        {
+            var request = Request();
+            request.SlotId = $"Slot{index + 1}";
+            request.AccountKey = new DadAccountKey($"account-{index}");
+            return request;
+        }).ToArray();
+
+        for (var index = 0; index < 4; index++)
+            Assert.Equal(DadWakeTakeoverPhase.Prepared, services[index].Handle(requests[index]).Phase);
+        var slots = requests.Select(request => new DadSchedulerSlotState
+        {
+            SlotId = request.SlotId,
+            RequiredAccountKey = request.AccountKey,
+            RequiredCharacterKey = request.CharacterKey,
+            ClientConnected = true,
+            BasePostArReady = true,
+            AutoRetainerAvailable = true,
+            TakeoverPhase = DadWakeTakeoverPhase.Prepared,
+        }).ToArray();
+        Assert.All(targets, target => Assert.DoesNotContain(target.Actions, IsMutation));
+
+        var resetAt = clock.Now.AddSeconds(5);
+        for (var index = 0; index < 4; index++)
+        {
+            requests[index].MessageKind = DadWakeTakeoverMessageKind.Go;
+            var decision = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slots[index], clock.Now);
+            Assert.Equal(DadWakeCommitKind.Reset, decision.CommitKind);
+            requests[index].CommitKind = decision.CommitKind;
+            requests[index].ExecutionTimeUtc = decision.ExecutionTimeUtc;
+            Assert.Equal(resetAt, decision.ExecutionTimeUtc);
+            services[index].Handle(requests[index]);
+        }
+        clock.Advance(TimeSpan.FromSeconds(4));
+        foreach (var service in services) service.Update();
+        Assert.All(targets, target => Assert.DoesNotContain(target.Actions, IsMutation));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        foreach (var service in services) service.Update();
+
+        var relogAt = clock.Now.AddSeconds(5);
+        for (var index = 0; index < 4; index++)
+        {
+            slots[index].TakeoverPhase = services[index].GetActiveStatus()!.Phase;
+            var decision = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slots[index], clock.Now);
+            Assert.Equal(DadWakeCommitKind.Relog, decision.CommitKind);
+            requests[index].CommitKind = decision.CommitKind;
+            requests[index].ExecutionTimeUtc = decision.ExecutionTimeUtc;
+            Assert.Equal(relogAt, decision.ExecutionTimeUtc);
+            services[index].Handle(requests[index]);
+        }
+        Assert.All(targets, target => Assert.DoesNotContain("RelogCharacter", target.Actions));
+        clock.Advance(TimeSpan.FromSeconds(5));
+        foreach (var service in services) service.Update();
+
+        for (var index = 0; index < 4; index++)
+        {
+            Assert.DoesNotContain("Arm", targets[index].Actions);
+            if (index < 2)
+            {
+                requests[index].MessageKind = DadWakeTakeoverMessageKind.Status;
+                Assert.Equal(DadWakeTakeoverPhase.Ready, services[index].Handle(requests[index]).Phase);
+                Assert.DoesNotContain(targets[index].Actions, IsMutation);
+            }
+            else
+            {
+                Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, services[index].GetActiveStatus()!.Phase);
+                Assert.Single(targets[index].Actions, action => action == "RelogCharacter");
+                Assert.True(targets[index].Snapshot.DadOwnsSuppression);
+            }
+        }
+    }
+
+    [Fact]
+    public void IdleSuppressionAcquisitionRecapturesBusyStateAndYields()
+    {
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.NotLoaded);
+        target.OnSuppressionAcquired = () => target.Snapshot.AutoRetainerBusy = true;
+        var service = new DadWakeTakeoverService(target);
+
+        var result = service.Handle(Request());
+
+        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, result.Phase);
+        Assert.Contains("ReleaseSuppression", target.Actions);
+        Assert.DoesNotContain("Arm", target.Actions);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void IdleHandoffStopsWhenAccountOrRouteDoesNotMatch(bool accountMismatch)
+    {
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.NotLoaded);
+        if (accountMismatch)
+            target.Snapshot.AccountMatches = false;
+        else
+            target.Snapshot.ClientRouteConnected = false;
+        var service = new DadWakeTakeoverService(target);
+
+        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, service.Handle(Request()).Phase);
+        Assert.Empty(target.Actions);
+    }
+
+    [Fact]
+    public void IdleHandoffCancellationReleasesOnlyDadSuppression()
+    {
+        var target = FakeTarget.Valid(wrongCharacter: false);
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.NotLoaded);
+        var service = new DadWakeTakeoverService(target);
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, service.Handle(Request()).Phase);
+        var cancel = Request();
+        cancel.MessageKind = DadWakeTakeoverMessageKind.Cancel;
+
+        Assert.Equal(DadWakeTakeoverPhase.Cancelled, service.Handle(cancel).Phase);
+        Assert.False(target.Snapshot.DadOwnsSuppression);
+        Assert.DoesNotContain("Finish:Stop", target.Actions);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+    }
+
+    [Fact]
+    public void ManuallyLoadedTargetResumesIdleTakeoverWithoutRelog()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.NotLoaded);
+        target.Snapshot.Participant.WorldReadyStable = false;
+        target.Snapshot.MultiModeEnabled = false;
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        Assert.Equal(DadWakeTakeoverPhase.AwaitingArHook, service.Handle(Request()).Phase);
+
+        target.Snapshot.Participant.WorldReadyStable = true;
+        target.Snapshot.Participant.ActiveCharacterKey = Request().CharacterKey;
+        target.Snapshot.Participant.Character.CharacterKey = Request().CharacterKey.Value;
+        target.Snapshot.Participant.Character.ContentId = 20;
+        target.Snapshot.CorrectCharacter = true;
+        service.Update();
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, service.Handle(StatusRequest()).Phase);
+        ExecuteGo(service, clock, DadWakeCommitKind.Reset);
+        ExecuteGo(service, clock, DadWakeCommitKind.Relog);
+
+        Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
+        Assert.DoesNotContain("Arm", target.Actions);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+    }
+
+    [Fact]
+    public void NoVermaxionTitleLoginRecapturesAutomationStateAfterDisablingMultiMode()
+    {
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        ConfigureTitleIdle(target);
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.NotLoaded);
+        target.Snapshot.VermaxionStatusKind = DadVermaxionReadinessKind.NotLoaded;
+        var service = new DadWakeTakeoverService(target);
+        service.Handle(Request());
+        Assert.Equal(["SetMultiMode:False"], target.Actions);
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.Busy);
+        target.Snapshot.VermaxionStatusKind = DadVermaxionReadinessKind.Busy;
+
+        service.Update();
+
+        Assert.Empty(target.TitleLoginCaptureCounts);
+        Assert.Equal(["SetMultiMode:False"], target.Actions);
     }
 
     private sealed class FakeTarget : IDadWakeTakeoverTarget, IDadTitleMovieDismissalTarget

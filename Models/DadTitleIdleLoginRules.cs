@@ -6,7 +6,7 @@ public static class DadTitleIdleLoginRules
         => HasExactStableRoute(snapshot) &&
            HasReadyIdleTitle(snapshot) &&
            HasReadableIdleAutoRetainer(snapshot) &&
-           HasFreshIdleVermaxion(snapshot) &&
+           HasFreshIdleOrAbsentVermaxion(snapshot) &&
            HasReadyLifestreamLogin(snapshot) &&
            HasNoConflictingOwnership(snapshot);
 
@@ -14,7 +14,7 @@ public static class DadTitleIdleLoginRules
         => HasExactStableRoute(snapshot) &&
            HasReadyIdleTitle(snapshot) &&
            HasReadableIdleAutoRetainer(snapshot) &&
-           HasFreshIdleVermaxion(snapshot) &&
+           HasFreshIdleOrAbsentVermaxion(snapshot) &&
            HasReadyLifestreamLogin(snapshot) &&
            HasNoConflictingOwnership(snapshot);
 
@@ -27,7 +27,7 @@ public static class DadTitleIdleLoginRules
            snapshot.TitleClientLoggedOut &&
            snapshot.TitleNoActiveConditionFlags &&
            HasReadableIdleAutoRetainer(snapshot) &&
-           HasFreshIdleVermaxion(snapshot) &&
+           HasFreshIdleOrAbsentVermaxion(snapshot) &&
            snapshot.LifestreamAvailable &&
            !snapshot.LifestreamBusy &&
            !snapshot.MultiModeEnabled &&
@@ -90,8 +90,8 @@ public static class DadTitleIdleLoginRules
             return "AutoRetainer title login is waiting for readable ownership state; no command was issued.";
         if (!snapshot.VermaxionStatusEvidenceFresh)
             return "AutoRetainer title login is waiting for a fresh VERMAXION status read; no command was issued.";
-        if (snapshot.VermaxionStatusKind != DadVermaxionReadinessKind.Idle)
-            return $"AutoRetainer title login is waiting for VERMAXION to report exactly Idle (observed {snapshot.VermaxionStatusKind}); no command was issued.";
+        if (!HasFreshIdleOrAbsentVermaxion(snapshot))
+            return $"AutoRetainer title login is waiting for loaded VERMAXION to report Idle (observed {snapshot.VermaxionStatusKind}); no command was issued.";
         if (!snapshot.LifestreamAvailable)
             return "AutoRetainer title login is waiting for readable Lifestream IPC; no command was issued.";
         if (snapshot.LifestreamBusy)
@@ -122,10 +122,9 @@ public static class DadTitleIdleLoginRules
             return "Title-movie dismissal is waiting for AutoRetainer Multi Mode to be off; no key was typed.";
         if (!snapshot.AutoRetainerAvailable || snapshot.AutoRetainerBusy || !snapshot.SuppressionReadable)
             return "Title-movie dismissal is waiting for readable idle AutoRetainer ownership state; no key was typed.";
-        if (!snapshot.VermaxionStatusEvidenceFresh ||
-            snapshot.VermaxionStatusKind != DadVermaxionReadinessKind.Idle)
+        if (!HasFreshIdleOrAbsentVermaxion(snapshot))
         {
-            return "Title-movie dismissal is waiting for fresh VERMAXION Idle proof; no key was typed.";
+            return "Title-movie dismissal is waiting for a fresh VERMAXION status read proving Idle or NotLoaded; no key was typed.";
         }
         if (!snapshot.LifestreamAvailable || snapshot.LifestreamBusy)
             return "Title-movie dismissal is waiting for readable idle Lifestream; no key was typed.";
@@ -150,9 +149,9 @@ public static class DadTitleIdleLoginRules
            !snapshot.AutoRetainerBusy &&
            snapshot.SuppressionReadable;
 
-    private static bool HasFreshIdleVermaxion(DadWakeTakeoverTargetSnapshot snapshot)
+    private static bool HasFreshIdleOrAbsentVermaxion(DadWakeTakeoverTargetSnapshot snapshot)
         => snapshot.VermaxionStatusEvidenceFresh &&
-           snapshot.VermaxionStatusKind == DadVermaxionReadinessKind.Idle;
+           snapshot.VermaxionStatusKind is DadVermaxionReadinessKind.Idle or DadVermaxionReadinessKind.NotLoaded;
 
     private static bool HasReadyLifestreamLogin(DadWakeTakeoverTargetSnapshot snapshot)
         => snapshot.LifestreamAvailable &&

@@ -1807,14 +1807,13 @@ public sealed class DadPresetProviderService
         if (!IsLocalNpcLane(activityMode) || selectedDuty == null)
             return [];
 
-        var selectedKey = selectedSlots
-            .Select(static slot => slot.CharacterKey)
-            .FirstOrDefault(static key => !string.IsNullOrWhiteSpace(key));
-        if (string.IsNullOrWhiteSpace(selectedKey))
+        var selectedSlot = selectedSlots
+            .FirstOrDefault(static slot => !string.IsNullOrWhiteSpace(slot.CharacterKey));
+        if (selectedSlot == null)
             return [];
 
         var character = availableCharacters.FirstOrDefault(candidate =>
-            string.Equals(candidate.CharacterKey, selectedKey, StringComparison.OrdinalIgnoreCase));
+            string.Equals(candidate.CharacterKey, selectedSlot.CharacterKey, StringComparison.OrdinalIgnoreCase));
         if (character == null)
             return [];
 
@@ -1822,7 +1821,8 @@ public sealed class DadPresetProviderService
             character,
             selectedDuty.DutyDisplayName,
             selectedDuty.ContentFinderConditionId,
-            selectedDuty.JobLevelRequired);
+            selectedDuty.JobLevelRequired,
+            selectedSlot.RequiredJobId);
         return string.IsNullOrWhiteSpace(blocker) ? [] : [blocker];
     }
 
