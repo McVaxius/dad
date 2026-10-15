@@ -8694,4 +8694,126 @@
   <data name="I536.0" xml:space="preserve"><value>Показывать статус в заголовке</value></data>
   <data name="I536.1" xml:space="preserve"><value>Подробный статус в заголовке</value></data>
   <data name="I536.6" xml:space="preserve"><value>Группа готова</value></data>
+  <data name="gather_000" xml:space="preserve"><value>Группа сбора GBR</value></data>
+  <data name="gather_001" xml:space="preserve"><value>Список сбора</value></data>
+  <data name="gather_002" xml:space="preserve"><value>Целевые количества — общий запас в инвентарях персонажей. Другие хранилища не учитываются.</value></data>
+  <data name="gather_003" xml:space="preserve"><value>Импорт GBR или Teamcraft</value></data>
+  <data name="gather_004" xml:space="preserve"><value>Импортировать список сбора</value></data>
+  <data name="gather_005" xml:space="preserve"><value>Список импортирован. Проверьте цели перед запуском.</value></data>
+  <data name="gather_006" xml:space="preserve"><value>Добавить материал</value></data>
+  <data name="gather_007" xml:space="preserve"><value>Выбрать материал</value></data>
+  <data name="gather_008" xml:space="preserve"><value>Очистить список</value></data>
+  <data name="gather_009" xml:space="preserve"><value>Обновить запасы</value></data>
+  <data name="gather_010" xml:space="preserve"><value>Разделить поровну</value></data>
+  <data name="gather_011" xml:space="preserve"><value>Предмет</value></data>
+  <data name="gather_012" xml:space="preserve"><value>В наличии</value></data>
+  <data name="gather_013" xml:space="preserve"><value>Осталось</value></data>
+  <data name="gather_014" xml:space="preserve"><value>Удалить материал</value></data>
+  <data name="gather_015" xml:space="preserve"><value>Найти материал для сбора</value></data>
+  <data name="gather_016" xml:space="preserve"><value>Обновите запасы для просмотра фиксированных заданий.</value></data>
+  <data name="gather_017" xml:space="preserve"><value>Выберите напрямую подключённые клиенты DAD для чтения запасов.</value></data>
+  <data name="gather_018" xml:space="preserve"><value>Чтение запасов и возможностей сбора выбранных клиентов.</value></data>
+  <data name="gather_019" xml:space="preserve"><value>Фиксированные задания готовы. При запуске запасы проверяются снова.</value></data>
+  <data name="gather_020" xml:space="preserve"><value>Остановка после выполнения всех фиксированных заданий и общих целей по запасам.</value></data>
+  <data name="gather_021" xml:space="preserve"><value>Сбор фиксированного количества.</value></data>
+  <data name="gather_022" xml:space="preserve"><value>Этому клиенту ничего собирать не нужно.</value></data>
+  <data name="gather_023" xml:space="preserve"><value>Задание выполнено, запасы в инвентаре проверены.</value></data>
+  <data name="gather_024" xml:space="preserve"><value>GBR остановился до достижения фиксированных целей по запасам.</value></data>
+  <data name="gather_025" xml:space="preserve"><value>Сбор отменён.</value></data>
+  <data name="gather_026" xml:space="preserve"><value>Клиенты сбора: завершено {0}/{1}.</value></data>
+  <data name="gather_027" xml:space="preserve"><value>Ожидание точек сбора ({0}/{1}).</value></data>
+  <data name="gather_028" xml:space="preserve"><value>Сбор фиксированного количества ({0}/{1}).</value></data>
+  <data name="gather_029" xml:space="preserve"><value>ID предмета: {0}; предпочтительное место сбора: {1}</value></data>
+  <data name="gather_030" xml:space="preserve"><value>Запас в инвентаре: {0}; цель GBR: {1}</value></data>
+  <data name="gather_031" xml:space="preserve"><value>Фиксированные доли MIN/BTN по общей цели запасов при себе. Клиенты собирают независимо.</value></data>
+  <data name="gather_032" xml:space="preserve"><value>Нативный сбор</value></data>
+  <data name="gather_033" xml:space="preserve"><value>Импортируйте или измените материалы, обновите запасы, проверьте фиксированные доли и запустите.</value></data>
+  <data name="gather_034" xml:space="preserve"><value>Независимые клиенты MIN/BTN выполняют фиксированные квоты через списки GBR под управлением DAD.</value></data>
+  <data name="gather_035" xml:space="preserve"><value>Клиенты собирают независимо; создание группы не требуется.</value></data>
+  <data name="gather_036" xml:space="preserve"><value>Клиенты готовы; проверяются запасы при себе и фиксированные доли.</value></data>
+  <data name="gather_037" xml:space="preserve"><value>Проверяется итоговый общий запас при себе после освобождения работы GBR, принадлежащей DAD.</value></data>
+  <data name="gather_038" xml:space="preserve"><value>Итоговый общий запас не достиг целей сбора. Фиксированные доли не перераспределяются.</value></data>
+  <data name="gather_039" xml:space="preserve"><value>Запас при себе изменился после планирования. Обновите план.</value></data>
+  <data name="gather_040" xml:space="preserve"><value>Не удаётся прочитать инвентарь при себе.</value></data>
+  <data name="gather_041" xml:space="preserve"><value>Включите хотя бы одну допустимую цель в пределах лимита предметов.</value></data>
+  <data name="gather_042" xml:space="preserve"><value>Целям нужны уникальные ID предметов/строк и количества от 1 до 999999.</value></data>
+  <data name="gather_043" xml:space="preserve"><value>Выберите хотя бы один подключённый клиент сбора.</value></data>
+  <data name="gather_044" xml:space="preserve"><value>У выбранного клиента неполные данные идентификации.</value></data>
+  <data name="gather_045" xml:space="preserve"><value>У клиентов должны быть разные слоты, сеансы, персонажи и аккаунты.</value></data>
+  <data name="gather_046" xml:space="preserve"><value>Клиент {0} недоступен или его инвентарь не читается.</value></data>
+  <data name="gather_047" xml:space="preserve"><value>Изменённая доля недопустима, повторяется или ссылается на отсутствующий клиент/цель.</value></data>
+  <data name="gather_048" xml:space="preserve"><value>Недопустимый запас предмета {0} при себе.</value></data>
+  <data name="gather_049" xml:space="preserve"><value>Клиент {0} не может собрать предмет {1}.</value></data>
+  <data name="gather_050" xml:space="preserve"><value>Изменённые доли предмета {0} должны в сумме давать текущую недостачу {1}.</value></data>
+  <data name="gather_051" xml:space="preserve"><value>Ни один выбранный клиент не может собрать предмет {0}.</value></data>
+  <data name="gather_052" xml:space="preserve"><value>Цель GBR клиента {0} для предмета {1} превышает 999999.</value></data>
+  <data name="gather_053" xml:space="preserve"><value>Для сбора нужны допустимые материалы и клиенты в пределах лимита слотов DAD.</value></data>
+  <data name="gather_054" xml:space="preserve"><value>Истекло время запроса запасов. Проверьте подключение и поддержку сбора у всех выбранных клиентов DAD.</value></data>
+  <data name="gather_055" xml:space="preserve"><value>Ответ о запасах не соответствует текущему запросу и клиенту.</value></data>
+  <data name="gather_056" xml:space="preserve"><value>Запасы для сбора недоступны или неполны.</value></data>
+  <data name="gather_057" xml:space="preserve"><value>Для сбора требуется одно точное назначение локального клиента.</value></data>
+  <data name="gather_058" xml:space="preserve"><value>Принадлежащая DAD операция сбора ещё требует освобождения.</value></data>
+  <data name="gather_059" xml:space="preserve"><value>Сбор GBR недоступен на этом клиенте.</value></data>
+  <data name="gather_060" xml:space="preserve"><value>Готов к сбору конечной доли этого клиента.</value></data>
+  <data name="gather_061" xml:space="preserve"><value>Для сбора требуется GBR IPC v2.</value></data>
+  <data name="gather_062" xml:space="preserve"><value>Загруженный экземпляр GBR недоступен.</value></data>
+  <data name="gather_063" xml:space="preserve"><value>Сбор GBR недоступен: {0}</value></data>
+  <data name="gather_064" xml:space="preserve"><value>GBR уже работает независимо.</value></data>
+  <data name="gather_065" xml:space="preserve"><value>GBR уже работает независимо. Остановите его перед сбором DAD.</value></data>
+  <data name="gather_066" xml:space="preserve"><value>Инвентарь при себе не готов.</value></data>
+  <data name="gather_067" xml:space="preserve"><value>Запрос запасов неполон или устарел.</value></data>
+  <data name="gather_068" xml:space="preserve"><value>Запрос не соответствует готовому локальному клиенту/аккаунту/персонажу.</value></data>
+  <data name="gather_069" xml:space="preserve"><value>Освобождение работы GBR не завершено. Проверьте ошибку перед новым явным «Остановить всё».</value></data>
+  <data name="gather_070" xml:space="preserve"><value>Вставьте экспорт списка сбора размером не более 1 МиБ.</value></data>
+  <data name="gather_071" xml:space="preserve"><value>Экспорт не содержит целей сбора.</value></data>
+  <data name="gather_072" xml:space="preserve"><value>Предмет неизвестен или не удалось определить ID собираемого предмета.</value></data>
+  <data name="gather_073" xml:space="preserve"><value>Количество для сбора должно быть от 1 до 999999.</value></data>
+  <data name="gather_074" xml:space="preserve"><value>Ожидалась строка ID/количество или строка Teamcraft с количеством в начале.</value></data>
+  <data name="gather_075" xml:space="preserve"><value>Общее количество предмета {0} должно быть от 1 до 999999.</value></data>
+  <data name="gather_076" xml:space="preserve"><value>Предмет GBR {0} указан несколько раз.</value></data>
+  <data name="gather_077" xml:space="preserve"><value>Импортированный список сбора</value></data>
+  <data name="gather_078" xml:space="preserve"><value>Экспорт сбора превышает лимит предметов.</value></data>
+  <data name="gather_079" xml:space="preserve"><value>Недопустимый экспорт GBR: {0}</value></data>
+  <data name="gather_080" xml:space="preserve"><value>Неподдерживаемая версия списка GBR.</value></data>
+  <data name="gather_081" xml:space="preserve"><value>Распакованный список GBR превышает 1 МиБ.</value></data>
+  <data name="gather_082" xml:space="preserve"><value>Отсутствуют предметы, количества или предпочтительные места GBR.</value></data>
+  <data name="gather_083" xml:space="preserve"><value>Список GBR превышает лимит предметов.</value></data>
+  <data name="gather_084" xml:space="preserve"><value>Сбор должен быть единственной задачей запуска.</value></data>
+  <data name="gather_085" xml:space="preserve"><value>Превышен лимит выбранных клиентов DAD для сбора.</value></data>
+  <data name="gather_086" xml:space="preserve"><value>Для сбора нужны прямые клиенты DAD без фиксированной боевой профессии.</value></data>
+  <data name="gather_087" xml:space="preserve"><value>Группа сбора GBR «{0}», независимых клиентов: {1}</value></data>
+  <data name="gather_088" xml:space="preserve"><value>{0} Освобождение работы GBR не завершено: {1}</value></data>
+  <data name="gather_089" xml:space="preserve"><value>{0} Освобождение GBR не завершено. Проверьте ошибку перед новым явным «Остановить всё».</value></data>
+  <data name="gather_090" xml:space="preserve"><value>Для заказов сбора требуется схема команд 4.</value></data>
+  <data name="gather_091" xml:space="preserve"><value>Для заказов сбора требуется задача сбора.</value></data>
+  <data name="gather_092" xml:space="preserve"><value>Активный список GBR больше не соответствует заказу DAD.</value></data>
+  <data name="gather_093" xml:space="preserve"><value>Недопустимое количество в инвентаре GBR.</value></data>
+  <data name="gather_094" xml:space="preserve"><value>У предмета {0} нет поддерживаемого места сбора MIN/BTN.</value></data>
+  <data name="gather_095" xml:space="preserve"><value>Для сбора нужен ID запуска.</value></data>
+  <data name="gather_096" xml:space="preserve"><value>Для сбора нужны допустимые заказы.</value></data>
+  <data name="gather_097" xml:space="preserve"><value>В GBR уже есть принадлежащая DAD или незавершённая операция.</value></data>
+  <data name="gather_098" xml:space="preserve"><value>Эта попытка GBR завершена; повтора не будет.</value></data>
+  <data name="gather_099" xml:space="preserve"><value>Заказ GBR содержит недопустимые или смешанные назначения клиентов.</value></data>
+  <data name="gather_100" xml:space="preserve"><value>Не удалось создать список GBR.</value></data>
+  <data name="gather_101" xml:space="preserve"><value>Запас предмета {0} изменился. Обновите план.</value></data>
+  <data name="gather_102" xml:space="preserve"><value>GBR не добавил предмет {0} в управляемый список.</value></data>
+  <data name="gather_103" xml:space="preserve"><value>Предпочтительное место GBR {0} недоступно.</value></data>
+  <data name="gather_104" xml:space="preserve"><value>GBR не принял предпочтительное место {0}.</value></data>
+  <data name="gather_105" xml:space="preserve"><value>Активные предметы GBR не соответствуют точному заказу DAD.</value></data>
+  <data name="gather_106" xml:space="preserve"><value>GBR не включил управляемый заказ сбора.</value></data>
+  <data name="gather_107" xml:space="preserve"><value>Остановка не соответствует управляемому запуску GBR.</value></data>
+  <data name="gather_108" xml:space="preserve"><value>GBR не отключил управляемый заказ сбора.</value></data>
+  <data name="gather_109" xml:space="preserve"><value>Изменилась структура активных предметов GBR.</value></data>
+  <data name="gather_110" xml:space="preserve"><value>В GBR нет объекта сбора MIN/BTN для предмета {0}.</value></data>
+  <data name="gather_111" xml:space="preserve"><value>Экземпляр GBR изменился; новому экземпляру действия не отправлялись.</value></data>
+  <data name="gather_112" xml:space="preserve"><value>Член GBR {0} недоступен.</value></data>
+  <data name="gather_113" xml:space="preserve"><value>Для сбора нужна одна конечная задача и допустимые прямые клиенты.</value></data>
+  <data name="gather_114" xml:space="preserve"><value>Нет точного зафиксированного распределения предметов/клиентов.</value></data>
+  <data name="gather_115" xml:space="preserve"><value>Заказы не соответствуют зафиксированным аккаунту/персонажу/сеансу/слоту и целям материалов.</value></data>
+  <data name="gather_116" xml:space="preserve"><value>Сумма долей не равна зафиксированной общей недостаче.</value></data>
+  <data name="gather_117" xml:space="preserve"><value>У клиента уже есть другой зафиксированный заказ.</value></data>
+  <data name="gather_118" xml:space="preserve"><value>Клиенту нужно одно допустимое фиксированное назначение клиент/предмет.</value></data>
+  <data name="gather_119" xml:space="preserve"><value>Заказы сбора отсутствуют или превышают лимит.</value></data>
+  <data name="gather_120" xml:space="preserve"><value>Сбор требует точного модуля и назначений клиентов.</value></data>
+  <data name="gather_121" xml:space="preserve"><value>Группа сбора GBR</value></data>
 </root>

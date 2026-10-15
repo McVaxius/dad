@@ -8666,4 +8666,126 @@
   <data name="I536.0" xml:space="preserve"><value>タイトルバーに状態を表示</value></data>
   <data name="I536.1" xml:space="preserve"><value>タイトルバーに詳細な状態を表示</value></data>
   <data name="I536.6" xml:space="preserve"><value>グループ準備完了</value></data>
+  <data name="gather_000" xml:space="preserve"><value>GBR採集グループ</value></data>
+  <data name="gather_001" xml:space="preserve"><value>採集リスト</value></data>
+  <data name="gather_002" xml:space="preserve"><value>目標数は選択したキャラクターの所持品の合計です。他の保管場所は含みません。</value></data>
+  <data name="gather_003" xml:space="preserve"><value>GBR / Teamcraftをインポート</value></data>
+  <data name="gather_004" xml:space="preserve"><value>採集リストをインポート</value></data>
+  <data name="gather_005" xml:space="preserve"><value>リストをインポートしました。開始前に目標を確認してください。</value></data>
+  <data name="gather_006" xml:space="preserve"><value>素材を追加</value></data>
+  <data name="gather_007" xml:space="preserve"><value>素材を選択</value></data>
+  <data name="gather_008" xml:space="preserve"><value>リストをクリア</value></data>
+  <data name="gather_009" xml:space="preserve"><value>所持数を更新</value></data>
+  <data name="gather_010" xml:space="preserve"><value>均等に分配</value></data>
+  <data name="gather_011" xml:space="preserve"><value>アイテム</value></data>
+  <data name="gather_012" xml:space="preserve"><value>所持数</value></data>
+  <data name="gather_013" xml:space="preserve"><value>残り</value></data>
+  <data name="gather_014" xml:space="preserve"><value>素材を削除</value></data>
+  <data name="gather_015" xml:space="preserve"><value>採集素材を検索</value></data>
+  <data name="gather_016" xml:space="preserve"><value>所持数を更新して固定割り当てを確認してください。</value></data>
+  <data name="gather_017" xml:space="preserve"><value>所持数を読み取るには、直接接続されたDADクライアントを選択してください。</value></data>
+  <data name="gather_018" xml:space="preserve"><value>選択したクライアントの所持数と採集可否を確認しています。</value></data>
+  <data name="gather_019" xml:space="preserve"><value>固定割り当ての準備完了。開始時に所持数を再確認します。</value></data>
+  <data name="gather_020" xml:space="preserve"><value>すべての固定割り当てと所持品の合計目標を達成すると停止します。</value></data>
+  <data name="gather_021" xml:space="preserve"><value>固定割り当てを採集中です。</value></data>
+  <data name="gather_022" xml:space="preserve"><value>このクライアントに採集の不足分はありません。</value></data>
+  <data name="gather_023" xml:space="preserve"><value>割り当ての採集が完了し、所持数を確認しました。</value></data>
+  <data name="gather_024" xml:space="preserve"><value>固定の所持数目標を達成する前にGBRが停止しました。</value></data>
+  <data name="gather_025" xml:space="preserve"><value>採集をキャンセルしました。</value></data>
+  <data name="gather_026" xml:space="preserve"><value>採集クライアント：{0}/{1} 完了。</value></data>
+  <data name="gather_027" xml:space="preserve"><value>採集ポイントを待機中（{0}/{1}）。</value></data>
+  <data name="gather_028" xml:space="preserve"><value>固定割り当てを採集中（{0}/{1}）。</value></data>
+  <data name="gather_029" xml:space="preserve"><value>アイテムID：{0}、優先採集場所：{1}</value></data>
+  <data name="gather_030" xml:space="preserve"><value>所持数：{0}、GBR目標：{1}</value></data>
+  <data name="gather_031" xml:space="preserve"><value>合計所持数の目標から採掘師・園芸師の固定割当を作成します。各クライアントは個別に採集します。</value></data>
+  <data name="gather_032" xml:space="preserve"><value>ネイティブ採集</value></data>
+  <data name="gather_033" xml:space="preserve"><value>素材をインポートまたは編集し、所持数を更新して固定割当を確認してから開始します。</value></data>
+  <data name="gather_034" xml:space="preserve"><value>各採掘師・園芸師がDAD管理のGBRリストを使い、所持数の固定割当を実行します。</value></data>
+  <data name="gather_035" xml:space="preserve"><value>各クライアントは個別に採集するため、パーティ編成は不要です。</value></data>
+  <data name="gather_036" xml:space="preserve"><value>採集クライアントの準備完了。所持数と固定割当を確認中です。</value></data>
+  <data name="gather_037" xml:space="preserve"><value>DAD管理のGBR処理を終了後、最終的な合計所持数を確認中です。</value></data>
+  <data name="gather_038" xml:space="preserve"><value>最終合計所持数が採集目標に達していません。固定割当は再配分されません。</value></data>
+  <data name="gather_039" xml:space="preserve"><value>計画後に所持数が変わりました。計画を更新してください。</value></data>
+  <data name="gather_040" xml:space="preserve"><value>所持品を読み取れません。</value></data>
+  <data name="gather_041" xml:space="preserve"><value>アイテム数の上限内で有効な採集目標を1つ以上有効にしてください。</value></data>
+  <data name="gather_042" xml:space="preserve"><value>採集目標には重複しないアイテム・行IDと1～999999の数量が必要です。</value></data>
+  <data name="gather_043" xml:space="preserve"><value>接続中の採集クライアントを1つ以上選択してください。</value></data>
+  <data name="gather_044" xml:space="preserve"><value>選択した採集クライアントの識別情報が不足しています。</value></data>
+  <data name="gather_045" xml:space="preserve"><value>採集クライアントのスロット・セッション・キャラクター・アカウントは重複できません。</value></data>
+  <data name="gather_046" xml:space="preserve"><value>採集クライアント {0} が利用できないか、所持品を読み取れません。</value></data>
+  <data name="gather_047" xml:space="preserve"><value>編集した割当が無効、重複、または存在しないクライアント・目標を参照しています。</value></data>
+  <data name="gather_048" xml:space="preserve"><value>アイテム {0} の所持数が無効です。</value></data>
+  <data name="gather_049" xml:space="preserve"><value>クライアント {0} はアイテム {1} を採集できません。</value></data>
+  <data name="gather_050" xml:space="preserve"><value>アイテム {0} の編集後の割当合計は、現在の不足数 {1} と一致する必要があります。</value></data>
+  <data name="gather_051" xml:space="preserve"><value>選択したクライアントはアイテム {0} を採集できません。</value></data>
+  <data name="gather_052" xml:space="preserve"><value>クライアント {0}、アイテム {1} のGBR目標数が999999を超えています。</value></data>
+  <data name="gather_053" xml:space="preserve"><value>採集には有効な素材と、DADのスロット上限内のクライアント選択が必要です。</value></data>
+  <data name="gather_054" xml:space="preserve"><value>所持数の照会がタイムアウトしました。選択した全DADクライアントが接続中で採集に対応しているか確認してください。</value></data>
+  <data name="gather_055" xml:space="preserve"><value>所持数の応答が現在のリクエスト・クライアント情報と一致しません。</value></data>
+  <data name="gather_056" xml:space="preserve"><value>採集用の所持数データが利用できないか、不完全です。</value></data>
+  <data name="gather_057" xml:space="preserve"><value>採集にはローカルクライアントの割当を1つ正確に指定する必要があります。</value></data>
+  <data name="gather_058" xml:space="preserve"><value>DAD管理の採集処理がまだ終了していません。</value></data>
+  <data name="gather_059" xml:space="preserve"><value>このクライアントではGBR採集を利用できません。</value></data>
+  <data name="gather_060" xml:space="preserve"><value>このクライアントの固定割当を採集できます。</value></data>
+  <data name="gather_061" xml:space="preserve"><value>採集にはGBR IPC v2が必要です。</value></data>
+  <data name="gather_062" xml:space="preserve"><value>読み込み済みのGBRプラグインを利用できません。</value></data>
+  <data name="gather_063" xml:space="preserve"><value>GBR採集を利用できません: {0}</value></data>
+  <data name="gather_064" xml:space="preserve"><value>GBRが既に個別に稼働しています。</value></data>
+  <data name="gather_065" xml:space="preserve"><value>GBRが既に個別に稼働しています。DAD採集の開始前に停止してください。</value></data>
+  <data name="gather_066" xml:space="preserve"><value>所持品データの準備ができていません。</value></data>
+  <data name="gather_067" xml:space="preserve"><value>採集の所持数照会が不完全か、古くなっています。</value></data>
+  <data name="gather_068" xml:space="preserve"><value>所持数照会が準備済みのローカルクライアント・アカウント・キャラクターと一致しません。</value></data>
+  <data name="gather_069" xml:space="preserve"><value>DAD管理のGBR処理の終了を確認できません。エラーを確認してから再度「すべて停止」を実行してください。</value></data>
+  <data name="gather_070" xml:space="preserve"><value>1MiB以下の採集エクスポートを貼り付けてください。</value></data>
+  <data name="gather_071" xml:space="preserve"><value>エクスポートに採集目標がありません。</value></data>
+  <data name="gather_072" xml:space="preserve"><value>アイテムが不明か、採集可能なアイテムIDに変換できません。</value></data>
+  <data name="gather_073" xml:space="preserve"><value>採集数量は1～999999で指定してください。</value></data>
+  <data name="gather_074" xml:space="preserve"><value>アイテムID・数量の行、または数量が先頭のTeamcraft行が必要です。</value></data>
+  <data name="gather_075" xml:space="preserve"><value>アイテム {0} の合計数量は1～999999で指定してください。</value></data>
+  <data name="gather_076" xml:space="preserve"><value>GBRアイテム {0} が重複しています。</value></data>
+  <data name="gather_077" xml:space="preserve"><value>インポートした採集リスト</value></data>
+  <data name="gather_078" xml:space="preserve"><value>採集エクスポートがアイテム数の上限を超えています。</value></data>
+  <data name="gather_079" xml:space="preserve"><value>GBRエクスポートが無効です: {0}</value></data>
+  <data name="gather_080" xml:space="preserve"><value>未対応のGBRリストバージョンです。</value></data>
+  <data name="gather_081" xml:space="preserve"><value>展開後のGBRリストが1MiBを超えています。</value></data>
+  <data name="gather_082" xml:space="preserve"><value>GBRのアイテム・数量・優先場所が不足しています。</value></data>
+  <data name="gather_083" xml:space="preserve"><value>GBRリストがアイテム数の上限を超えています。</value></data>
+  <data name="gather_084" xml:space="preserve"><value>採集は実行内の唯一のタスクである必要があります。</value></data>
+  <data name="gather_085" xml:space="preserve"><value>採集がDADのクライアント選択上限を超えています。</value></data>
+  <data name="gather_086" xml:space="preserve"><value>採集には固定の戦闘ジョブを割り当てていない、直接接続のDADクライアントが必要です。</value></data>
+  <data name="gather_087" xml:space="preserve"><value>GBR採集グループ「{0}」: 独立クライアント{1}個</value></data>
+  <data name="gather_088" xml:space="preserve"><value>{0} DAD管理のGBR処理の終了を確認できません: {1}</value></data>
+  <data name="gather_089" xml:space="preserve"><value>{0} GBR処理の終了を確認できません。エラーを確認してから再度「すべて停止」を実行してください。</value></data>
+  <data name="gather_090" xml:space="preserve"><value>採集オーダーにはワーカーコマンドのスキーマ4が必要です。</value></data>
+  <data name="gather_091" xml:space="preserve"><value>採集オーダーには採集タスクが必要です。</value></data>
+  <data name="gather_092" xml:space="preserve"><value>GBRの有効リストがDADのオーダーと一致しなくなりました。</value></data>
+  <data name="gather_093" xml:space="preserve"><value>GBRの所持数が無効です。</value></data>
+  <data name="gather_094" xml:space="preserve"><value>アイテム {0} に対応する採掘師・園芸師の採集場所がありません。</value></data>
+  <data name="gather_095" xml:space="preserve"><value>採集には実行IDが必要です。</value></data>
+  <data name="gather_096" xml:space="preserve"><value>採集には有効なアイテムオーダーが必要です。</value></data>
+  <data name="gather_097" xml:space="preserve"><value>GBRにDAD管理または未確定の採集処理があります。</value></data>
+  <data name="gather_098" xml:space="preserve"><value>このGBR採集試行は終了済みです。再実行しません。</value></data>
+  <data name="gather_099" xml:space="preserve"><value>GBRオーダーに無効または混在したクライアント割当があります。</value></data>
+  <data name="gather_100" xml:space="preserve"><value>GBRリストを作成できませんでした。</value></data>
+  <data name="gather_101" xml:space="preserve"><value>計画後にアイテム {0} の所持数が変わりました。計画を更新してください。</value></data>
+  <data name="gather_102" xml:space="preserve"><value>GBRがDAD管理リストにアイテム {0} を追加しませんでした。</value></data>
+  <data name="gather_103" xml:space="preserve"><value>優先GBR採集場所 {0} を利用できません。</value></data>
+  <data name="gather_104" xml:space="preserve"><value>GBRが優先場所 {0} を受け付けませんでした。</value></data>
+  <data name="gather_105" xml:space="preserve"><value>GBRの有効アイテムがDADのオーダーと一致しません。</value></data>
+  <data name="gather_106" xml:space="preserve"><value>GBRがDAD管理の採集オーダーを有効にしませんでした。</value></data>
+  <data name="gather_107" xml:space="preserve"><value>停止要求がDAD管理のGBR実行と一致しません。</value></data>
+  <data name="gather_108" xml:space="preserve"><value>GBRがDAD管理の採集オーダーを無効にしませんでした。</value></data>
+  <data name="gather_109" xml:space="preserve"><value>GBRの有効アイテム構造が変更されています。</value></data>
+  <data name="gather_110" xml:space="preserve"><value>GBRにアイテム {0} の採掘師・園芸師用データがありません。</value></data>
+  <data name="gather_111" xml:space="preserve"><value>GBRのインスタンスが変わったため、新しいインスタンスへ操作を送りませんでした。</value></data>
+  <data name="gather_112" xml:space="preserve"><value>GBRメンバー {0} を利用できません。</value></data>
+  <data name="gather_113" xml:space="preserve"><value>採集には有限タスク1つと有効な直接接続クライアントが必要です。</value></data>
+  <data name="gather_114" xml:space="preserve"><value>採集の確定済みアイテム・クライアント割当がありません。</value></data>
+  <data name="gather_115" xml:space="preserve"><value>採集オーダーが確定済みのアカウント・キャラクター・セッション・スロットおよび素材目標と一致しません。</value></data>
+  <data name="gather_116" xml:space="preserve"><value>採集割当の合計が確定済みの合計不足数と一致しません。</value></data>
+  <data name="gather_117" xml:space="preserve"><value>この採集クライアントには別の確定済みオーダーがあります。</value></data>
+  <data name="gather_118" xml:space="preserve"><value>採集クライアントには有効な確定済みクライアント・アイテム割当が1つ必要です。</value></data>
+  <data name="gather_119" xml:space="preserve"><value>採集オーダーがないか、有限オーダー数の上限を超えています。</value></data>
+  <data name="gather_120" xml:space="preserve"><value>採集には正確な採集モジュールとクライアント割当が必要です。</value></data>
+  <data name="gather_121" xml:space="preserve"><value>GBR採集グループ</value></data>
 </root>

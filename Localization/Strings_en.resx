@@ -8665,4 +8665,126 @@
   <data name="I536.0" xml:space="preserve"><value>Show titlebar status</value></data>
   <data name="I536.1" xml:space="preserve"><value>Detailed titlebar status</value></data>
   <data name="I536.6" xml:space="preserve"><value>Crew ready</value></data>
+  <data name="gather_000" xml:space="preserve"><value>GBR Gather Party</value></data>
+  <data name="gather_001" xml:space="preserve"><value>Gathering list</value></data>
+  <data name="gather_002" xml:space="preserve"><value>Desired quantities are combined carried-stock targets. Other storage does not count.</value></data>
+  <data name="gather_003" xml:space="preserve"><value>Import GBR or Teamcraft</value></data>
+  <data name="gather_004" xml:space="preserve"><value>Import gathering list</value></data>
+  <data name="gather_005" xml:space="preserve"><value>Gathering list imported. Review targets before starting.</value></data>
+  <data name="gather_006" xml:space="preserve"><value>Add material</value></data>
+  <data name="gather_007" xml:space="preserve"><value>Choose material</value></data>
+  <data name="gather_008" xml:space="preserve"><value>Clear list</value></data>
+  <data name="gather_009" xml:space="preserve"><value>Refresh carried stock</value></data>
+  <data name="gather_010" xml:space="preserve"><value>Even split</value></data>
+  <data name="gather_011" xml:space="preserve"><value>Item</value></data>
+  <data name="gather_012" xml:space="preserve"><value>On hand</value></data>
+  <data name="gather_013" xml:space="preserve"><value>Remaining</value></data>
+  <data name="gather_014" xml:space="preserve"><value>Remove material</value></data>
+  <data name="gather_015" xml:space="preserve"><value>Find gathering item</value></data>
+  <data name="gather_016" xml:space="preserve"><value>Refresh carried stock to preview fixed allocations.</value></data>
+  <data name="gather_017" xml:space="preserve"><value>Select directly connected DAD clients to read gathering stock.</value></data>
+  <data name="gather_018" xml:space="preserve"><value>Reading selected clients' carried stock and gathering eligibility.</value></data>
+  <data name="gather_019" xml:space="preserve"><value>Fixed allocations are ready. Start rechecks current stock.</value></data>
+  <data name="gather_020" xml:space="preserve"><value>Stops when all fixed gathering allocations and the combined carried-stock targets are complete.</value></data>
+  <data name="gather_021" xml:space="preserve"><value>Gathering the fixed allocation.</value></data>
+  <data name="gather_022" xml:space="preserve"><value>This client has no gathering deficit.</value></data>
+  <data name="gather_023" xml:space="preserve"><value>Gathering allocation completed and carried stock verified.</value></data>
+  <data name="gather_024" xml:space="preserve"><value>GBR stopped before the fixed carried-stock targets were reached.</value></data>
+  <data name="gather_025" xml:space="preserve"><value>Gathering cancelled.</value></data>
+  <data name="gather_026" xml:space="preserve"><value>Gathering clients: {0}/{1} complete.</value></data>
+  <data name="gather_027" xml:space="preserve"><value>Waiting for gathering nodes ({0}/{1}).</value></data>
+  <data name="gather_028" xml:space="preserve"><value>Gathering fixed allocation ({0}/{1}).</value></data>
+  <data name="gather_029" xml:space="preserve"><value>Item ID: {0}; preferred gathering location: {1}</value></data>
+  <data name="gather_030" xml:space="preserve"><value>Carried stock: {0}; native target: {1}</value></data>
+  <data name="gather_031" xml:space="preserve"><value>Fixed MIN/BTN allocations from a combined carried-stock target. Clients gather independently.</value></data>
+  <data name="gather_032" xml:space="preserve"><value>Native gathering</value></data>
+  <data name="gather_033" xml:space="preserve"><value>Import or edit materials, refresh stock, review the fixed allocations, then Start.</value></data>
+  <data name="gather_034" xml:space="preserve"><value>Independent MIN/BTN workers execute fixed carried-stock allocations through owned GBR lists.</value></data>
+  <data name="gather_035" xml:space="preserve"><value>Gathering clients execute independently; no party assembly is required.</value></data>
+  <data name="gather_036" xml:space="preserve"><value>Gathering clients ready; checking carried stock and fixed allocations.</value></data>
+  <data name="gather_037" xml:space="preserve"><value>Verifying final combined carried stock after owned GBR cleanup.</value></data>
+  <data name="gather_038" xml:space="preserve"><value>The final combined carried stock does not meet the gathering targets. Fixed shares will not be redistributed.</value></data>
+  <data name="gather_039" xml:space="preserve"><value>Carried stock changed after planning. Refresh the plan.</value></data>
+  <data name="gather_040" xml:space="preserve"><value>Carried inventory is unreadable.</value></data>
+  <data name="gather_041" xml:space="preserve"><value>Enable at least one valid gathering target within the item limit.</value></data>
+  <data name="gather_042" xml:space="preserve"><value>Gathering targets need distinct item/row IDs and quantities from 1 to 999999.</value></data>
+  <data name="gather_043" xml:space="preserve"><value>Select at least one connected gathering client.</value></data>
+  <data name="gather_044" xml:space="preserve"><value>A selected gathering client has incomplete identity.</value></data>
+  <data name="gather_045" xml:space="preserve"><value>Gathering clients must have distinct slots, sessions, characters and accounts.</value></data>
+  <data name="gather_046" xml:space="preserve"><value>Gathering client {0} is unavailable or its carried inventory is unreadable.</value></data>
+  <data name="gather_047" xml:space="preserve"><value>An edited gathering allocation is invalid, duplicated or refers to a missing client/target.</value></data>
+  <data name="gather_048" xml:space="preserve"><value>Carried inventory for item {0} is invalid.</value></data>
+  <data name="gather_049" xml:space="preserve"><value>Client {0} cannot gather item {1}.</value></data>
+  <data name="gather_050" xml:space="preserve"><value>Edited allocations for item {0} must total the current deficit {1}.</value></data>
+  <data name="gather_051" xml:space="preserve"><value>No selected client can gather item {0}.</value></data>
+  <data name="gather_052" xml:space="preserve"><value>Native GBR target for client {0}, item {1}, exceeds 999999.</value></data>
+  <data name="gather_053" xml:space="preserve"><value>Gathering needs valid materials and selected clients within DAD&apos;s slot limit.</value></data>
+  <data name="gather_054" xml:space="preserve"><value>Gathering stock query timed out. Check that every selected DAD worker supports gathering and is connected.</value></data>
+  <data name="gather_055" xml:space="preserve"><value>Gathering stock response does not match the exact current request/client identity.</value></data>
+  <data name="gather_056" xml:space="preserve"><value>Gathering stock is unavailable or incomplete.</value></data>
+  <data name="gather_057" xml:space="preserve"><value>Gathering requires one exact local worker assignment.</value></data>
+  <data name="gather_058" xml:space="preserve"><value>An owned gathering operation still needs cleanup.</value></data>
+  <data name="gather_059" xml:space="preserve"><value>GBR gathering is unavailable on this worker.</value></data>
+  <data name="gather_060" xml:space="preserve"><value>Ready to gather this worker&apos;s finite allocation.</value></data>
+  <data name="gather_061" xml:space="preserve"><value>GBR IPC v2 is required for gathering.</value></data>
+  <data name="gather_062" xml:space="preserve"><value>The loaded GBR plugin instance is unavailable.</value></data>
+  <data name="gather_063" xml:space="preserve"><value>GBR gathering is unavailable: {0}</value></data>
+  <data name="gather_064" xml:space="preserve"><value>GBR is already running independently.</value></data>
+  <data name="gather_065" xml:space="preserve"><value>GBR is already running independently. Stop it before starting DAD gathering.</value></data>
+  <data name="gather_066" xml:space="preserve"><value>Carried inventory is not ready.</value></data>
+  <data name="gather_067" xml:space="preserve"><value>Gathering stock query is incomplete or stale.</value></data>
+  <data name="gather_068" xml:space="preserve"><value>Gathering stock query does not match a ready local worker/account/character.</value></data>
+  <data name="gather_069" xml:space="preserve"><value>Owned GBR cleanup remains unresolved. Review the error before another explicit Stop All.</value></data>
+  <data name="gather_070" xml:space="preserve"><value>Paste a gathering export no larger than 1 MiB.</value></data>
+  <data name="gather_071" xml:space="preserve"><value>The export contains no gathering targets.</value></data>
+  <data name="gather_072" xml:space="preserve"><value>The item is unknown or cannot be resolved to a gatherable item ID.</value></data>
+  <data name="gather_073" xml:space="preserve"><value>Gathering quantities must be from 1 to 999999.</value></data>
+  <data name="gather_074" xml:space="preserve"><value>Expected an item-ID/quantity row or a Teamcraft quantity-first item line.</value></data>
+  <data name="gather_075" xml:space="preserve"><value>Combined quantity for item {0} must be from 1 to 999999.</value></data>
+  <data name="gather_076" xml:space="preserve"><value>GBR item {0} appears more than once.</value></data>
+  <data name="gather_077" xml:space="preserve"><value>Imported gathering list</value></data>
+  <data name="gather_078" xml:space="preserve"><value>The gathering export exceeds the item limit.</value></data>
+  <data name="gather_079" xml:space="preserve"><value>The GBR export is invalid: {0}</value></data>
+  <data name="gather_080" xml:space="preserve"><value>Unsupported GBR list version.</value></data>
+  <data name="gather_081" xml:space="preserve"><value>The expanded GBR list exceeds 1 MiB.</value></data>
+  <data name="gather_082" xml:space="preserve"><value>Missing GBR items, quantities or preferred locations.</value></data>
+  <data name="gather_083" xml:space="preserve"><value>The GBR list exceeds the item limit.</value></data>
+  <data name="gather_084" xml:space="preserve"><value>Gathering must be the run&apos;s only task.</value></data>
+  <data name="gather_085" xml:space="preserve"><value>Gathering exceeds DAD&apos;s selected-client limit.</value></data>
+  <data name="gather_086" xml:space="preserve"><value>Gathering requires direct DAD workers with no fixed combat-job assignment.</value></data>
+  <data name="gather_087" xml:space="preserve"><value>GBR Gather Party &apos;{0}&apos; with {1} independent client(s)</value></data>
+  <data name="gather_088" xml:space="preserve"><value>{0} Owned GBR cleanup remains unresolved: {1}</value></data>
+  <data name="gather_089" xml:space="preserve"><value>{0} Owned GBR cleanup remains unresolved. Review the error before another explicit Stop All.</value></data>
+  <data name="gather_090" xml:space="preserve"><value>Worker command schema 4 is required for gathering orders.</value></data>
+  <data name="gather_091" xml:space="preserve"><value>Gathering orders require a gathering task.</value></data>
+  <data name="gather_092" xml:space="preserve"><value>GBR&apos;s active gathering list no longer matches this DAD order.</value></data>
+  <data name="gather_093" xml:space="preserve"><value>GBR carried inventory count is invalid.</value></data>
+  <data name="gather_094" xml:space="preserve"><value>Item {0} has no supported MIN/BTN gathering location.</value></data>
+  <data name="gather_095" xml:space="preserve"><value>Gathering requires a run identity.</value></data>
+  <data name="gather_096" xml:space="preserve"><value>Gathering requires valid item orders.</value></data>
+  <data name="gather_097" xml:space="preserve"><value>GBR already has an owned or unsettled DAD gathering operation.</value></data>
+  <data name="gather_098" xml:space="preserve"><value>This GBR gathering attempt has already ended; it will not be replayed.</value></data>
+  <data name="gather_099" xml:space="preserve"><value>The GBR gathering order contains invalid or mixed client assignments.</value></data>
+  <data name="gather_100" xml:space="preserve"><value>GBR list construction failed.</value></data>
+  <data name="gather_101" xml:space="preserve"><value>Carried stock for item {0} changed after planning. Refresh the plan.</value></data>
+  <data name="gather_102" xml:space="preserve"><value>GBR did not add item {0} to the owned list.</value></data>
+  <data name="gather_103" xml:space="preserve"><value>Preferred GBR location {0} is unavailable.</value></data>
+  <data name="gather_104" xml:space="preserve"><value>GBR did not accept preferred location {0}.</value></data>
+  <data name="gather_105" xml:space="preserve"><value>GBR active items do not match the exact DAD order.</value></data>
+  <data name="gather_106" xml:space="preserve"><value>GBR did not enable the owned gathering order.</value></data>
+  <data name="gather_107" xml:space="preserve"><value>Stop does not match the owned GBR gathering run.</value></data>
+  <data name="gather_108" xml:space="preserve"><value>GBR did not disable the owned gathering order.</value></data>
+  <data name="gather_109" xml:space="preserve"><value>GBR active-item tuple shape changed.</value></data>
+  <data name="gather_110" xml:space="preserve"><value>GBR has no MIN/BTN gatherable for item {0}.</value></data>
+  <data name="gather_111" xml:space="preserve"><value>The GBR plugin instance changed; no action was sent to its replacement.</value></data>
+  <data name="gather_112" xml:space="preserve"><value>GBR member {0} is unavailable.</value></data>
+  <data name="gather_113" xml:space="preserve"><value>Gathering requires one finite task and valid directly connected workers.</value></data>
+  <data name="gather_114" xml:space="preserve"><value>Gathering is missing its exact frozen item/client allocation.</value></data>
+  <data name="gather_115" xml:space="preserve"><value>Gathering orders do not match the exact frozen account/character/session/slot and material targets.</value></data>
+  <data name="gather_116" xml:space="preserve"><value>Gathering shares do not total the frozen combined carried-stock deficit.</value></data>
+  <data name="gather_117" xml:space="preserve"><value>This gathering worker already has a different frozen order.</value></data>
+  <data name="gather_118" xml:space="preserve"><value>A gathering worker requires one valid frozen client/item assignment.</value></data>
+  <data name="gather_119" xml:space="preserve"><value>Gathering worker orders are missing or exceed the finite order limit.</value></data>
+  <data name="gather_120" xml:space="preserve"><value>Gathering requires its exact gathering module and worker assignments.</value></data>
+  <data name="gather_121" xml:space="preserve"><value>GatherParty</value></data>
 </root>

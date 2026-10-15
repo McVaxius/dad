@@ -122,6 +122,7 @@ public enum DadModuleId
     VariantVvd,
     Mixed,
     LootGoblin = 15,
+    GatherParty = 16,
 }
 
 public enum DadTransportMode
@@ -626,6 +627,7 @@ public sealed class DadModuleExecutionStatusDto
     public string FailureReason { get; set; } = string.Empty;
     public string BlockedReason { get; set; } = string.Empty;
     public List<DadModuleBlockerDto> Blockers { get; set; } = [];
+    public Dictionary<uint, long> GatherCounts { get; set; } = [];
 
     public DadModuleExecutionStatusDto Clone() => new()
     {
@@ -647,6 +649,7 @@ public sealed class DadModuleExecutionStatusDto
         FailureReason = FailureReason,
         BlockedReason = BlockedReason,
         Blockers = Blockers.Select(static blocker => blocker.Clone()).ToList(),
+        GatherCounts = new(GatherCounts),
     };
 }
 

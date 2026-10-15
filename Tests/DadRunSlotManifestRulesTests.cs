@@ -7,6 +7,21 @@ namespace dad.Tests;
 public sealed class DadRunSlotManifestRulesTests
 {
     [Fact]
+    public void GatheringPayloadBindsExactWorkersWithoutFreezingACombatJob()
+    {
+        var plan = BuildPlan(DadModuleId.GatherParty, 2, request => request.GatherParty = new()
+        { Items = [new() { ItemId = 42, TargetQuantity = 1000 }] });
+        Assert.True(DadRunSlotManifestRules.TryCreate(plan, out var manifest, out var createError), createError);
+        var miner = Participant(WAccount, WCharacter, WContentId, "worker-w", currentJobId: 16);
+        var botanist = Participant(XAccount, XCharacter, XContentId, "worker-x", currentJobId: 17);
+        Assert.True(DadRunSlotManifestRules.TryBindWorkerSessions(manifest, [miner, botanist], out var bound, out var bindError), bindError);
+        Assert.All(bound.Slots, slot => Assert.Null(slot.RequiredJobId));
+        Assert.Equal(new[] { "worker-w", "worker-x" }, bound.Slots.Select(slot => slot.WorkerSessionId.Value));
+        Assert.Equal(DadModuleId.GatherParty, Assert.Single(bound.Modules).ModuleId);
+        Assert.All(plan.Orchestration.RequiredRosterCharacters, row => Assert.Null(row.RequiredJobId));
+    }
+
+    [Fact]
     public void FormationManifestAcceptsExactRosterWhileOrdinaryRouletteStillRejectsTwoSlots()
     {
         var formation = BuildPlan(DadModuleId.None, 2, static _ => { });

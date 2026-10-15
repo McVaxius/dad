@@ -17,6 +17,7 @@ public sealed class DadTransportService : IDisposable
     private const string MessageWakeRequest = "wake-request";
     private const string MessageWakeTakeoverRequest = "wake-takeover-request";
     private const string MessageRouletteRewardProbe = "roulette-reward-probe";
+    private const string MessageGatherStockQuery = "gather-stock-query";
     private const string MessageClaimRequest = "claim-request";
     private const string MessageAssemblyInstruction = "assembly-instruction";
     private const string MessageAllianceRecruitmentInstruction = "alliance-recruitment-instruction";
@@ -121,6 +122,7 @@ public sealed class DadTransportService : IDisposable
     private Func<DadProfileCatalog>? profileCatalogProvider;
     private Func<DadProfileUpdateRequest, DadProfileUpdateAck>? profileUpdateHandler;
     private Func<DadWorkerExecutionCommand, DadWorkerExecutionAck>? workerExecutionHandler;
+    private Func<DadGatherStockQuery, DadGatherStockReply>? gatherStockHandler;
     private Func<DadWorkerExecutionStatus>? workerStatusProvider;
     private Func<DadWorkerExecutionCancel, DadWorkerExecutionAck>? workerCancelHandler;
     private Func<DadStopAllRequest, DadStopAllWorkerResult>? stopAllHandler;
@@ -502,6 +504,20 @@ public sealed class DadTransportService : IDisposable
             MessageRouletteRewardProbe,
             request,
             $"roulette-reward:{participant.WorkerSessionId.Value}:{request.OperationId}:{request.Operation}");
+    }
+
+    public void ConfigureGatherStockHandler(Func<DadGatherStockQuery, DadGatherStockReply> handler)
+        => gatherStockHandler = handler;
+
+    public DadGatherStockReply? SendGatherStockQuery(DadParticipantSnapshot participant, DadGatherStockQuery query)
+    {
+        RefreshLocalMutationState();
+        if (SameWorker(participant.WorkerSessionId, presenceService.WorkerSessionId))
+            return localPluginEnabled
+                ? gatherStockHandler?.Invoke(query) ?? DadGatherStockReply.Reject(query, "Gathering stock handler is unavailable.")
+                : DadGatherStockReply.Reject(query, "DAD is disabled.");
+        return TryRequest<DadGatherStockQuery, DadGatherStockReply>(participant.WorkerSessionId,
+            MessageGatherStockQuery, query, $"gather-stock:{participant.WorkerSessionId.Value}:{query.RequestId}");
     }
 
     public DadClaimDecisionDto? RequestClaim(DadParticipantSnapshot participant, DadClaimRequestDto request)
@@ -1788,6 +1804,7 @@ public sealed class DadTransportService : IDisposable
             MessageWakeRequest => DadIpcJson.Serialize(HandleWakeRequest(context, payloadJson)),
             MessageWakeTakeoverRequest => DadIpcJson.Serialize(HandleWakeTakeoverRequest(context, payloadJson)),
             MessageRouletteRewardProbe => DadIpcJson.Serialize(HandleRouletteRewardProbe(context, payloadJson)),
+            MessageGatherStockQuery => DadIpcJson.Serialize(HandleGatherStockQuery(context, payloadJson)),
             MessageClaimRequest => DadIpcJson.Serialize(HandleClaimRequest(context, payloadJson)),
             MessageAssemblyInstruction => DadIpcJson.Serialize(HandleAssemblyInstruction(context, payloadJson)),
             MessageAllianceRecruitmentInstruction => DadIpcJson.Serialize(HandleAllianceRecruitmentInstruction(context, payloadJson)),
@@ -1874,6 +1891,17 @@ public sealed class DadTransportService : IDisposable
         }
 
         return rouletteRewardProbeService.Handle(request);
+    }
+
+    private DadGatherStockReply HandleGatherStockQuery(DadInboundRequestContext context, string payloadJson)
+    {
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadGatherStockQuery? query, out var reason) || query == null)
+            return DadGatherStockReply.Reject(new(), $"Malformed gathering stock query: {reason}");
+        if (!IsAuthenticatedCoordinator(context) || !SameWorker(query.WorkerSessionId, presenceService.WorkerSessionId))
+            return DadGatherStockReply.Reject(query, "Gathering stock query authority or target does not match the authenticated route.");
+        if (!remoteMutationsAllowed)
+            return DadGatherStockReply.Reject(query, BuildRemoteMutationRejectedReason("gathering stock query"));
+        return gatherStockHandler?.Invoke(query) ?? DadGatherStockReply.Reject(query, "Gathering stock handler is unavailable; update this DAD worker.");
     }
 
     private void RefreshLocalMutationState()

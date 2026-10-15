@@ -14,6 +14,7 @@ public sealed class DadQueueExecutionService
     private readonly DadBlundervilleExecutor blundervilleExecutor;
     private readonly DadMogtomeExecutor mogtomeExecutor;
     private readonly DadLootGoblinExecutor lootGoblinExecutor;
+    private readonly DadGatherPartyExecutor gatherPartyExecutor;
     private readonly DadCommendationExecutor commendationExecutor;
     private readonly DadAstropeExecutor astropeExecutor;
     private readonly DadCustomDutyExecutor customDutyExecutor;
@@ -21,6 +22,7 @@ public sealed class DadQueueExecutionService
     private readonly DadVariantVvdExecutor variantVvdExecutor;
     private IDadModuleExecutor? activeExecutor;
     private DadModuleId activeReportedModuleId = DadModuleId.None;
+    public bool HasOwnedGatheringWork => gatherPartyExecutor.HasOwnedWork;
 
     public DadQueueExecutionService(
         DadModuleRegistry moduleRegistry,
@@ -30,7 +32,8 @@ public sealed class DadQueueExecutionService
         IDadLocalDutyQueueGateway localDutyQueueService,
         IDadNpcDutyQueueGateway npcDutyQueueService,
         DadDutySupportAdsService dutySupportAdsService,
-        DadCombatRotationService combatRotationService)
+        DadCombatRotationService combatRotationService,
+        IDadGatherClientService? gatherBuddyService = null)
     {
         this.localDutyQueueService = localDutyQueueService;
         localDutyExecutor = new DadLocalDutyExecutor(localDutyQueueService, combatRotationService);
@@ -72,6 +75,7 @@ public sealed class DadQueueExecutionService
                  ?? moduleRegistry.GetCapability(DadModuleId.Blunderville).Notes);
         mogtomeExecutor = new DadMogtomeExecutor(mogtomeIpcService);
         lootGoblinExecutor = new DadLootGoblinExecutor(lootGoblinIpcService);
+        gatherPartyExecutor = new(gatherBuddyService);
         commendationExecutor = new DadCommendationExecutor(
             moduleRegistry,
             _ => dutyQueueService.DescribeCommendationExecutionDeferral());
@@ -158,7 +162,8 @@ public sealed class DadQueueExecutionService
         => NormalizeReportedModule(activeExecutor?.Update() ?? new DadRunStepResultDto());
 
     public DadRunStepResultDto CancelActiveExecutor(string reason)
-        => NormalizeReportedModule(activeExecutor?.Cancel(reason) ?? new DadRunStepResultDto());
+        => NormalizeReportedModule(activeExecutor?.Cancel(reason) ??
+            (gatherPartyExecutor.HasOwnedWork ? gatherPartyExecutor.Cancel(reason) : new DadRunStepResultDto()));
 
     public DadRunStepResultDto CancelAll(string reason)
     {
@@ -267,6 +272,7 @@ public sealed class DadQueueExecutionService
             DadModuleId.Blunderville => blundervilleExecutor,
             DadModuleId.Mogtome => mogtomeExecutor,
             DadModuleId.LootGoblin => lootGoblinExecutor,
+            DadModuleId.GatherParty => gatherPartyExecutor,
             DadModuleId.Commendation => commendationExecutor,
             DadModuleId.Astrope => astropeExecutor,
             DadModuleId.CustomDuty => customDutyExecutor,

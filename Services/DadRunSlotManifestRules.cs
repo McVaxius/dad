@@ -297,7 +297,8 @@ internal static class DadRunSlotManifestRules
 
             slot.WorkerSessionId = session;
             if (!slot.RequiredJobId.HasValue &&
-                !TryFreezeLiveAnyJob(slot, selected, out blocker))
+                !TryFreezeLiveAnyJob(slot, selected, out blocker,
+                    freezeCombatJob: !source.Modules.Any(module => module.ModuleId == DadModuleId.GatherParty)))
             {
                 return false;
             }
@@ -309,7 +310,8 @@ internal static class DadRunSlotManifestRules
     private static bool TryFreezeLiveAnyJob(
         DadFrozenRunSlot slot,
         DadParticipantSnapshot participant,
-        out string blocker)
+        out string blocker,
+        bool freezeCombatJob = true)
     {
         blocker = string.Empty;
         if (!Same(participant.ManagedAccountKey.Value, slot.AccountKey.Value) ||
@@ -334,6 +336,8 @@ internal static class DadRunSlotManifestRules
                 $"{slot.SlotId} Any job requires one current world-ready live snapshot for '{slot.CharacterKey}'.",
                 out blocker);
         }
+
+        if (!freezeCombatJob) return true;
 
         if (!participant.Character.CurrentJobId.HasValue)
         {
@@ -582,6 +586,14 @@ internal static class DadRunSlotManifestRules
                 break;
             case DadModuleId.LootGoblin when request.LootGoblin != null:
                 expectedPartySize = Math.Clamp(request.LootGoblin.ExpectedPartySize, 1, 8);
+                break;
+            case DadModuleId.GatherParty when request.GatherParty != null:
+                if (request.GetConfiguredTaskCount() != 1 || !DadGatherPartyPlanningRules.TryValidateTask(request.GatherParty, out blocker))
+                    return false;
+                if (request.Orchestration.RequiredRosterCharacters.Any(reference => reference.RequiredJobId.HasValue ||
+                        !string.IsNullOrWhiteSpace(reference.SharedIdentityToken)))
+                    return Fail("Gathering requires direct DAD workers with no fixed combat-job assignment.", out blocker);
+                expectedPartySize = request.Orchestration.RosterIntent.ExpectedPartySize;
                 break;
             default:
                 blocker = $"Module '{module.ModuleId}' does not have one matching request payload.";

@@ -90,6 +90,7 @@ public enum DadPlannerActivityMode
     Squadron = 14,
     VariantVvd = 15,
     LootGoblin = 16,
+    GatherParty = 17,
 }
 
 public enum DadPlannerRunFamily
@@ -388,6 +389,7 @@ public sealed class DadPresetPlannerOptions
     };
     public string MogtomePreset { get; set; } = "Daily MSQ";
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
+    public DadGatherPartyTask GatherParty { get; set; } = new();
     public bool RefreshTrustNpcLevels { get; set; } = true;
     public DadRunStopPolicy StopPolicy { get; set; } = new();
     public DadCompletionActions? CompletionActions { get; set; }
@@ -419,6 +421,7 @@ public sealed class DadPlannerGroup
     };
     public string MogtomePreset { get; set; } = "Daily MSQ";
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
+    public DadGatherPartyTask GatherParty { get; set; } = new();
     public bool RefreshTrustNpcLevels { get; set; } = true;
     public DadRunStopPolicy StopPolicy { get; set; } = new();
     public DadLevelingModeOptions LevelingMode { get; set; } = new();

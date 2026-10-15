@@ -38,6 +38,7 @@ public static class DadSchedulerGroupCloneRules
             RouletteTarget = source.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            GatherParty = source.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
             LevelingMode = source.LevelingMode?.Clone() ?? new DadLevelingModeOptions(),

@@ -227,6 +227,22 @@ The proposed in-plugin DAD Hub/community integration is also future design work.
 7. To build or edit a schedule, return to `/dad wizard` and open **Build a Schedule**. Leave **Create a new schedule** unchecked and choose an **Existing schedule** to edit, or check it to create one. Arrange saved presets and repeat counts, choose manual or daily cadence, resolve blockers, and use **Run dry-run** to validate before finishing.
 8. To attach shopping, first prepare the shopping preset in ADS. Use the wizard's **Plan** or **Schedules** button and select the saved Plan or Schedule. Under **ADS SHOPPING**, use **Refresh ADS presets**, choose the **ADS preset** and **Exact shopper**, then **Add association** or **Save association**. A schedule's shopper must be the same exact primary account/character in every referenced Plan. **Preview only** uses the current client's character and does not purchase items.
 
+## Gathering materials with connected clients
+
+Choose **GBR Gather Party** in the preset activity dropdown and select the directly connected DAD clients to use.
+Import a GBR export or Teamcraft quantity-first text, or add materials from the searchable picker. Set the desired
+combined quantity on each row, then **Refresh carried stock** to see stock, remaining quantity and each client's share.
+Only carried inventory counts. **Even split** clears edited shares; **Clear list** removes all targets. Review the
+allocations before Start: Start reads fresh stock again, then freezes each client's order. Clients work independently;
+there is no party formation, combat preparation, automatic redistribution or replay. Supported timed nodes may wait.
+
+Each client needs compatible GatherBuddyReborn IPC v2, a valid MIN/BTN gathering location and its normal gathering
+prerequisites. Stop independently running GBR before Start. DAD restores only the list selections it changed and
+requires real carried counts before completion. A disconnected worker's share stays unfinished. If the coordinator
+disappears, already dispatched clients can finish only their own shares. Failed owned cleanup stays visible; review
+the error and use another explicit Stop before starting new work. Registered-island gathering is unsupported.
+The current build has synthetic lifecycle verification; actual GBR, timed-node and game UI acceptance remain pending.
+
 ## Useful Commands
 
 | Command | Action |

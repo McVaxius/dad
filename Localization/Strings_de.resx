@@ -8668,4 +8668,126 @@ Nur</value>
   <data name="I536.0" xml:space="preserve"><value>Titelzeilenstatus anzeigen</value></data>
   <data name="I536.1" xml:space="preserve"><value>Ausführlicher Titelzeilenstatus</value></data>
   <data name="I536.6" xml:space="preserve"><value>Gruppe bereit</value></data>
+  <data name="gather_000" xml:space="preserve"><value>GBR-Sammelgruppe</value></data>
+  <data name="gather_001" xml:space="preserve"><value>Sammelliste</value></data>
+  <data name="gather_002" xml:space="preserve"><value>Zielmengen gelten für das gemeinsame Charakterinventar. Andere Lager zählen nicht.</value></data>
+  <data name="gather_003" xml:space="preserve"><value>GBR oder Teamcraft importieren</value></data>
+  <data name="gather_004" xml:space="preserve"><value>Sammelliste importieren</value></data>
+  <data name="gather_005" xml:space="preserve"><value>Sammelliste importiert. Ziele vor dem Start prüfen.</value></data>
+  <data name="gather_006" xml:space="preserve"><value>Material hinzufügen</value></data>
+  <data name="gather_007" xml:space="preserve"><value>Material wählen</value></data>
+  <data name="gather_008" xml:space="preserve"><value>Liste leeren</value></data>
+  <data name="gather_009" xml:space="preserve"><value>Inventar aktualisieren</value></data>
+  <data name="gather_010" xml:space="preserve"><value>Gleichmäßig verteilen</value></data>
+  <data name="gather_011" xml:space="preserve"><value>Gegenstand</value></data>
+  <data name="gather_012" xml:space="preserve"><value>Vorhanden</value></data>
+  <data name="gather_013" xml:space="preserve"><value>Verbleibend</value></data>
+  <data name="gather_014" xml:space="preserve"><value>Material entfernen</value></data>
+  <data name="gather_015" xml:space="preserve"><value>Sammelgegenstand suchen</value></data>
+  <data name="gather_016" xml:space="preserve"><value>Inventar aktualisieren, um feste Zuteilungen anzuzeigen.</value></data>
+  <data name="gather_017" xml:space="preserve"><value>Direkt verbundene DAD-Clients wählen, um den Bestand zu lesen.</value></data>
+  <data name="gather_018" xml:space="preserve"><value>Inventar und Sammelberechtigung der gewählten Clients werden gelesen.</value></data>
+  <data name="gather_019" xml:space="preserve"><value>Feste Zuteilungen sind bereit. Start prüft den aktuellen Bestand erneut.</value></data>
+  <data name="gather_020" xml:space="preserve"><value>Stoppt, wenn alle festen Sammelaufträge und gemeinsamen Inventarziele erfüllt sind.</value></data>
+  <data name="gather_021" xml:space="preserve"><value>Feste Zuteilung wird gesammelt.</value></data>
+  <data name="gather_022" xml:space="preserve"><value>Dieser Client muss nichts mehr sammeln.</value></data>
+  <data name="gather_023" xml:space="preserve"><value>Sammelauftrag abgeschlossen und Inventar geprüft.</value></data>
+  <data name="gather_024" xml:space="preserve"><value>GBR stoppte vor Erreichen der festen Inventarziele.</value></data>
+  <data name="gather_025" xml:space="preserve"><value>Sammeln abgebrochen.</value></data>
+  <data name="gather_026" xml:space="preserve"><value>Sammelclients: {0}/{1} abgeschlossen.</value></data>
+  <data name="gather_027" xml:space="preserve"><value>Warten auf Sammelstellen ({0}/{1}).</value></data>
+  <data name="gather_028" xml:space="preserve"><value>Feste Zuteilung sammeln ({0}/{1}).</value></data>
+  <data name="gather_029" xml:space="preserve"><value>Gegenstands-ID: {0}; bevorzugter Sammelort: {1}</value></data>
+  <data name="gather_030" xml:space="preserve"><value>Inventarbestand: {0}; GBR-Ziel: {1}</value></data>
+  <data name="gather_031" xml:space="preserve"><value>Feste MIN/BTN-Zuteilungen aus dem gemeinsamen Inventarziel. Clients sammeln unabhängig.</value></data>
+  <data name="gather_032" xml:space="preserve"><value>Native Sammlung</value></data>
+  <data name="gather_033" xml:space="preserve"><value>Materialien importieren oder bearbeiten, Bestand aktualisieren, feste Zuteilungen prüfen, dann starten.</value></data>
+  <data name="gather_034" xml:space="preserve"><value>Unabhängige MIN/BTN-Clients sammeln feste Inventarmengen über DAD-eigene GBR-Listen.</value></data>
+  <data name="gather_035" xml:space="preserve"><value>Sammelclients arbeiten unabhängig; keine Gruppenbildung erforderlich.</value></data>
+  <data name="gather_036" xml:space="preserve"><value>Sammelclients bereit; Inventarbestand und feste Zuteilungen werden geprüft.</value></data>
+  <data name="gather_037" xml:space="preserve"><value>Gemeinsamen Inventarendbestand nach Bereinigung der DAD-eigenen GBR-Arbeit prüfen.</value></data>
+  <data name="gather_038" xml:space="preserve"><value>Der gemeinsame Inventarendbestand erreicht die Sammelziele nicht. Feste Anteile werden nicht neu verteilt.</value></data>
+  <data name="gather_039" xml:space="preserve"><value>Inventarbestand seit Planung geändert. Plan aktualisieren.</value></data>
+  <data name="gather_040" xml:space="preserve"><value>Inventar kann nicht gelesen werden.</value></data>
+  <data name="gather_041" xml:space="preserve"><value>Mindestens ein gültiges Sammelziel innerhalb des Artikellimits aktivieren.</value></data>
+  <data name="gather_042" xml:space="preserve"><value>Sammelziele brauchen eindeutige Artikel-/Zeilen-IDs und Mengen von 1 bis 999999.</value></data>
+  <data name="gather_043" xml:space="preserve"><value>Mindestens einen verbundenen Sammelclient auswählen.</value></data>
+  <data name="gather_044" xml:space="preserve"><value>Ein ausgewählter Sammelclient hat unvollständige Identitätsdaten.</value></data>
+  <data name="gather_045" xml:space="preserve"><value>Sammelclients brauchen eindeutige Plätze, Sitzungen, Charaktere und Konten.</value></data>
+  <data name="gather_046" xml:space="preserve"><value>Sammelclient {0} ist nicht verfügbar oder sein Inventar ist nicht lesbar.</value></data>
+  <data name="gather_047" xml:space="preserve"><value>Eine bearbeitete Zuteilung ist ungültig, doppelt oder verweist auf fehlenden Client/Ziel.</value></data>
+  <data name="gather_048" xml:space="preserve"><value>Inventarbestand für Artikel {0} ist ungültig.</value></data>
+  <data name="gather_049" xml:space="preserve"><value>Client {0} kann Artikel {1} nicht sammeln.</value></data>
+  <data name="gather_050" xml:space="preserve"><value>Bearbeitete Anteile für Artikel {0} müssen die aktuelle Fehlmenge {1} ergeben.</value></data>
+  <data name="gather_051" xml:space="preserve"><value>Kein ausgewählter Client kann Artikel {0} sammeln.</value></data>
+  <data name="gather_052" xml:space="preserve"><value>Natives GBR-Ziel für Client {0}, Artikel {1}, überschreitet 999999.</value></data>
+  <data name="gather_053" xml:space="preserve"><value>Sammlung braucht gültige Materialien und ausgewählte Clients innerhalb des DAD-Platzlimits.</value></data>
+  <data name="gather_054" xml:space="preserve"><value>Zeitüberschreitung der Bestandsabfrage. Prüfen, ob alle ausgewählten DAD-Clients Sammlung unterstützen und verbunden sind.</value></data>
+  <data name="gather_055" xml:space="preserve"><value>Bestandsantwort stimmt nicht mit aktueller Anfrage/Clientidentität überein.</value></data>
+  <data name="gather_056" xml:space="preserve"><value>Sammelbestand nicht verfügbar oder unvollständig.</value></data>
+  <data name="gather_057" xml:space="preserve"><value>Sammlung erfordert genau eine lokale Clientzuweisung.</value></data>
+  <data name="gather_058" xml:space="preserve"><value>Eine DAD-eigene Sammlung muss noch bereinigt werden.</value></data>
+  <data name="gather_059" xml:space="preserve"><value>GBR-Sammlung auf diesem Client nicht verfügbar.</value></data>
+  <data name="gather_060" xml:space="preserve"><value>Bereit, die endliche Zuteilung dieses Clients zu sammeln.</value></data>
+  <data name="gather_061" xml:space="preserve"><value>Sammlung erfordert GBR IPC v2.</value></data>
+  <data name="gather_062" xml:space="preserve"><value>Die geladene GBR-Plugininstanz ist nicht verfügbar.</value></data>
+  <data name="gather_063" xml:space="preserve"><value>GBR-Sammlung nicht verfügbar: {0}</value></data>
+  <data name="gather_064" xml:space="preserve"><value>GBR läuft bereits unabhängig.</value></data>
+  <data name="gather_065" xml:space="preserve"><value>GBR läuft bereits unabhängig. Vor dem Start der DAD-Sammlung stoppen.</value></data>
+  <data name="gather_066" xml:space="preserve"><value>Inventar ist noch nicht bereit.</value></data>
+  <data name="gather_067" xml:space="preserve"><value>Sammelbestandsabfrage ist unvollständig oder veraltet.</value></data>
+  <data name="gather_068" xml:space="preserve"><value>Bestandsabfrage passt zu keinem bereiten lokalen Client/Konto/Charakter.</value></data>
+  <data name="gather_069" xml:space="preserve"><value>Bereinigung der DAD-eigenen GBR-Arbeit ungeklärt. Fehler vor erneutem Alle stoppen prüfen.</value></data>
+  <data name="gather_070" xml:space="preserve"><value>Sammelexport mit höchstens 1 MiB einfügen.</value></data>
+  <data name="gather_071" xml:space="preserve"><value>Der Export enthält keine Sammelziele.</value></data>
+  <data name="gather_072" xml:space="preserve"><value>Artikel unbekannt oder keiner sammelbaren Artikel-ID zuordenbar.</value></data>
+  <data name="gather_073" xml:space="preserve"><value>Sammelmengen müssen zwischen 1 und 999999 liegen.</value></data>
+  <data name="gather_074" xml:space="preserve"><value>Erwartet: Artikel-ID/Menge oder Teamcraft-Zeile mit Menge zuerst.</value></data>
+  <data name="gather_075" xml:space="preserve"><value>Gesamtmenge für Artikel {0} muss zwischen 1 und 999999 liegen.</value></data>
+  <data name="gather_076" xml:space="preserve"><value>GBR-Artikel {0} kommt mehrfach vor.</value></data>
+  <data name="gather_077" xml:space="preserve"><value>Importierte Sammelliste</value></data>
+  <data name="gather_078" xml:space="preserve"><value>Der Sammelexport überschreitet das Artikellimit.</value></data>
+  <data name="gather_079" xml:space="preserve"><value>GBR-Export ungültig: {0}</value></data>
+  <data name="gather_080" xml:space="preserve"><value>Nicht unterstützte GBR-Listenversion.</value></data>
+  <data name="gather_081" xml:space="preserve"><value>Die entpackte GBR-Liste überschreitet 1 MiB.</value></data>
+  <data name="gather_082" xml:space="preserve"><value>GBR-Artikel, Mengen oder bevorzugte Orte fehlen.</value></data>
+  <data name="gather_083" xml:space="preserve"><value>Die GBR-Liste überschreitet das Artikellimit.</value></data>
+  <data name="gather_084" xml:space="preserve"><value>Sammlung muss die einzige Aufgabe des Laufs sein.</value></data>
+  <data name="gather_085" xml:space="preserve"><value>Sammlung überschreitet DADs Clientlimit.</value></data>
+  <data name="gather_086" xml:space="preserve"><value>Sammlung erfordert direkte DAD-Clients ohne festgelegten Kampfjob.</value></data>
+  <data name="gather_087" xml:space="preserve"><value>GBR-Sammelgruppe „{0}“ mit {1} unabhängigen Clients</value></data>
+  <data name="gather_088" xml:space="preserve"><value>{0} Bereinigung der DAD-eigenen GBR-Arbeit ungeklärt: {1}</value></data>
+  <data name="gather_089" xml:space="preserve"><value>{0} Bereinigung der DAD-eigenen GBR-Arbeit ungeklärt. Fehler vor erneutem Alle stoppen prüfen.</value></data>
+  <data name="gather_090" xml:space="preserve"><value>Sammelaufträge erfordern Worker-Befehlsschema 4.</value></data>
+  <data name="gather_091" xml:space="preserve"><value>Sammelaufträge erfordern eine Sammelaufgabe.</value></data>
+  <data name="gather_092" xml:space="preserve"><value>Aktive GBR-Liste passt nicht mehr zum DAD-Auftrag.</value></data>
+  <data name="gather_093" xml:space="preserve"><value>GBR-Inventarmenge ungültig.</value></data>
+  <data name="gather_094" xml:space="preserve"><value>Artikel {0} hat keinen unterstützten MIN/BTN-Sammelort.</value></data>
+  <data name="gather_095" xml:space="preserve"><value>Sammlung erfordert eine Laufkennung.</value></data>
+  <data name="gather_096" xml:space="preserve"><value>Sammlung erfordert gültige Artikelaufträge.</value></data>
+  <data name="gather_097" xml:space="preserve"><value>GBR hat bereits eine DAD-eigene oder ungeklärte Sammlung.</value></data>
+  <data name="gather_098" xml:space="preserve"><value>Dieser GBR-Sammelversuch ist beendet; keine Wiederholung.</value></data>
+  <data name="gather_099" xml:space="preserve"><value>GBR-Auftrag enthält ungültige oder gemischte Clientzuweisungen.</value></data>
+  <data name="gather_100" xml:space="preserve"><value>GBR-Liste konnte nicht erstellt werden.</value></data>
+  <data name="gather_101" xml:space="preserve"><value>Inventarbestand für Artikel {0} geändert. Plan aktualisieren.</value></data>
+  <data name="gather_102" xml:space="preserve"><value>GBR hat Artikel {0} nicht zur DAD-eigenen Liste hinzugefügt.</value></data>
+  <data name="gather_103" xml:space="preserve"><value>Bevorzugter GBR-Ort {0} nicht verfügbar.</value></data>
+  <data name="gather_104" xml:space="preserve"><value>GBR hat bevorzugten Ort {0} nicht angenommen.</value></data>
+  <data name="gather_105" xml:space="preserve"><value>Aktive GBR-Artikel passen nicht exakt zum DAD-Auftrag.</value></data>
+  <data name="gather_106" xml:space="preserve"><value>GBR hat DAD-eigenen Sammelauftrag nicht aktiviert.</value></data>
+  <data name="gather_107" xml:space="preserve"><value>Stopp passt nicht zum DAD-eigenen GBR-Lauf.</value></data>
+  <data name="gather_108" xml:space="preserve"><value>GBR hat DAD-eigenen Sammelauftrag nicht deaktiviert.</value></data>
+  <data name="gather_109" xml:space="preserve"><value>GBR-Datenstruktur aktiver Artikel geändert.</value></data>
+  <data name="gather_110" xml:space="preserve"><value>GBR hat kein MIN/BTN-Sammelobjekt für Artikel {0}.</value></data>
+  <data name="gather_111" xml:space="preserve"><value>GBR-Plugininstanz geändert; keine Aktion an den Ersatz gesendet.</value></data>
+  <data name="gather_112" xml:space="preserve"><value>GBR-Member {0} nicht verfügbar.</value></data>
+  <data name="gather_113" xml:space="preserve"><value>Sammlung erfordert eine endliche Aufgabe und gültige direkt verbundene Clients.</value></data>
+  <data name="gather_114" xml:space="preserve"><value>Exakte eingefrorene Artikel-/Clientzuteilung fehlt.</value></data>
+  <data name="gather_115" xml:space="preserve"><value>Sammelaufträge passen nicht zu eingefrorenem Konto/Charakter/Sitzung/Platz und Materialzielen.</value></data>
+  <data name="gather_116" xml:space="preserve"><value>Sammelanteile ergeben nicht die eingefrorene gemeinsame Fehlmenge.</value></data>
+  <data name="gather_117" xml:space="preserve"><value>Dieser Sammelclient hat bereits einen anderen festen Auftrag.</value></data>
+  <data name="gather_118" xml:space="preserve"><value>Ein Sammelclient benötigt eine gültige feste Client-/Artikelzuweisung.</value></data>
+  <data name="gather_119" xml:space="preserve"><value>Sammelaufträge fehlen oder überschreiten das Auftragslimit.</value></data>
+  <data name="gather_120" xml:space="preserve"><value>Sammlung erfordert das exakte Sammelmodul und Clientzuweisungen.</value></data>
+  <data name="gather_121" xml:space="preserve"><value>GBR-Sammelgruppe</value></data>
 </root>

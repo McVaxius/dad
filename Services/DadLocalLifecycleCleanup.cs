@@ -37,11 +37,17 @@ internal sealed class DadLocalLifecycleCleanup(
                 var scheduler = SchedulerService.StopAll(reason, suppression);
                 AutoPartyService?.StopAll(reason);
                 AlliancePartyFinderService?.Stop(reason);
+                var ownedGatheringWork = QueueExecutionService.HasOwnedGatheringWork;
                 RunCoordinatorService.CancelAllLocal(reason);
                 wake = WakeTakeoverService.StopAll(reason);
                 ClaimService.ReleaseAllClaims();
-                WorkerExecutionService.CancelAll(reason);
-                QueueExecutionService.CancelAll(reason);
+                // Coordinator cleanup already invoked this owned gathering worker's Stop once.
+                // Retained ownership means failure, not permission for another native submission.
+                if (!ownedGatheringWork)
+                {
+                    WorkerExecutionService.CancelAll(reason);
+                    QueueExecutionService.CancelAll(reason);
+                }
                 CancelDutyBridge?.Invoke(reason);
                 PresenceService.ResetToIdle();
                 result = new DadStopAllWorkerResult
@@ -61,19 +67,22 @@ internal sealed class DadLocalLifecycleCleanup(
             }
 
             result.UpdatedAtUtc = DadClock.UtcNow;
-            result.LocalCleanupCompleted = !wake.CleanupPending;
-            result.State = wake.CleanupPending
+            var gatherCleanupUnresolved = QueueExecutionService.HasOwnedGatheringWork;
+            result.LocalCleanupCompleted = !wake.CleanupPending && !gatherCleanupUnresolved;
+            result.State = gatherCleanupUnresolved ? DadStopAllWorkerState.Rejected : wake.CleanupPending
                 ? DadStopAllWorkerState.Expected
                 : DadStopAllWorkerState.Acknowledged;
             result.CancelledWakeTakeovers = Math.Max(result.CancelledWakeTakeovers, wake.CancelledCount);
             result.PreservedCommittedTakeovers = Math.Max(
                 result.PreservedCommittedTakeovers,
                 wake.PreservedCommittedCount);
-            result.Partial = result.PreservedCommittedTakeovers > 0;
+            result.Partial = result.PreservedCommittedTakeovers > 0 || gatherCleanupUnresolved;
             var summary = hasRecordedResult
                 ? result.Summary
                 : $"{result.Summary} {wake.Summary}";
             result.Summary = WithStopAllCleanupState(summary, wake.CleanupPending);
+            if (gatherCleanupUnresolved)
+                result.Summary += " Owned GBR cleanup remains unresolved. Review the error before another explicit Stop All.";
             DadStopAllStatusRules.NormalizeLocalResult(result);
             localStopAllResults[request.OperationId] = result.Clone();
             while (localStopAllResults.Count > 32)

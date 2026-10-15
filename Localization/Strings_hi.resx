@@ -8665,4 +8665,126 @@
   <data name="I536.0" xml:space="preserve"><value>शीर्षक पट्टी की स्थिति दिखाएँ</value></data>
   <data name="I536.1" xml:space="preserve"><value>शीर्षक पट्टी की विस्तृत स्थिति</value></data>
   <data name="I536.6" xml:space="preserve"><value>समूह तैयार</value></data>
+  <data name="gather_000" xml:space="preserve"><value>GBR संग्रह समूह</value></data>
+  <data name="gather_001" xml:space="preserve"><value>संग्रह सूची</value></data>
+  <data name="gather_002" xml:space="preserve"><value>लक्षित मात्रा चुने गए पात्रों की साथ रखी वस्तुओं का कुल योग है। अन्य भंडार नहीं गिने जाते।</value></data>
+  <data name="gather_003" xml:space="preserve"><value>GBR या Teamcraft आयात करें</value></data>
+  <data name="gather_004" xml:space="preserve"><value>संग्रह सूची आयात करें</value></data>
+  <data name="gather_005" xml:space="preserve"><value>सूची आयात हुई। शुरू करने से पहले लक्ष्य जाँचें।</value></data>
+  <data name="gather_006" xml:space="preserve"><value>सामग्री जोड़ें</value></data>
+  <data name="gather_007" xml:space="preserve"><value>सामग्री चुनें</value></data>
+  <data name="gather_008" xml:space="preserve"><value>सूची साफ़ करें</value></data>
+  <data name="gather_009" xml:space="preserve"><value>साथ रखा भंडार ताज़ा करें</value></data>
+  <data name="gather_010" xml:space="preserve"><value>बराबर बाँटें</value></data>
+  <data name="gather_011" xml:space="preserve"><value>वस्तु</value></data>
+  <data name="gather_012" xml:space="preserve"><value>उपलब्ध</value></data>
+  <data name="gather_013" xml:space="preserve"><value>शेष</value></data>
+  <data name="gather_014" xml:space="preserve"><value>सामग्री हटाएँ</value></data>
+  <data name="gather_015" xml:space="preserve"><value>संग्रह योग्य सामग्री खोजें</value></data>
+  <data name="gather_016" xml:space="preserve"><value>निश्चित आवंटन देखने के लिए साथ रखा भंडार ताज़ा करें।</value></data>
+  <data name="gather_017" xml:space="preserve"><value>भंडार पढ़ने के लिए सीधे जुड़े DAD क्लाइंट चुनें।</value></data>
+  <data name="gather_018" xml:space="preserve"><value>चुने गए क्लाइंट का साथ रखा भंडार और संग्रह क्षमता पढ़ी जा रही है।</value></data>
+  <data name="gather_019" xml:space="preserve"><value>निश्चित आवंटन तैयार हैं। शुरू करते समय वर्तमान भंडार फिर जाँचा जाएगा।</value></data>
+  <data name="gather_020" xml:space="preserve"><value>सभी निश्चित आवंटन और कुल साथ रखे भंडार के लक्ष्य पूरे होने पर रुकता है।</value></data>
+  <data name="gather_021" xml:space="preserve"><value>निश्चित आवंटन एकत्र किया जा रहा है।</value></data>
+  <data name="gather_022" xml:space="preserve"><value>इस क्लाइंट को संग्रह करने की आवश्यकता नहीं है।</value></data>
+  <data name="gather_023" xml:space="preserve"><value>आवंटन पूरा हुआ और साथ रखे भंडार की पुष्टि हुई।</value></data>
+  <data name="gather_024" xml:space="preserve"><value>निश्चित भंडार लक्ष्य पूरे होने से पहले GBR रुक गया।</value></data>
+  <data name="gather_025" xml:space="preserve"><value>संग्रह रद्द किया गया।</value></data>
+  <data name="gather_026" xml:space="preserve"><value>संग्रह क्लाइंट: {0}/{1} पूरे।</value></data>
+  <data name="gather_027" xml:space="preserve"><value>संग्रह स्थलों की प्रतीक्षा ({0}/{1})।</value></data>
+  <data name="gather_028" xml:space="preserve"><value>निश्चित आवंटन का संग्रह ({0}/{1})।</value></data>
+  <data name="gather_029" xml:space="preserve"><value>वस्तु ID: {0}; पसंदीदा संग्रह स्थान: {1}</value></data>
+  <data name="gather_030" xml:space="preserve"><value>साथ रखा भंडार: {0}; GBR लक्ष्य: {1}</value></data>
+  <data name="gather_031" xml:space="preserve"><value>साथ रखे सामान के संयुक्त लक्ष्य से तय MIN/BTN आवंटन। क्लाइंट स्वतंत्र रूप से संग्रह करते हैं।</value></data>
+  <data name="gather_032" xml:space="preserve"><value>मूल संग्रह</value></data>
+  <data name="gather_033" xml:space="preserve"><value>सामग्री आयात या संपादित करें, स्टॉक ताज़ा करें, तय आवंटन जाँचें और शुरू करें।</value></data>
+  <data name="gather_034" xml:space="preserve"><value>स्वतंत्र MIN/BTN क्लाइंट DAD की GBR सूचियों से साथ रखे सामान का तय आवंटन पूरा करते हैं।</value></data>
+  <data name="gather_035" xml:space="preserve"><value>संग्रह क्लाइंट स्वतंत्र रूप से चलते हैं; पार्टी बनाना आवश्यक नहीं।</value></data>
+  <data name="gather_036" xml:space="preserve"><value>संग्रह क्लाइंट तैयार हैं; साथ रखे स्टॉक और तय आवंटन की जाँच हो रही है।</value></data>
+  <data name="gather_037" xml:space="preserve"><value>DAD की GBR प्रक्रिया साफ़ करने के बाद अंतिम संयुक्त स्टॉक की पुष्टि हो रही है।</value></data>
+  <data name="gather_038" xml:space="preserve"><value>अंतिम संयुक्त स्टॉक संग्रह लक्ष्य तक नहीं पहुँचा। तय हिस्से दोबारा नहीं बाँटे जाएँगे।</value></data>
+  <data name="gather_039" xml:space="preserve"><value>योजना के बाद साथ रखा स्टॉक बदल गया। योजना ताज़ा करें।</value></data>
+  <data name="gather_040" xml:space="preserve"><value>साथ रखी इन्वेंटरी पढ़ी नहीं जा सकती।</value></data>
+  <data name="gather_041" xml:space="preserve"><value>वस्तु सीमा के भीतर कम से कम एक मान्य संग्रह लक्ष्य चालू करें।</value></data>
+  <data name="gather_042" xml:space="preserve"><value>लक्ष्यों के वस्तु/पंक्ति ID अलग हों और मात्रा 1 से 999999 तक हो।</value></data>
+  <data name="gather_043" xml:space="preserve"><value>कम से कम एक जुड़ा संग्रह क्लाइंट चुनें।</value></data>
+  <data name="gather_044" xml:space="preserve"><value>चुने हुए संग्रह क्लाइंट की पहचान अधूरी है।</value></data>
+  <data name="gather_045" xml:space="preserve"><value>संग्रह क्लाइंट के स्लॉट, सत्र, पात्र और खाते अलग होने चाहिए।</value></data>
+  <data name="gather_046" xml:space="preserve"><value>संग्रह क्लाइंट {0} उपलब्ध नहीं है या उसकी इन्वेंटरी पढ़ी नहीं जा सकती।</value></data>
+  <data name="gather_047" xml:space="preserve"><value>संपादित आवंटन अमान्य, दोहराया हुआ या गायब क्लाइंट/लक्ष्य से जुड़ा है।</value></data>
+  <data name="gather_048" xml:space="preserve"><value>वस्तु {0} की साथ रखी इन्वेंटरी अमान्य है।</value></data>
+  <data name="gather_049" xml:space="preserve"><value>क्लाइंट {0} वस्तु {1} संग्रह नहीं कर सकता।</value></data>
+  <data name="gather_050" xml:space="preserve"><value>वस्तु {0} के संपादित आवंटन का योग वर्तमान कमी {1} होना चाहिए।</value></data>
+  <data name="gather_051" xml:space="preserve"><value>कोई चुना हुआ क्लाइंट वस्तु {0} संग्रह नहीं कर सकता।</value></data>
+  <data name="gather_052" xml:space="preserve"><value>क्लाइंट {0}, वस्तु {1} का GBR लक्ष्य 999999 से अधिक है।</value></data>
+  <data name="gather_053" xml:space="preserve"><value>संग्रह के लिए मान्य सामग्री और DAD स्लॉट सीमा में चुने क्लाइंट चाहिए।</value></data>
+  <data name="gather_054" xml:space="preserve"><value>स्टॉक अनुरोध का समय समाप्त। जाँचें कि सभी चुने DAD क्लाइंट जुड़े हैं और संग्रह का समर्थन करते हैं।</value></data>
+  <data name="gather_055" xml:space="preserve"><value>स्टॉक उत्तर वर्तमान अनुरोध/क्लाइंट की पहचान से मेल नहीं खाता।</value></data>
+  <data name="gather_056" xml:space="preserve"><value>संग्रह स्टॉक उपलब्ध नहीं है या अधूरा है।</value></data>
+  <data name="gather_057" xml:space="preserve"><value>संग्रह के लिए एक सटीक स्थानीय क्लाइंट आवंटन चाहिए।</value></data>
+  <data name="gather_058" xml:space="preserve"><value>DAD की संग्रह प्रक्रिया अभी साफ़ करनी बाकी है।</value></data>
+  <data name="gather_059" xml:space="preserve"><value>इस क्लाइंट पर GBR संग्रह उपलब्ध नहीं है।</value></data>
+  <data name="gather_060" xml:space="preserve"><value>इस क्लाइंट का निश्चित आवंटन संग्रह करने के लिए तैयार है।</value></data>
+  <data name="gather_061" xml:space="preserve"><value>संग्रह के लिए GBR IPC v2 चाहिए।</value></data>
+  <data name="gather_062" xml:space="preserve"><value>लोड किया GBR प्लगइन उपलब्ध नहीं है।</value></data>
+  <data name="gather_063" xml:space="preserve"><value>GBR संग्रह उपलब्ध नहीं: {0}</value></data>
+  <data name="gather_064" xml:space="preserve"><value>GBR पहले से स्वतंत्र रूप से चल रहा है।</value></data>
+  <data name="gather_065" xml:space="preserve"><value>GBR पहले से स्वतंत्र चल रहा है। DAD संग्रह शुरू करने से पहले उसे रोकें।</value></data>
+  <data name="gather_066" xml:space="preserve"><value>साथ रखी इन्वेंटरी तैयार नहीं है।</value></data>
+  <data name="gather_067" xml:space="preserve"><value>संग्रह स्टॉक अनुरोध अधूरा या पुराना है।</value></data>
+  <data name="gather_068" xml:space="preserve"><value>स्टॉक अनुरोध तैयार स्थानीय क्लाइंट/खाते/पात्र से मेल नहीं खाता।</value></data>
+  <data name="gather_069" xml:space="preserve"><value>DAD की GBR प्रक्रिया की सफ़ाई अधूरी है। दोबारा सभी रोकें दबाने से पहले त्रुटि जाँचें।</value></data>
+  <data name="gather_070" xml:space="preserve"><value>अधिकतम 1 MiB का संग्रह निर्यात पेस्ट करें।</value></data>
+  <data name="gather_071" xml:space="preserve"><value>निर्यात में कोई संग्रह लक्ष्य नहीं है।</value></data>
+  <data name="gather_072" xml:space="preserve"><value>वस्तु अज्ञात है या संग्रह योग्य वस्तु ID नहीं मिला।</value></data>
+  <data name="gather_073" xml:space="preserve"><value>संग्रह मात्रा 1 से 999999 तक होनी चाहिए।</value></data>
+  <data name="gather_074" xml:space="preserve"><value>वस्तु ID/मात्रा पंक्ति या मात्रा से शुरू होने वाली Teamcraft पंक्ति चाहिए।</value></data>
+  <data name="gather_075" xml:space="preserve"><value>वस्तु {0} की कुल मात्रा 1 से 999999 तक होनी चाहिए।</value></data>
+  <data name="gather_076" xml:space="preserve"><value>GBR वस्तु {0} एक से अधिक बार है।</value></data>
+  <data name="gather_077" xml:space="preserve"><value>आयातित संग्रह सूची</value></data>
+  <data name="gather_078" xml:space="preserve"><value>संग्रह निर्यात में वस्तु सीमा पार हो गई है।</value></data>
+  <data name="gather_079" xml:space="preserve"><value>GBR निर्यात अमान्य है: {0}</value></data>
+  <data name="gather_080" xml:space="preserve"><value>GBR सूची का संस्करण समर्थित नहीं है।</value></data>
+  <data name="gather_081" xml:space="preserve"><value>खुली हुई GBR सूची 1 MiB से अधिक है।</value></data>
+  <data name="gather_082" xml:space="preserve"><value>GBR वस्तुएँ, मात्राएँ या पसंदीदा स्थान गायब हैं।</value></data>
+  <data name="gather_083" xml:space="preserve"><value>GBR सूची में वस्तु सीमा पार हो गई है।</value></data>
+  <data name="gather_084" xml:space="preserve"><value>संग्रह इस रन का एकमात्र कार्य होना चाहिए।</value></data>
+  <data name="gather_085" xml:space="preserve"><value>संग्रह में DAD की चुने क्लाइंट की सीमा पार हो गई है।</value></data>
+  <data name="gather_086" xml:space="preserve"><value>संग्रह के लिए बिना तय युद्ध जॉब वाले सीधे DAD क्लाइंट चाहिए।</value></data>
+  <data name="gather_087" xml:space="preserve"><value>GBR संग्रह समूह &apos;{0}&apos;, {1} स्वतंत्र क्लाइंट</value></data>
+  <data name="gather_088" xml:space="preserve"><value>{0} DAD की GBR प्रक्रिया की सफ़ाई अधूरी है: {1}</value></data>
+  <data name="gather_089" xml:space="preserve"><value>{0} GBR सफ़ाई अधूरी है। दोबारा सभी रोकें दबाने से पहले त्रुटि जाँचें।</value></data>
+  <data name="gather_090" xml:space="preserve"><value>संग्रह आदेशों के लिए वर्कर कमांड स्कीमा 4 चाहिए।</value></data>
+  <data name="gather_091" xml:space="preserve"><value>संग्रह आदेशों के लिए संग्रह कार्य चाहिए।</value></data>
+  <data name="gather_092" xml:space="preserve"><value>GBR की सक्रिय सूची अब DAD आदेश से मेल नहीं खाती।</value></data>
+  <data name="gather_093" xml:space="preserve"><value>GBR की साथ रखी मात्रा अमान्य है।</value></data>
+  <data name="gather_094" xml:space="preserve"><value>वस्तु {0} का समर्थित MIN/BTN संग्रह स्थान नहीं है।</value></data>
+  <data name="gather_095" xml:space="preserve"><value>संग्रह के लिए रन पहचान चाहिए।</value></data>
+  <data name="gather_096" xml:space="preserve"><value>संग्रह के लिए मान्य वस्तु आदेश चाहिए।</value></data>
+  <data name="gather_097" xml:space="preserve"><value>GBR में DAD की चालू या अनिर्णीत संग्रह प्रक्रिया है।</value></data>
+  <data name="gather_098" xml:space="preserve"><value>यह GBR संग्रह प्रयास समाप्त हो चुका है; दोहराया नहीं जाएगा।</value></data>
+  <data name="gather_099" xml:space="preserve"><value>GBR आदेश में अमान्य या मिले-जुले क्लाइंट आवंटन हैं।</value></data>
+  <data name="gather_100" xml:space="preserve"><value>GBR सूची बनाना विफल हुआ।</value></data>
+  <data name="gather_101" xml:space="preserve"><value>योजना के बाद वस्तु {0} का स्टॉक बदला। योजना ताज़ा करें।</value></data>
+  <data name="gather_102" xml:space="preserve"><value>GBR ने वस्तु {0} को DAD की सूची में नहीं जोड़ा।</value></data>
+  <data name="gather_103" xml:space="preserve"><value>पसंदीदा GBR स्थान {0} उपलब्ध नहीं है।</value></data>
+  <data name="gather_104" xml:space="preserve"><value>GBR ने पसंदीदा स्थान {0} स्वीकार नहीं किया।</value></data>
+  <data name="gather_105" xml:space="preserve"><value>GBR की सक्रिय वस्तुएँ सटीक DAD आदेश से मेल नहीं खातीं।</value></data>
+  <data name="gather_106" xml:space="preserve"><value>GBR ने DAD का संग्रह आदेश चालू नहीं किया।</value></data>
+  <data name="gather_107" xml:space="preserve"><value>रोकने का अनुरोध DAD के GBR रन से मेल नहीं खाता।</value></data>
+  <data name="gather_108" xml:space="preserve"><value>GBR ने DAD का संग्रह आदेश बंद नहीं किया।</value></data>
+  <data name="gather_109" xml:space="preserve"><value>GBR की सक्रिय वस्तु संरचना बदल गई।</value></data>
+  <data name="gather_110" xml:space="preserve"><value>GBR में वस्तु {0} के लिए MIN/BTN संग्रह डेटा नहीं है।</value></data>
+  <data name="gather_111" xml:space="preserve"><value>GBR इंस्टेंस बदल गया; नए इंस्टेंस को कार्रवाई नहीं भेजी गई।</value></data>
+  <data name="gather_112" xml:space="preserve"><value>GBR सदस्य {0} उपलब्ध नहीं है।</value></data>
+  <data name="gather_113" xml:space="preserve"><value>संग्रह के लिए एक निश्चित कार्य और मान्य सीधे जुड़े क्लाइंट चाहिए।</value></data>
+  <data name="gather_114" xml:space="preserve"><value>सटीक तय वस्तु/क्लाइंट आवंटन गायब है।</value></data>
+  <data name="gather_115" xml:space="preserve"><value>आदेश तय खाते/पात्र/सत्र/स्लॉट और सामग्री लक्ष्यों से मेल नहीं खाते।</value></data>
+  <data name="gather_116" xml:space="preserve"><value>संग्रह हिस्सों का योग तय संयुक्त स्टॉक कमी के बराबर नहीं है।</value></data>
+  <data name="gather_117" xml:space="preserve"><value>इस संग्रह क्लाइंट का पहले से दूसरा तय आदेश है।</value></data>
+  <data name="gather_118" xml:space="preserve"><value>संग्रह क्लाइंट को एक मान्य तय क्लाइंट/वस्तु आवंटन चाहिए।</value></data>
+  <data name="gather_119" xml:space="preserve"><value>संग्रह आदेश गायब हैं या निश्चित आदेश सीमा से अधिक हैं।</value></data>
+  <data name="gather_120" xml:space="preserve"><value>संग्रह के लिए सटीक संग्रह मॉड्यूल और क्लाइंट आवंटन चाहिए।</value></data>
+  <data name="gather_121" xml:space="preserve"><value>GBR संग्रह समूह</value></data>
 </root>

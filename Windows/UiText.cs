@@ -160,6 +160,9 @@ internal sealed class UiText : IDisposable
     // summary/safety getters. Counts, slot IDs and arbitrary service data stay raw.
     private static bool IsAuthoredArgument(string template, int index) => template switch
     {
+        "GBR gathering is unavailable: {0}" or "The GBR export is invalid: {0}" or
+        "{0} Owned GBR cleanup remains unresolved. Review the error before another explicit Stop All." => index == 0,
+        "{0} Owned GBR cleanup remains unresolved: {1}" => index is 0 or 1,
         "{0} | effective {1}" or "Open {0} guide" => index == 0,
         "Accepted {0} assignment." or "Participant completed {0} and exited duty." or
         "Participant running {0}." or "Dad stop policy continuing: {0}" or

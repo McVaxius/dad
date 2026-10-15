@@ -501,6 +501,25 @@ Visual layout and this live Discord/game test require separate acceptance; headl
   generate deterministic ordinary DAD Plans and manual or daily-reset Schedules through a non-mutating preview.
   Applying is separately disabled by default, refuses active DAD/Scheduler/Schedule work and unowned ID collisions, keeps
   queue authority local, updates Plans and Schedules as one revision, and stores one durable exact-undo snapshot.
+- **GBR Gather Party** is an activity in the existing preset editor. Select directly connected DAD clients, then
+  import a GatherBuddyReborn exported list or Teamcraft quantity-first text, or add MIN/BTN materials with the
+  searchable item picker. Each row has an editable combined target, carried stock, remaining quantity and per-slot shares.
+  **Refresh carried stock** reads the selected clients; **Even split** replaces edited allocations with an even split,
+  and **Clear list** removes the list. Existing carried stock counts toward the target; retainers and other storage do not.
+  Start refreshes stock and eligibility before freezing orders. For a target of 1,000 with no existing stock, three
+  eligible clients receive 334/333/333. With starting stock 100/50/0, the 850 deficit splits 284/283/283 and each native
+  GBR target becomes starting stock plus its share: 384/333/283. Edited shares must total the current deficit.
+  Workers gather independently without forming or disbanding a party or preparing combat gear. Supported timed-node
+  waits stay active. Each client needs a compatible loaded GatherBuddyReborn with IPC v2 and access to its assigned
+  gathering locations. Stop independent GBR work before starting; DAD temporarily replaces enabled list selections
+  with its owned finite list and restores only the selections it changed on cleanup.
+  Progress and completion require actual carried counts; a native toggle or status message is insufficient.
+  Orders never redistribute or replay automatically. A missing worker leaves its share unfinished; dispatched
+  survivors may finish their own shares after coordinator loss, but cannot declare whole-group success. Stop only
+  releases DAD-owned gathering. Failed cleanup remains visible and blocks another assignment until a later explicit
+  Stop succeeds. Registered-island/AutoParty gathering is unsupported. Preset sharing preserves targets, preferred
+  nodes and edited allocations. Current verification is synthetic lifecycle/adapter coverage; native GBR, timed-node,
+  multiclient and game-window acceptance remain unverified.
 - `/dad batch` (also **Open Batch Preset Wizard** on Plans) opens a separate session-draft generator for ordinary
   local Plans and Schedules. Choose ordered rotating account lanes and exact Active characters, ordered anchor
   account lanes with one exact character per named DC pool, non-overlapping DC groups and crew counts, then one or

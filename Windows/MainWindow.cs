@@ -30,7 +30,7 @@ public enum DadPresetsWindowTab
     ActiveJob,
 }
 
-public sealed class MainWindow : Window, IDisposable
+public sealed partial class MainWindow : Window, IDisposable
 {
     private readonly MaterialWindowMotion motion = new();
     private enum DadStatusWindowTab
@@ -4393,10 +4393,13 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.EndDisabled();
         if (levelingEnabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             UiGui.SetTooltip("Leveling Mode selects duty from its ordered threshold table. The saved fixed duty and sync settings are preserved.");
-        DrawLevelingModeControls(plannerSnapshot, selectedGroup);
+        if (plannerOptions.ActivityMode != DadPlannerActivityMode.GatherParty)
+            DrawLevelingModeControls(plannerSnapshot, selectedGroup);
 
         DrawSectionHeader("Crew", "Every primary and substitute stays on one full-width row.");
         DrawPlannerGroupCrewControls(plannerSnapshot, plannerPreview, debugUi: false);
+        if (plannerOptions.ActivityMode == DadPlannerActivityMode.GatherParty)
+            DrawGatherPartyEditor(plannerOptions, plannerPreview, GetActiveRun(runState));
 
         var useRuleColumns = ImGui.GetContentRegionAvail().X >= ImGui.GetFontSize() * 66f;
         if (ImGui.BeginTable(
@@ -4409,7 +4412,10 @@ public sealed class MainWindow : Window, IDisposable
             {
                 DadUi.Heading("STOP", "Bound the run with one explicit stopping rule.");
                 ImGui.BeginDisabled(levelingEnabled);
-                DrawPlannerStopPolicyControls(plannerOptions, plannerPreview, requestPreview);
+                if (plannerOptions.ActivityMode == DadPlannerActivityMode.GatherParty)
+                    UiGui.TextWrapped("Stops when all fixed gathering allocations and the combined carried-stock targets are complete.");
+                else
+                    DrawPlannerStopPolicyControls(plannerOptions, plannerPreview, requestPreview);
                 ImGui.EndDisabled();
                 if (levelingEnabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                     UiGui.SetTooltip("Leveling Mode owns the plan goal and runs one frozen child at a time. The saved ordinary stop policy is preserved.");
@@ -5347,6 +5353,7 @@ public sealed class MainWindow : Window, IDisposable
             RouletteTarget = source.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            GatherParty = source.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
             CompletionActions = source.CompletionActions?.Clone(),
@@ -5382,6 +5389,7 @@ public sealed class MainWindow : Window, IDisposable
             DadPlannerActivityMode.Blunderville => run.ModuleId == DadModuleId.Blunderville,
             DadPlannerActivityMode.Mogtome => run.ModuleId == DadModuleId.Mogtome,
             DadPlannerActivityMode.LootGoblin => run.ModuleId == DadModuleId.LootGoblin,
+            DadPlannerActivityMode.GatherParty => run.ModuleId == DadModuleId.GatherParty,
             DadPlannerActivityMode.Commendation => run.ModuleId == DadModuleId.Commendation,
             DadPlannerActivityMode.Astrope => run.ModuleId == DadModuleId.Astrope,
             DadPlannerActivityMode.LocalDuty => run.ModuleId == DadModuleId.Duty,

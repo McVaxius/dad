@@ -8673,4 +8673,126 @@
   <data name="I536.0" xml:space="preserve"><value>显示标题栏状态</value></data>
   <data name="I536.1" xml:space="preserve"><value>详细标题栏状态</value></data>
   <data name="I536.6" xml:space="preserve"><value>队伍就绪</value></data>
+  <data name="gather_000" xml:space="preserve"><value>GBR采集小队</value></data>
+  <data name="gather_001" xml:space="preserve"><value>采集清单</value></data>
+  <data name="gather_002" xml:space="preserve"><value>目标数量为所选角色随身库存的合计，不计其他仓库。</value></data>
+  <data name="gather_003" xml:space="preserve"><value>导入GBR或Teamcraft</value></data>
+  <data name="gather_004" xml:space="preserve"><value>导入采集清单</value></data>
+  <data name="gather_005" xml:space="preserve"><value>已导入清单，请在开始前检查目标。</value></data>
+  <data name="gather_006" xml:space="preserve"><value>添加素材</value></data>
+  <data name="gather_007" xml:space="preserve"><value>选择素材</value></data>
+  <data name="gather_008" xml:space="preserve"><value>清空清单</value></data>
+  <data name="gather_009" xml:space="preserve"><value>刷新随身库存</value></data>
+  <data name="gather_010" xml:space="preserve"><value>平均分配</value></data>
+  <data name="gather_011" xml:space="preserve"><value>物品</value></data>
+  <data name="gather_012" xml:space="preserve"><value>持有</value></data>
+  <data name="gather_013" xml:space="preserve"><value>剩余</value></data>
+  <data name="gather_014" xml:space="preserve"><value>移除素材</value></data>
+  <data name="gather_015" xml:space="preserve"><value>搜索采集素材</value></data>
+  <data name="gather_016" xml:space="preserve"><value>刷新随身库存以预览固定分配。</value></data>
+  <data name="gather_017" xml:space="preserve"><value>请选择直接连接的DAD客户端来读取采集库存。</value></data>
+  <data name="gather_018" xml:space="preserve"><value>正在读取所选客户端的随身库存及采集资格。</value></data>
+  <data name="gather_019" xml:space="preserve"><value>固定分配已就绪，开始时会重新检查当前库存。</value></data>
+  <data name="gather_020" xml:space="preserve"><value>所有固定分配及随身库存总目标完成后停止。</value></data>
+  <data name="gather_021" xml:space="preserve"><value>正在采集固定分配的数量。</value></data>
+  <data name="gather_022" xml:space="preserve"><value>此客户端没有需要采集的缺口。</value></data>
+  <data name="gather_023" xml:space="preserve"><value>固定分配已完成，随身库存已核实。</value></data>
+  <data name="gather_024" xml:space="preserve"><value>尚未达到固定库存目标，GBR便已停止。</value></data>
+  <data name="gather_025" xml:space="preserve"><value>采集已取消。</value></data>
+  <data name="gather_026" xml:space="preserve"><value>采集客户端：{0}/{1}已完成。</value></data>
+  <data name="gather_027" xml:space="preserve"><value>正在等待采集点（{0}/{1}）。</value></data>
+  <data name="gather_028" xml:space="preserve"><value>正在采集固定分配（{0}/{1}）。</value></data>
+  <data name="gather_029" xml:space="preserve"><value>物品ID：{0}；优先采集地点：{1}</value></data>
+  <data name="gather_030" xml:space="preserve"><value>随身库存：{0}；GBR目标：{1}</value></data>
+  <data name="gather_031" xml:space="preserve"><value>根据随身物品总目标固定分配采矿工/园艺工任务。各客户端独立采集。</value></data>
+  <data name="gather_032" xml:space="preserve"><value>原生采集</value></data>
+  <data name="gather_033" xml:space="preserve"><value>导入或编辑材料，刷新库存，检查固定分配后启动。</value></data>
+  <data name="gather_034" xml:space="preserve"><value>独立的采矿工/园艺工客户端通过 DAD 管理的 GBR 列表执行固定随身库存配额。</value></data>
+  <data name="gather_035" xml:space="preserve"><value>采集客户端独立运行，无需组队。</value></data>
+  <data name="gather_036" xml:space="preserve"><value>采集客户端已就绪；正在检查随身库存和固定分配。</value></data>
+  <data name="gather_037" xml:space="preserve"><value>清理 DAD 管理的 GBR 任务后，正在验证最终随身库存总量。</value></data>
+  <data name="gather_038" xml:space="preserve"><value>最终随身库存总量未达到采集目标。固定配额不会重新分配。</value></data>
+  <data name="gather_039" xml:space="preserve"><value>计划后随身库存发生变化。请刷新计划。</value></data>
+  <data name="gather_040" xml:space="preserve"><value>无法读取随身库存。</value></data>
+  <data name="gather_041" xml:space="preserve"><value>请在物品数量上限内启用至少一个有效采集目标。</value></data>
+  <data name="gather_042" xml:space="preserve"><value>采集目标需要唯一的物品/行 ID，数量须为 1 到 999999。</value></data>
+  <data name="gather_043" xml:space="preserve"><value>请至少选择一个已连接的采集客户端。</value></data>
+  <data name="gather_044" xml:space="preserve"><value>所选采集客户端的身份信息不完整。</value></data>
+  <data name="gather_045" xml:space="preserve"><value>采集客户端必须使用不同的槽位、会话、角色和账号。</value></data>
+  <data name="gather_046" xml:space="preserve"><value>采集客户端 {0} 不可用或无法读取其随身库存。</value></data>
+  <data name="gather_047" xml:space="preserve"><value>编辑后的分配无效、重复或引用了缺失的客户端/目标。</value></data>
+  <data name="gather_048" xml:space="preserve"><value>物品 {0} 的随身库存无效。</value></data>
+  <data name="gather_049" xml:space="preserve"><value>客户端 {0} 无法采集物品 {1}。</value></data>
+  <data name="gather_050" xml:space="preserve"><value>物品 {0} 的编辑后配额总量必须等于当前缺口 {1}。</value></data>
+  <data name="gather_051" xml:space="preserve"><value>所选客户端均无法采集物品 {0}。</value></data>
+  <data name="gather_052" xml:space="preserve"><value>客户端 {0} 的物品 {1} GBR 目标超过 999999。</value></data>
+  <data name="gather_053" xml:space="preserve"><value>采集需要有效材料及 DAD 槽位限制内的所选客户端。</value></data>
+  <data name="gather_054" xml:space="preserve"><value>采集库存查询超时。请确认所有所选 DAD 客户端均已连接并支持采集。</value></data>
+  <data name="gather_055" xml:space="preserve"><value>库存响应与当前请求/客户端身份不匹配。</value></data>
+  <data name="gather_056" xml:space="preserve"><value>采集库存数据不可用或不完整。</value></data>
+  <data name="gather_057" xml:space="preserve"><value>采集需要一个精确的本地客户端分配。</value></data>
+  <data name="gather_058" xml:space="preserve"><value>DAD 管理的采集任务仍需清理。</value></data>
+  <data name="gather_059" xml:space="preserve"><value>此客户端无法使用 GBR 采集。</value></data>
+  <data name="gather_060" xml:space="preserve"><value>已准备采集此客户端的有限配额。</value></data>
+  <data name="gather_061" xml:space="preserve"><value>采集需要 GBR IPC v2。</value></data>
+  <data name="gather_062" xml:space="preserve"><value>已加载的 GBR 插件实例不可用。</value></data>
+  <data name="gather_063" xml:space="preserve"><value>GBR 采集不可用：{0}</value></data>
+  <data name="gather_064" xml:space="preserve"><value>GBR 已独立运行。</value></data>
+  <data name="gather_065" xml:space="preserve"><value>GBR 已独立运行。请先停止，再启动 DAD 采集。</value></data>
+  <data name="gather_066" xml:space="preserve"><value>随身库存尚未就绪。</value></data>
+  <data name="gather_067" xml:space="preserve"><value>采集库存查询不完整或已过期。</value></data>
+  <data name="gather_068" xml:space="preserve"><value>库存查询与已就绪的本地客户端/账号/角色不匹配。</value></data>
+  <data name="gather_069" xml:space="preserve"><value>DAD 管理的 GBR 任务清理仍未解决。请检查错误后再次手动全部停止。</value></data>
+  <data name="gather_070" xml:space="preserve"><value>请粘贴不超过 1 MiB 的采集导出数据。</value></data>
+  <data name="gather_071" xml:space="preserve"><value>导出数据不包含采集目标。</value></data>
+  <data name="gather_072" xml:space="preserve"><value>物品未知或无法解析为可采集物品 ID。</value></data>
+  <data name="gather_073" xml:space="preserve"><value>采集数量须为 1 到 999999。</value></data>
+  <data name="gather_074" xml:space="preserve"><value>需要物品 ID/数量行或以数量开头的 Teamcraft 物品行。</value></data>
+  <data name="gather_075" xml:space="preserve"><value>物品 {0} 的总量须为 1 到 999999。</value></data>
+  <data name="gather_076" xml:space="preserve"><value>GBR 物品 {0} 重复出现。</value></data>
+  <data name="gather_077" xml:space="preserve"><value>已导入的采集列表</value></data>
+  <data name="gather_078" xml:space="preserve"><value>采集导出数据超出物品数量上限。</value></data>
+  <data name="gather_079" xml:space="preserve"><value>GBR 导出数据无效：{0}</value></data>
+  <data name="gather_080" xml:space="preserve"><value>不支持的 GBR 列表版本。</value></data>
+  <data name="gather_081" xml:space="preserve"><value>解压后的 GBR 列表超过 1 MiB。</value></data>
+  <data name="gather_082" xml:space="preserve"><value>缺少 GBR 物品、数量或首选地点。</value></data>
+  <data name="gather_083" xml:space="preserve"><value>GBR 列表超出物品数量上限。</value></data>
+  <data name="gather_084" xml:space="preserve"><value>采集必须是本次运行的唯一任务。</value></data>
+  <data name="gather_085" xml:space="preserve"><value>采集超出 DAD 所选客户端数量上限。</value></data>
+  <data name="gather_086" xml:space="preserve"><value>采集需要未指定固定战斗职业的直连 DAD 客户端。</value></data>
+  <data name="gather_087" xml:space="preserve"><value>GBR 采集组“{0}”，{1} 个独立客户端</value></data>
+  <data name="gather_088" xml:space="preserve"><value>{0} DAD 管理的 GBR 任务清理仍未解决：{1}</value></data>
+  <data name="gather_089" xml:space="preserve"><value>{0} GBR 任务清理仍未解决。请检查错误后再次手动全部停止。</value></data>
+  <data name="gather_090" xml:space="preserve"><value>采集指令需要客户端命令架构 4。</value></data>
+  <data name="gather_091" xml:space="preserve"><value>采集指令需要采集任务。</value></data>
+  <data name="gather_092" xml:space="preserve"><value>GBR 活动列表不再匹配此 DAD 指令。</value></data>
+  <data name="gather_093" xml:space="preserve"><value>GBR 随身库存数量无效。</value></data>
+  <data name="gather_094" xml:space="preserve"><value>物品 {0} 没有受支持的采矿工/园艺工采集地点。</value></data>
+  <data name="gather_095" xml:space="preserve"><value>采集需要运行标识。</value></data>
+  <data name="gather_096" xml:space="preserve"><value>采集需要有效物品指令。</value></data>
+  <data name="gather_097" xml:space="preserve"><value>GBR 已有 DAD 管理或尚未结算的采集任务。</value></data>
+  <data name="gather_098" xml:space="preserve"><value>此次 GBR 采集尝试已结束，不会重放。</value></data>
+  <data name="gather_099" xml:space="preserve"><value>GBR 采集指令含无效或混杂的客户端分配。</value></data>
+  <data name="gather_100" xml:space="preserve"><value>GBR 列表创建失败。</value></data>
+  <data name="gather_101" xml:space="preserve"><value>计划后物品 {0} 的随身库存发生变化。请刷新计划。</value></data>
+  <data name="gather_102" xml:space="preserve"><value>GBR 未将物品 {0} 添加到管理列表。</value></data>
+  <data name="gather_103" xml:space="preserve"><value>首选 GBR 地点 {0} 不可用。</value></data>
+  <data name="gather_104" xml:space="preserve"><value>GBR 未接受首选地点 {0}。</value></data>
+  <data name="gather_105" xml:space="preserve"><value>GBR 活动物品与 DAD 精确指令不匹配。</value></data>
+  <data name="gather_106" xml:space="preserve"><value>GBR 未启用管理的采集指令。</value></data>
+  <data name="gather_107" xml:space="preserve"><value>停止请求与管理的 GBR 采集运行不匹配。</value></data>
+  <data name="gather_108" xml:space="preserve"><value>GBR 未停用管理的采集指令。</value></data>
+  <data name="gather_109" xml:space="preserve"><value>GBR 活动物品元组结构已改变。</value></data>
+  <data name="gather_110" xml:space="preserve"><value>GBR 没有物品 {0} 的采矿工/园艺工可采集数据。</value></data>
+  <data name="gather_111" xml:space="preserve"><value>GBR 插件实例已更换；未向新实例发送操作。</value></data>
+  <data name="gather_112" xml:space="preserve"><value>GBR 成员 {0} 不可用。</value></data>
+  <data name="gather_113" xml:space="preserve"><value>采集需要一个有限任务及有效直连客户端。</value></data>
+  <data name="gather_114" xml:space="preserve"><value>缺少精确冻结的物品/客户端分配。</value></data>
+  <data name="gather_115" xml:space="preserve"><value>采集指令与冻结的账号/角色/会话/槽位和材料目标不匹配。</value></data>
+  <data name="gather_116" xml:space="preserve"><value>采集配额总量不等于冻结的随身库存总缺口。</value></data>
+  <data name="gather_117" xml:space="preserve"><value>此采集客户端已有其他冻结指令。</value></data>
+  <data name="gather_118" xml:space="preserve"><value>采集客户端需要一个有效冻结的客户端/物品分配。</value></data>
+  <data name="gather_119" xml:space="preserve"><value>采集客户端指令缺失或超过有限指令上限。</value></data>
+  <data name="gather_120" xml:space="preserve"><value>采集需要对应的精确采集模块和客户端分配。</value></data>
+  <data name="gather_121" xml:space="preserve"><value>GBR采集小队</value></data>
 </root>

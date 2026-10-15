@@ -62,6 +62,7 @@ internal sealed class RuntimeNode : IDisposable
     private readonly VirtualDutyFinder dutyFinder;
     private readonly DadLocalDutyQueueService localDutyQueue;
     private readonly VirtualHelperIpc helpers;
+    private readonly VirtualGatherClient gathering;
     private readonly VirtualProfileIpc profileIpc;
     private readonly VirtualShoppingIpc shoppingIpc;
     private readonly VirtualAutomationIpc automation;
@@ -245,6 +246,8 @@ internal sealed class RuntimeNode : IDisposable
         localDutyQueue = new(log, presence.BuildLiveSafetySnapshot, dutyFinder, presence.BuildLiveQueueConfirmationSnapshot);
         npcDutyQueue = new(log, dutyFinder, new VirtualNpcDutyNative(dutyFinder, () => character.CurrentJobId ?? 0, events.Enqueue, Unexpected));
         helpers = new(events.Enqueue);
+        gathering = new(presence.BuildLiveSafetySnapshot, events.Enqueue);
+        DadRuntimeHandlers.ConfigureGathering(transport, gathering);
         var ads = new DadDutySupportAdsService(Plugin.PluginInterface, log);
         var dungeonRsrScope = input.TryGetProperty("dungeonRsrScope", out var scope) && scope.GetBoolean();
         var combat = new DadCombatRotationService(configuration, Plugin.PluginInterface, log,
@@ -253,7 +256,7 @@ internal sealed class RuntimeNode : IDisposable
         presence.ConfigureCombatRotationService(combat);
         presence.ConfigureLootGoblinReadinessProvider(() => new DadLootGoblinIpcService(Plugin.PluginInterface).IsReady());
         queue = new DadQueueExecutionService(new(), new(Plugin.PluginInterface), new(Plugin.PluginInterface),
-            new(new()), localDutyQueue, npcDutyQueue, ads, combat);
+            new(new()), localDutyQueue, npcDutyQueue, ads, combat, gathering);
         worker = new(queue, presence, combat, ads, new(ads, presence, log), new(ads, log, () => durabilityPercent is { } percent
             ? DadEquippedDurabilityObservation.ReadableAt(percent) : DadEquippedDurabilityObservation.Unreadable("Synthetic unreadable equipment")), Plugin.Condition, log, CreateGearPreparation(log));
         if (input.TryGetProperty("discordProvider", out var provider))
@@ -481,6 +484,11 @@ internal sealed class RuntimeNode : IDisposable
                 if (command.TryGetProperty("helperStage", out var helperStage)) helpers.Stage = helperStage.GetString()!;
                 if (command.TryGetProperty("helperReady", out var helperReady)) helpers.Ready = helperReady.GetBoolean();
                 if (command.TryGetProperty("helperFault", out var helperFault)) helpers.Fault = helperFault.GetString()!;
+                if (command.TryGetProperty("gatherCounts", out var gatherCounts)) gathering.Counts = DadIpcJson.Deserialize<Dictionary<uint, long>>(gatherCounts.GetRawText())!;
+                if (command.TryGetProperty("gatherWaiting", out var gatherWaiting)) gathering.Waiting = gatherWaiting.GetBoolean();
+                if (command.TryGetProperty("gatherReady", out var gatherReady)) gathering.Ready = gatherReady.GetBoolean();
+                if (command.TryGetProperty("gatherRunning", out var gatherRunning)) gathering.Running = gatherRunning.GetBoolean();
+                if (command.TryGetProperty("gatherStopFails", out var gatherStopFails)) gathering.StopFails = gatherStopFails.GetBoolean();
                 if (command.TryGetProperty("party", out var members))
                     party.Members = DadIpcJson.Deserialize<List<DadPartyMemberSnapshot>>(members.GetRawText())!;
                 if (command.TryGetProperty("invitation", out var invitation))
@@ -562,6 +570,12 @@ internal sealed class RuntimeNode : IDisposable
             case "snapshot": break;
             case "autoparty": controlResult = (autoParty ?? throw new InvalidOperationException("AutoParty is not configured.")).Execute(command); break;
             case "cancel": coordinator.CancelActiveRun(); dutyIpc.Cancel("Synthetic Cancel Run"); break;
+            case "local-stop-all": controlResult = cleanup.RunLocalLifecycleCleanup(new DadStopAllRequest
+            {
+                OperationId = command.GetProperty("operationId").GetString()!,
+                Reason = "Synthetic explicit local Stop All", RequestedAtUtc = clock.Now.UtcDateTime,
+                RequestedByWorkerSessionId = presence.WorkerSessionId,
+            }); break;
             case "stop-all": controlResult = transport.RequestStopAll(new DadStopAllRequest
             {
                 OperationId = command.GetProperty("operationId").GetString()!,
@@ -613,6 +627,8 @@ internal sealed class RuntimeNode : IDisposable
         unexecutedSteps = lifecycle.UnboundSteps,
         persistedActiveRun = configuration.PersistedActiveRun, historyCount = configuration.RunHistory.Count,
         controlResult, autoParty = autoParty?.Snapshot(), helperRunning = helpers.IsRunning,
+        gathering = gathering.Snapshot(),
+        cancellationCleanupPending = coordinator.HasPendingCancellationCleanup,
         alliance = allianceService?.GetStatus(), allianceReceiver = allianceService?.BuildUiSnapshot(),
         automation = new { automation.Suppressed, automation.MultiMode, automation.Surface },
         dutyFinder = new { dutyFinder.Stage, isUnrestrictedParty = dutyFinder.ObservedUnrestrictedParty,

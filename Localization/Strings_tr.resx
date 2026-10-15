@@ -8665,4 +8665,126 @@
   <data name="I536.0" xml:space="preserve"><value>Başlık çubuğu durumunu göster</value></data>
   <data name="I536.1" xml:space="preserve"><value>Ayrıntılı başlık çubuğu durumu</value></data>
   <data name="I536.6" xml:space="preserve"><value>Grup hazır</value></data>
+  <data name="gather_000" xml:space="preserve"><value>GBR toplama grubu</value></data>
+  <data name="gather_001" xml:space="preserve"><value>Toplama listesi</value></data>
+  <data name="gather_002" xml:space="preserve"><value>Hedef miktarlar, seçili karakterlerin yanlarında taşıdığı toplam stoktur. Diğer depolar sayılmaz.</value></data>
+  <data name="gather_003" xml:space="preserve"><value>GBR veya Teamcraft içe aktar</value></data>
+  <data name="gather_004" xml:space="preserve"><value>Toplama listesini içe aktar</value></data>
+  <data name="gather_005" xml:space="preserve"><value>Liste içe aktarıldı. Başlamadan önce hedefleri gözden geçirin.</value></data>
+  <data name="gather_006" xml:space="preserve"><value>Malzeme ekle</value></data>
+  <data name="gather_007" xml:space="preserve"><value>Malzeme seç</value></data>
+  <data name="gather_008" xml:space="preserve"><value>Listeyi temizle</value></data>
+  <data name="gather_009" xml:space="preserve"><value>Taşınan stoku yenile</value></data>
+  <data name="gather_010" xml:space="preserve"><value>Eşit bölüştür</value></data>
+  <data name="gather_011" xml:space="preserve"><value>Eşya</value></data>
+  <data name="gather_012" xml:space="preserve"><value>Mevcut</value></data>
+  <data name="gather_013" xml:space="preserve"><value>Kalan</value></data>
+  <data name="gather_014" xml:space="preserve"><value>Malzemeyi kaldır</value></data>
+  <data name="gather_015" xml:space="preserve"><value>Toplanabilir malzeme ara</value></data>
+  <data name="gather_016" xml:space="preserve"><value>Sabit payları görmek için taşınan stoku yenileyin.</value></data>
+  <data name="gather_017" xml:space="preserve"><value>Toplama stoklarını okumak için doğrudan bağlı DAD istemcilerini seçin.</value></data>
+  <data name="gather_018" xml:space="preserve"><value>Seçili istemcilerin taşınan stokları ve toplama uygunluğu okunuyor.</value></data>
+  <data name="gather_019" xml:space="preserve"><value>Sabit paylar hazır. Başlatıldığında mevcut stok yeniden kontrol edilir.</value></data>
+  <data name="gather_020" xml:space="preserve"><value>Tüm sabit paylar ve toplam taşınan stok hedefleri tamamlanınca durur.</value></data>
+  <data name="gather_021" xml:space="preserve"><value>Sabit pay toplanıyor.</value></data>
+  <data name="gather_022" xml:space="preserve"><value>Bu istemcinin toplaması gereken açık yok.</value></data>
+  <data name="gather_023" xml:space="preserve"><value>Pay tamamlandı ve taşınan stok doğrulandı.</value></data>
+  <data name="gather_024" xml:space="preserve"><value>GBR sabit taşınan stok hedeflerine ulaşılmadan durdu.</value></data>
+  <data name="gather_025" xml:space="preserve"><value>Toplama iptal edildi.</value></data>
+  <data name="gather_026" xml:space="preserve"><value>Toplama istemcileri: {0}/{1} tamamlandı.</value></data>
+  <data name="gather_027" xml:space="preserve"><value>Toplama noktaları bekleniyor ({0}/{1}).</value></data>
+  <data name="gather_028" xml:space="preserve"><value>Sabit pay toplanıyor ({0}/{1}).</value></data>
+  <data name="gather_029" xml:space="preserve"><value>Eşya kimliği: {0}; tercih edilen toplama yeri: {1}</value></data>
+  <data name="gather_030" xml:space="preserve"><value>Taşınan stok: {0}; GBR hedefi: {1}</value></data>
+  <data name="gather_031" xml:space="preserve"><value>Toplam taşınan stok hedefine göre sabit MIN/BTN payları. İstemciler bağımsız toplar.</value></data>
+  <data name="gather_032" xml:space="preserve"><value>Yerel toplama</value></data>
+  <data name="gather_033" xml:space="preserve"><value>Malzemeleri içe aktarın veya düzenleyin, stoku yenileyin, sabit payları inceleyip başlatın.</value></data>
+  <data name="gather_034" xml:space="preserve"><value>Bağımsız MIN/BTN istemcileri DAD&apos;a ait GBR listeleriyle sabit taşınan stok paylarını tamamlar.</value></data>
+  <data name="gather_035" xml:space="preserve"><value>Toplama istemcileri bağımsız çalışır; grup kurmak gerekmez.</value></data>
+  <data name="gather_036" xml:space="preserve"><value>Toplama istemcileri hazır; taşınan stok ve sabit paylar denetleniyor.</value></data>
+  <data name="gather_037" xml:space="preserve"><value>DAD&apos;a ait GBR işi temizlendikten sonra son toplam taşınan stok doğrulanıyor.</value></data>
+  <data name="gather_038" xml:space="preserve"><value>Son toplam taşınan stok hedeflere ulaşmadı. Sabit paylar yeniden dağıtılmayacak.</value></data>
+  <data name="gather_039" xml:space="preserve"><value>Planlamadan sonra taşınan stok değişti. Planı yenileyin.</value></data>
+  <data name="gather_040" xml:space="preserve"><value>Taşınan envanter okunamıyor.</value></data>
+  <data name="gather_041" xml:space="preserve"><value>Öğe sınırı içinde en az bir geçerli toplama hedefini etkinleştirin.</value></data>
+  <data name="gather_042" xml:space="preserve"><value>Hedeflerin öğe/satır kimlikleri benzersiz, miktarları 1 ile 999999 arasında olmalıdır.</value></data>
+  <data name="gather_043" xml:space="preserve"><value>En az bir bağlı toplama istemcisi seçin.</value></data>
+  <data name="gather_044" xml:space="preserve"><value>Seçili bir toplama istemcisinin kimliği eksik.</value></data>
+  <data name="gather_045" xml:space="preserve"><value>Toplama istemcilerinin yuvaları, oturumları, karakterleri ve hesapları farklı olmalıdır.</value></data>
+  <data name="gather_046" xml:space="preserve"><value>Toplama istemcisi {0} kullanılamıyor veya taşınan envanteri okunamıyor.</value></data>
+  <data name="gather_047" xml:space="preserve"><value>Düzenlenen pay geçersiz, yinelenmiş veya eksik bir istemci/hedefe başvuruyor.</value></data>
+  <data name="gather_048" xml:space="preserve"><value>{0} öğesinin taşınan stok bilgisi geçersiz.</value></data>
+  <data name="gather_049" xml:space="preserve"><value>İstemci {0}, {1} öğesini toplayamaz.</value></data>
+  <data name="gather_050" xml:space="preserve"><value>{0} öğesinin düzenlenen payları toplamı mevcut açık {1} olmalıdır.</value></data>
+  <data name="gather_051" xml:space="preserve"><value>Seçilen hiçbir istemci {0} öğesini toplayamaz.</value></data>
+  <data name="gather_052" xml:space="preserve"><value>İstemci {0}, öğe {1} için GBR hedefi 999999 değerini aşıyor.</value></data>
+  <data name="gather_053" xml:space="preserve"><value>Toplama için geçerli malzemeler ve DAD yuva sınırı içindeki istemciler gerekir.</value></data>
+  <data name="gather_054" xml:space="preserve"><value>Stok sorgusu zaman aşımına uğradı. Seçili tüm DAD istemcilerinin bağlı ve toplamayı desteklediğini denetleyin.</value></data>
+  <data name="gather_055" xml:space="preserve"><value>Stok yanıtı geçerli istek/istemci kimliğiyle eşleşmiyor.</value></data>
+  <data name="gather_056" xml:space="preserve"><value>Toplama stok bilgisi kullanılamıyor veya eksik.</value></data>
+  <data name="gather_057" xml:space="preserve"><value>Toplama için tam bir yerel istemci ataması gerekir.</value></data>
+  <data name="gather_058" xml:space="preserve"><value>Sahip olunan toplama işi hâlâ temizlenmeli.</value></data>
+  <data name="gather_059" xml:space="preserve"><value>Bu istemcide GBR toplama kullanılamıyor.</value></data>
+  <data name="gather_060" xml:space="preserve"><value>Bu istemcinin sınırlı payı toplanmaya hazır.</value></data>
+  <data name="gather_061" xml:space="preserve"><value>Toplama için GBR IPC v2 gerekir.</value></data>
+  <data name="gather_062" xml:space="preserve"><value>Yüklü GBR eklentisi örneği kullanılamıyor.</value></data>
+  <data name="gather_063" xml:space="preserve"><value>GBR toplama kullanılamıyor: {0}</value></data>
+  <data name="gather_064" xml:space="preserve"><value>GBR zaten bağımsız çalışıyor.</value></data>
+  <data name="gather_065" xml:space="preserve"><value>GBR zaten bağımsız çalışıyor. DAD toplamayı başlatmadan önce durdurun.</value></data>
+  <data name="gather_066" xml:space="preserve"><value>Taşınan envanter hazır değil.</value></data>
+  <data name="gather_067" xml:space="preserve"><value>Toplama stok sorgusu eksik veya eski.</value></data>
+  <data name="gather_068" xml:space="preserve"><value>Stok sorgusu hazır yerel istemci/hesap/karakterle eşleşmiyor.</value></data>
+  <data name="gather_069" xml:space="preserve"><value>Sahip olunan GBR işi temizlenemedi. Yeniden açıkça Tümünü Durdur demeden önce hatayı inceleyin.</value></data>
+  <data name="gather_070" xml:space="preserve"><value>En fazla 1 MiB boyutunda toplama dışa aktarımını yapıştırın.</value></data>
+  <data name="gather_071" xml:space="preserve"><value>Dışa aktarımda toplama hedefi yok.</value></data>
+  <data name="gather_072" xml:space="preserve"><value>Öğe bilinmiyor veya toplanabilir öğe kimliği bulunamıyor.</value></data>
+  <data name="gather_073" xml:space="preserve"><value>Toplama miktarı 1 ile 999999 arasında olmalıdır.</value></data>
+  <data name="gather_074" xml:space="preserve"><value>Öğe kimliği/miktar satırı veya miktarla başlayan Teamcraft satırı bekleniyor.</value></data>
+  <data name="gather_075" xml:space="preserve"><value>{0} öğesinin toplam miktarı 1 ile 999999 arasında olmalıdır.</value></data>
+  <data name="gather_076" xml:space="preserve"><value>GBR öğesi {0} birden fazla kez yer alıyor.</value></data>
+  <data name="gather_077" xml:space="preserve"><value>İçe aktarılan toplama listesi</value></data>
+  <data name="gather_078" xml:space="preserve"><value>Toplama dışa aktarımı öğe sınırını aşıyor.</value></data>
+  <data name="gather_079" xml:space="preserve"><value>GBR dışa aktarımı geçersiz: {0}</value></data>
+  <data name="gather_080" xml:space="preserve"><value>Desteklenmeyen GBR liste sürümü.</value></data>
+  <data name="gather_081" xml:space="preserve"><value>Açılan GBR listesi 1 MiB sınırını aşıyor.</value></data>
+  <data name="gather_082" xml:space="preserve"><value>GBR öğeleri, miktarları veya tercih edilen konumları eksik.</value></data>
+  <data name="gather_083" xml:space="preserve"><value>GBR listesi öğe sınırını aşıyor.</value></data>
+  <data name="gather_084" xml:space="preserve"><value>Toplama, çalıştırmanın tek görevi olmalıdır.</value></data>
+  <data name="gather_085" xml:space="preserve"><value>Toplama, DAD seçili istemci sınırını aşıyor.</value></data>
+  <data name="gather_086" xml:space="preserve"><value>Toplama için sabit savaş mesleği atanmamış doğrudan DAD istemcileri gerekir.</value></data>
+  <data name="gather_087" xml:space="preserve"><value>GBR Toplama Grubu &apos;{0}&apos;, {1} bağımsız istemci</value></data>
+  <data name="gather_088" xml:space="preserve"><value>{0} Sahip olunan GBR işi temizlenemedi: {1}</value></data>
+  <data name="gather_089" xml:space="preserve"><value>{0} GBR işi temizlenemedi. Yeniden açıkça Tümünü Durdur demeden önce hatayı inceleyin.</value></data>
+  <data name="gather_090" xml:space="preserve"><value>Toplama emirleri için komut şeması 4 gerekir.</value></data>
+  <data name="gather_091" xml:space="preserve"><value>Toplama emirleri için toplama görevi gerekir.</value></data>
+  <data name="gather_092" xml:space="preserve"><value>Etkin GBR listesi artık DAD emriyle eşleşmiyor.</value></data>
+  <data name="gather_093" xml:space="preserve"><value>GBR taşınan stok miktarı geçersiz.</value></data>
+  <data name="gather_094" xml:space="preserve"><value>{0} öğesi için desteklenen MIN/BTN toplama konumu yok.</value></data>
+  <data name="gather_095" xml:space="preserve"><value>Toplama için çalıştırma kimliği gerekir.</value></data>
+  <data name="gather_096" xml:space="preserve"><value>Toplama için geçerli öğe emirleri gerekir.</value></data>
+  <data name="gather_097" xml:space="preserve"><value>GBR&apos;de zaten sahip olunan veya sonuçlanmamış DAD işi var.</value></data>
+  <data name="gather_098" xml:space="preserve"><value>Bu GBR toplama denemesi bitti; tekrarlanmayacak.</value></data>
+  <data name="gather_099" xml:space="preserve"><value>GBR emrinde geçersiz veya karışık istemci atamaları var.</value></data>
+  <data name="gather_100" xml:space="preserve"><value>GBR listesi oluşturulamadı.</value></data>
+  <data name="gather_101" xml:space="preserve"><value>Planlamadan sonra {0} stoku değişti. Planı yenileyin.</value></data>
+  <data name="gather_102" xml:space="preserve"><value>GBR, {0} öğesini sahip olunan listeye eklemedi.</value></data>
+  <data name="gather_103" xml:space="preserve"><value>Tercih edilen GBR konumu {0} kullanılamıyor.</value></data>
+  <data name="gather_104" xml:space="preserve"><value>GBR tercih edilen {0} konumunu kabul etmedi.</value></data>
+  <data name="gather_105" xml:space="preserve"><value>Etkin GBR öğeleri tam DAD emriyle eşleşmiyor.</value></data>
+  <data name="gather_106" xml:space="preserve"><value>GBR sahip olunan toplama emrini etkinleştirmedi.</value></data>
+  <data name="gather_107" xml:space="preserve"><value>Durdurma isteği sahip olunan GBR çalışmasıyla eşleşmiyor.</value></data>
+  <data name="gather_108" xml:space="preserve"><value>GBR sahip olunan toplama emrini devre dışı bırakmadı.</value></data>
+  <data name="gather_109" xml:space="preserve"><value>GBR etkin öğe veri yapısı değişti.</value></data>
+  <data name="gather_110" xml:space="preserve"><value>GBR&apos;de {0} öğesi için MIN/BTN toplama verisi yok.</value></data>
+  <data name="gather_111" xml:space="preserve"><value>GBR örneği değişti; yenisine işlem gönderilmedi.</value></data>
+  <data name="gather_112" xml:space="preserve"><value>GBR üyesi {0} kullanılamıyor.</value></data>
+  <data name="gather_113" xml:space="preserve"><value>Toplama için tek sınırlı görev ve geçerli doğrudan istemciler gerekir.</value></data>
+  <data name="gather_114" xml:space="preserve"><value>Tam sabit öğe/istemci payı eksik.</value></data>
+  <data name="gather_115" xml:space="preserve"><value>Emirler sabit hesap/karakter/oturum/yuva ve malzeme hedefleriyle eşleşmiyor.</value></data>
+  <data name="gather_116" xml:space="preserve"><value>Toplama paylarının toplamı sabit toplam stok açığıyla eşleşmiyor.</value></data>
+  <data name="gather_117" xml:space="preserve"><value>Bu toplama istemcisinin zaten farklı bir sabit emri var.</value></data>
+  <data name="gather_118" xml:space="preserve"><value>Toplama istemcisi için tek geçerli sabit istemci/öğe ataması gerekir.</value></data>
+  <data name="gather_119" xml:space="preserve"><value>Toplama emirleri eksik veya sınırlı emir sayısı aşıldı.</value></data>
+  <data name="gather_120" xml:space="preserve"><value>Toplama için tam toplama modülü ve istemci atamaları gerekir.</value></data>
+  <data name="gather_121" xml:space="preserve"><value>GBR toplama grubu</value></data>
 </root>

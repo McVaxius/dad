@@ -8665,4 +8665,126 @@
   <data name="I536.0" xml:space="preserve"><value>Hiện trạng thái trên thanh tiêu đề</value></data>
   <data name="I536.1" xml:space="preserve"><value>Trạng thái chi tiết trên thanh tiêu đề</value></data>
   <data name="I536.6" xml:space="preserve"><value>Nhóm sẵn sàng</value></data>
+  <data name="gather_000" xml:space="preserve"><value>Nhóm thu thập GBR</value></data>
+  <data name="gather_001" xml:space="preserve"><value>Danh sách thu thập</value></data>
+  <data name="gather_002" xml:space="preserve"><value>Số lượng mục tiêu là tổng vật phẩm mang theo của các nhân vật. Không tính kho khác.</value></data>
+  <data name="gather_003" xml:space="preserve"><value>Nhập GBR hoặc Teamcraft</value></data>
+  <data name="gather_004" xml:space="preserve"><value>Nhập danh sách thu thập</value></data>
+  <data name="gather_005" xml:space="preserve"><value>Đã nhập danh sách. Kiểm tra mục tiêu trước khi bắt đầu.</value></data>
+  <data name="gather_006" xml:space="preserve"><value>Thêm nguyên liệu</value></data>
+  <data name="gather_007" xml:space="preserve"><value>Chọn nguyên liệu</value></data>
+  <data name="gather_008" xml:space="preserve"><value>Xóa danh sách</value></data>
+  <data name="gather_009" xml:space="preserve"><value>Cập nhật vật phẩm mang theo</value></data>
+  <data name="gather_010" xml:space="preserve"><value>Chia đều</value></data>
+  <data name="gather_011" xml:space="preserve"><value>Vật phẩm</value></data>
+  <data name="gather_012" xml:space="preserve"><value>Hiện có</value></data>
+  <data name="gather_013" xml:space="preserve"><value>Còn thiếu</value></data>
+  <data name="gather_014" xml:space="preserve"><value>Bỏ nguyên liệu</value></data>
+  <data name="gather_015" xml:space="preserve"><value>Tìm nguyên liệu thu thập</value></data>
+  <data name="gather_016" xml:space="preserve"><value>Cập nhật vật phẩm mang theo để xem phân bổ cố định.</value></data>
+  <data name="gather_017" xml:space="preserve"><value>Chọn các máy khách DAD kết nối trực tiếp để đọc tồn kho.</value></data>
+  <data name="gather_018" xml:space="preserve"><value>Đang đọc vật phẩm mang theo và khả năng thu thập của các máy khách đã chọn.</value></data>
+  <data name="gather_019" xml:space="preserve"><value>Phân bổ cố định đã sẵn sàng. Khi bắt đầu sẽ kiểm tra lại tồn kho.</value></data>
+  <data name="gather_020" xml:space="preserve"><value>Dừng khi hoàn thành mọi phân bổ cố định và mục tiêu tổng vật phẩm mang theo.</value></data>
+  <data name="gather_021" xml:space="preserve"><value>Đang thu thập phần được phân bổ cố định.</value></data>
+  <data name="gather_022" xml:space="preserve"><value>Máy khách này không thiếu nguyên liệu cần thu thập.</value></data>
+  <data name="gather_023" xml:space="preserve"><value>Đã hoàn thành phân bổ và xác minh vật phẩm mang theo.</value></data>
+  <data name="gather_024" xml:space="preserve"><value>GBR đã dừng trước khi đạt mục tiêu vật phẩm mang theo.</value></data>
+  <data name="gather_025" xml:space="preserve"><value>Đã hủy thu thập.</value></data>
+  <data name="gather_026" xml:space="preserve"><value>Máy khách thu thập: {0}/{1} hoàn thành.</value></data>
+  <data name="gather_027" xml:space="preserve"><value>Đang chờ điểm thu thập ({0}/{1}).</value></data>
+  <data name="gather_028" xml:space="preserve"><value>Đang thu thập phân bổ cố định ({0}/{1}).</value></data>
+  <data name="gather_029" xml:space="preserve"><value>ID vật phẩm: {0}; địa điểm thu thập ưu tiên: {1}</value></data>
+  <data name="gather_030" xml:space="preserve"><value>Mang theo: {0}; mục tiêu GBR: {1}</value></data>
+  <data name="gather_031" xml:space="preserve"><value>Phân bổ MIN/BTN cố định theo mục tiêu tổng vật phẩm mang theo. Các máy khách thu thập độc lập.</value></data>
+  <data name="gather_032" xml:space="preserve"><value>Thu thập gốc</value></data>
+  <data name="gather_033" xml:space="preserve"><value>Nhập hoặc sửa nguyên liệu, làm mới tồn kho, xem phân bổ cố định rồi bắt đầu.</value></data>
+  <data name="gather_034" xml:space="preserve"><value>Các máy khách MIN/BTN độc lập thực hiện phân bổ mang theo cố định qua danh sách GBR do DAD quản lý.</value></data>
+  <data name="gather_035" xml:space="preserve"><value>Các máy khách thu thập độc lập; không cần lập tổ đội.</value></data>
+  <data name="gather_036" xml:space="preserve"><value>Máy khách sẵn sàng; đang kiểm tra đồ mang theo và phân bổ cố định.</value></data>
+  <data name="gather_037" xml:space="preserve"><value>Đang xác minh tổng đồ mang theo sau khi dọn công việc GBR do DAD quản lý.</value></data>
+  <data name="gather_038" xml:space="preserve"><value>Tổng đồ mang theo cuối cùng chưa đạt mục tiêu. Không phân bổ lại các phần cố định.</value></data>
+  <data name="gather_039" xml:space="preserve"><value>Đồ mang theo đã thay đổi sau khi lập kế hoạch. Hãy làm mới kế hoạch.</value></data>
+  <data name="gather_040" xml:space="preserve"><value>Không đọc được túi đồ mang theo.</value></data>
+  <data name="gather_041" xml:space="preserve"><value>Bật ít nhất một mục tiêu hợp lệ trong giới hạn vật phẩm.</value></data>
+  <data name="gather_042" xml:space="preserve"><value>Mục tiêu cần ID vật phẩm/dòng riêng biệt và số lượng từ 1 đến 999999.</value></data>
+  <data name="gather_043" xml:space="preserve"><value>Chọn ít nhất một máy khách thu thập đang kết nối.</value></data>
+  <data name="gather_044" xml:space="preserve"><value>Một máy khách đã chọn thiếu thông tin định danh.</value></data>
+  <data name="gather_045" xml:space="preserve"><value>Các máy khách cần ô, phiên, nhân vật và tài khoản riêng biệt.</value></data>
+  <data name="gather_046" xml:space="preserve"><value>Máy khách {0} không khả dụng hoặc không đọc được túi đồ.</value></data>
+  <data name="gather_047" xml:space="preserve"><value>Phân bổ đã sửa không hợp lệ, bị trùng hoặc trỏ đến máy khách/mục tiêu bị thiếu.</value></data>
+  <data name="gather_048" xml:space="preserve"><value>Tồn kho mang theo của vật phẩm {0} không hợp lệ.</value></data>
+  <data name="gather_049" xml:space="preserve"><value>Máy khách {0} không thể thu thập vật phẩm {1}.</value></data>
+  <data name="gather_050" xml:space="preserve"><value>Tổng phân bổ đã sửa cho vật phẩm {0} phải bằng phần thiếu hiện tại {1}.</value></data>
+  <data name="gather_051" xml:space="preserve"><value>Không máy khách nào đã chọn có thể thu thập vật phẩm {0}.</value></data>
+  <data name="gather_052" xml:space="preserve"><value>Mục tiêu GBR của máy khách {0}, vật phẩm {1}, vượt 999999.</value></data>
+  <data name="gather_053" xml:space="preserve"><value>Thu thập cần nguyên liệu hợp lệ và máy khách trong giới hạn ô DAD.</value></data>
+  <data name="gather_054" xml:space="preserve"><value>Truy vấn tồn kho hết hạn. Kiểm tra mọi máy khách DAD đã chọn đều kết nối và hỗ trợ thu thập.</value></data>
+  <data name="gather_055" xml:space="preserve"><value>Phản hồi tồn kho không khớp yêu cầu/định danh máy khách hiện tại.</value></data>
+  <data name="gather_056" xml:space="preserve"><value>Tồn kho thu thập không khả dụng hoặc không đầy đủ.</value></data>
+  <data name="gather_057" xml:space="preserve"><value>Thu thập yêu cầu đúng một phân công máy khách cục bộ.</value></data>
+  <data name="gather_058" xml:space="preserve"><value>Một tác vụ thu thập đang quản lý vẫn cần dọn dẹp.</value></data>
+  <data name="gather_059" xml:space="preserve"><value>Không thể thu thập bằng GBR trên máy khách này.</value></data>
+  <data name="gather_060" xml:space="preserve"><value>Sẵn sàng thu thập phần hữu hạn của máy khách này.</value></data>
+  <data name="gather_061" xml:space="preserve"><value>Thu thập yêu cầu GBR IPC v2.</value></data>
+  <data name="gather_062" xml:space="preserve"><value>Phiên bản GBR đang tải không khả dụng.</value></data>
+  <data name="gather_063" xml:space="preserve"><value>Không thể thu thập bằng GBR: {0}</value></data>
+  <data name="gather_064" xml:space="preserve"><value>GBR đang chạy độc lập.</value></data>
+  <data name="gather_065" xml:space="preserve"><value>GBR đang chạy độc lập. Dừng nó trước khi bắt đầu thu thập DAD.</value></data>
+  <data name="gather_066" xml:space="preserve"><value>Túi đồ mang theo chưa sẵn sàng.</value></data>
+  <data name="gather_067" xml:space="preserve"><value>Truy vấn tồn kho không đầy đủ hoặc đã cũ.</value></data>
+  <data name="gather_068" xml:space="preserve"><value>Truy vấn không khớp máy khách/tài khoản/nhân vật cục bộ sẵn sàng.</value></data>
+  <data name="gather_069" xml:space="preserve"><value>Chưa giải quyết xong việc dọn GBR đang quản lý. Xem lỗi trước khi chủ động dừng tất cả lần nữa.</value></data>
+  <data name="gather_070" xml:space="preserve"><value>Dán bản xuất thu thập không quá 1 MiB.</value></data>
+  <data name="gather_071" xml:space="preserve"><value>Bản xuất không có mục tiêu thu thập.</value></data>
+  <data name="gather_072" xml:space="preserve"><value>Vật phẩm không rõ hoặc không xác định được ID có thể thu thập.</value></data>
+  <data name="gather_073" xml:space="preserve"><value>Số lượng thu thập phải từ 1 đến 999999.</value></data>
+  <data name="gather_074" xml:space="preserve"><value>Cần dòng ID/số lượng hoặc dòng Teamcraft có số lượng trước.</value></data>
+  <data name="gather_075" xml:space="preserve"><value>Tổng số lượng vật phẩm {0} phải từ 1 đến 999999.</value></data>
+  <data name="gather_076" xml:space="preserve"><value>Vật phẩm GBR {0} xuất hiện nhiều lần.</value></data>
+  <data name="gather_077" xml:space="preserve"><value>Danh sách thu thập đã nhập</value></data>
+  <data name="gather_078" xml:space="preserve"><value>Bản xuất thu thập vượt giới hạn vật phẩm.</value></data>
+  <data name="gather_079" xml:space="preserve"><value>Bản xuất GBR không hợp lệ: {0}</value></data>
+  <data name="gather_080" xml:space="preserve"><value>Phiên bản danh sách GBR không được hỗ trợ.</value></data>
+  <data name="gather_081" xml:space="preserve"><value>Danh sách GBR sau giải nén vượt 1 MiB.</value></data>
+  <data name="gather_082" xml:space="preserve"><value>Thiếu vật phẩm, số lượng hoặc địa điểm ưu tiên GBR.</value></data>
+  <data name="gather_083" xml:space="preserve"><value>Danh sách GBR vượt giới hạn vật phẩm.</value></data>
+  <data name="gather_084" xml:space="preserve"><value>Thu thập phải là tác vụ duy nhất của lượt chạy.</value></data>
+  <data name="gather_085" xml:space="preserve"><value>Thu thập vượt giới hạn máy khách đã chọn của DAD.</value></data>
+  <data name="gather_086" xml:space="preserve"><value>Thu thập yêu cầu máy khách DAD trực tiếp không bị gán nghề chiến đấu cố định.</value></data>
+  <data name="gather_087" xml:space="preserve"><value>Nhóm thu thập GBR &apos;{0}&apos; với {1} máy khách độc lập</value></data>
+  <data name="gather_088" xml:space="preserve"><value>{0} Chưa giải quyết xong việc dọn GBR đang quản lý: {1}</value></data>
+  <data name="gather_089" xml:space="preserve"><value>{0} Chưa dọn xong GBR. Xem lỗi trước khi chủ động dừng tất cả lần nữa.</value></data>
+  <data name="gather_090" xml:space="preserve"><value>Lệnh thu thập yêu cầu lược đồ lệnh máy khách 4.</value></data>
+  <data name="gather_091" xml:space="preserve"><value>Lệnh thu thập cần tác vụ thu thập.</value></data>
+  <data name="gather_092" xml:space="preserve"><value>Danh sách GBR đang dùng không còn khớp lệnh DAD.</value></data>
+  <data name="gather_093" xml:space="preserve"><value>Số lượng đồ mang theo GBR không hợp lệ.</value></data>
+  <data name="gather_094" xml:space="preserve"><value>Vật phẩm {0} không có điểm MIN/BTN được hỗ trợ.</value></data>
+  <data name="gather_095" xml:space="preserve"><value>Thu thập cần ID lượt chạy.</value></data>
+  <data name="gather_096" xml:space="preserve"><value>Thu thập cần lệnh vật phẩm hợp lệ.</value></data>
+  <data name="gather_097" xml:space="preserve"><value>GBR đã có tác vụ DAD đang quản lý hoặc chưa giải quyết.</value></data>
+  <data name="gather_098" xml:space="preserve"><value>Lần thu thập GBR này đã kết thúc; không chạy lại.</value></data>
+  <data name="gather_099" xml:space="preserve"><value>Lệnh GBR có phân công máy khách không hợp lệ hoặc lẫn nhau.</value></data>
+  <data name="gather_100" xml:space="preserve"><value>Tạo danh sách GBR thất bại.</value></data>
+  <data name="gather_101" xml:space="preserve"><value>Tồn kho vật phẩm {0} đã đổi. Làm mới kế hoạch.</value></data>
+  <data name="gather_102" xml:space="preserve"><value>GBR không thêm vật phẩm {0} vào danh sách đang quản lý.</value></data>
+  <data name="gather_103" xml:space="preserve"><value>Địa điểm GBR ưu tiên {0} không khả dụng.</value></data>
+  <data name="gather_104" xml:space="preserve"><value>GBR không chấp nhận địa điểm ưu tiên {0}.</value></data>
+  <data name="gather_105" xml:space="preserve"><value>Vật phẩm GBR đang dùng không khớp đúng lệnh DAD.</value></data>
+  <data name="gather_106" xml:space="preserve"><value>GBR không bật lệnh thu thập đang quản lý.</value></data>
+  <data name="gather_107" xml:space="preserve"><value>Yêu cầu dừng không khớp lượt GBR đang quản lý.</value></data>
+  <data name="gather_108" xml:space="preserve"><value>GBR không tắt lệnh thu thập đang quản lý.</value></data>
+  <data name="gather_109" xml:space="preserve"><value>Cấu trúc bộ dữ liệu vật phẩm GBR đang dùng đã đổi.</value></data>
+  <data name="gather_110" xml:space="preserve"><value>GBR không có dữ liệu MIN/BTN cho vật phẩm {0}.</value></data>
+  <data name="gather_111" xml:space="preserve"><value>Phiên bản GBR đã đổi; không gửi thao tác đến phiên bản thay thế.</value></data>
+  <data name="gather_112" xml:space="preserve"><value>Thành phần GBR {0} không khả dụng.</value></data>
+  <data name="gather_113" xml:space="preserve"><value>Thu thập cần một tác vụ hữu hạn và máy khách trực tiếp hợp lệ.</value></data>
+  <data name="gather_114" xml:space="preserve"><value>Thiếu phân bổ vật phẩm/máy khách đã chốt chính xác.</value></data>
+  <data name="gather_115" xml:space="preserve"><value>Lệnh không khớp tài khoản/nhân vật/phiên/ô đã chốt và mục tiêu nguyên liệu.</value></data>
+  <data name="gather_116" xml:space="preserve"><value>Tổng phần thu thập không bằng phần thiếu chung đã chốt.</value></data>
+  <data name="gather_117" xml:space="preserve"><value>Máy khách này đã có lệnh cố định khác.</value></data>
+  <data name="gather_118" xml:space="preserve"><value>Máy khách cần một phân công máy khách/vật phẩm cố định hợp lệ.</value></data>
+  <data name="gather_119" xml:space="preserve"><value>Thiếu lệnh thu thập hoặc vượt giới hạn lệnh.</value></data>
+  <data name="gather_120" xml:space="preserve"><value>Thu thập cần đúng mô-đun và phân công máy khách.</value></data>
+  <data name="gather_121" xml:space="preserve"><value>Nhóm thu thập GBR</value></data>
 </root>

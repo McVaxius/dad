@@ -25,7 +25,7 @@ using dad.Windows;
 
 namespace dad;
 
-public sealed class Plugin : IDalamudPlugin
+public sealed partial class Plugin : IDalamudPlugin
 {
     private static readonly TimeSpan RemoteAuthorityStatusRefreshInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan RemoteAuthorityStatusStaleThreshold = TimeSpan.FromSeconds(4);
@@ -113,6 +113,7 @@ public sealed class Plugin : IDalamudPlugin
     internal DadFrenRiderProfileTransferService FrenRiderProfileTransferService { get; }
     public DadMogtomeIpcService MogtomeIpcService { get; }
     public DadLootGoblinIpcService LootGoblinIpcService { get; }
+    public DadGatherBuddyService GatherBuddyService { get; }
     public DadQueueExecutionService QueueExecutionService { get; }
     public DadWorkerExecutionService WorkerExecutionService { get; }
     public DadSchedulerService SchedulerService { get; }
@@ -396,6 +397,8 @@ public sealed class Plugin : IDalamudPlugin
         PresenceService.ConfigureCombatRotationService(CombatRotationService);
         MogtomeIpcService = new DadMogtomeIpcService(PluginInterface);
         LootGoblinIpcService = new DadLootGoblinIpcService(PluginInterface);
+        GatherBuddyService = new DadGatherBuddyService(PluginInterface, PresenceService);
+        DadRuntimeHandlers.ConfigureGathering(TransportService, GatherBuddyService);
         PresenceService.ConfigureLootGoblinReadinessProvider(LootGoblinIpcService.IsReady);
         QueueExecutionService = new DadQueueExecutionService(
             ModuleRegistry,
@@ -405,7 +408,8 @@ public sealed class Plugin : IDalamudPlugin
             LocalDutyQueueService,
             NpcDutyQueueService,
             DutySupportAdsService,
-            CombatRotationService);
+            CombatRotationService,
+            GatherBuddyService);
         WorkerExecutionService = new DadWorkerExecutionService(
             QueueExecutionService,
             PresenceService,
@@ -2450,6 +2454,7 @@ public sealed class Plugin : IDalamudPlugin
             RouletteTarget = source.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            GatherParty = source.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
             CompletionActions = source.CompletionActions?.Clone(),
@@ -3870,6 +3875,7 @@ public sealed class Plugin : IDalamudPlugin
             RouletteTarget = PlannerOptions.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
             MogtomePreset = PlannerOptions.MogtomePreset,
             MogtomeDutyPolicy = PlannerOptions.MogtomeDutyPolicy,
+            GatherParty = PlannerOptions.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = PlannerOptions.RefreshTrustNpcLevels,
             StopPolicy = stopPolicy,
             CompletionActions = DadCompletionActionSnapshots.Resolve(PlannerOptions.CompletionActions, Configuration.CompletionActions),
@@ -4002,6 +4008,7 @@ public sealed class Plugin : IDalamudPlugin
             RouletteTarget = source.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            GatherParty = source.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = source.StopPolicy.Clone(),
             LevelingMode = source.LevelingMode?.Clone() ?? new DadLevelingModeOptions(),
@@ -4057,6 +4064,7 @@ public sealed class Plugin : IDalamudPlugin
         options.RouletteTarget = group.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
         options.MogtomePreset = group.MogtomePreset;
         options.MogtomeDutyPolicy = group.MogtomeDutyPolicy;
+        options.GatherParty = group.GatherParty?.Clone() ?? new();
         options.RefreshTrustNpcLevels = group.RefreshTrustNpcLevels;
         options.StopPolicy = group.StopPolicy.Clone();
         options.CompletionActions = group.CompletionActions?.Clone();
@@ -4308,6 +4316,7 @@ public sealed class Plugin : IDalamudPlugin
             $"duty={options.DutyContentFinderConditionId}:{options.DutyDisplayName.Trim()}:{options.DutyUnsynced}:{options.DutyExpectedPartySize}",
             $"roulette={options.RouletteTarget?.SchemaVersion ?? 0}:{options.RouletteTarget?.Kind}:{options.RouletteTarget?.RouletteId ?? 0}:{options.RouletteTarget?.Key?.Trim()}:{options.RouletteTarget?.DisplayName?.Trim()}",
             $"mogtome={options.MogtomePreset.Trim()}:{options.MogtomeDutyPolicy.Trim()}",
+            $"gather={DadIpcJson.Serialize(options.GatherParty)}",
             $"trustRefresh={options.RefreshTrustNpcLevels}",
             $"stop={plannerPreview.StopPolicy.Mode}:{plannerPreview.StopPolicy.AfterRuns}:{plannerPreview.StopPolicy.TargetLevel}:{plannerPreview.StopPolicy.TargetCharacterKey}:{plannerPreview.StopPolicy.SafetyCap}",
             $"completion={BuildCompletionActionSignature(options.CompletionActions)}",
@@ -5880,7 +5889,7 @@ public sealed class Plugin : IDalamudPlugin
         ["SchedulerUpdate"] = () => DadRuntimeHandlers.UpdateScheduler(Configuration, SchedulerService,
             RunCoordinatorService, standaloneCrewDisbandActive, () => GetVisibleRunState().VisibleRun,
             ResolvePlannerGroup, BuildSchedulerPlannerPreview, StartScheduledPlannerRequest),
-        ["Coordinator"] = () => RunCoordinatorService.Update(),
+        ["Coordinator"] = () => { RunCoordinatorService.Update(); UpdateGatherPreview(); },
         ["AutoPartyRuntimeBindings"] = ReconcileAutoPartyRuntimeBindings,
         ["CrewToolsDisband"] = UpdateStandaloneCrewDisband,
         ["CompletionActions"] = () => DadCompletionActionRunner.Update(Configuration, Log),

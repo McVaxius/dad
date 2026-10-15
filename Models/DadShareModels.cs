@@ -82,6 +82,8 @@ public sealed class DadSharePlanDto
     public DadShareQueueTargetDto RouletteTarget { get; set; } = new();
     public string MogtomePreset { get; set; } = string.Empty;
     public string MogtomeDutyPolicy { get; set; } = string.Empty;
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public DadGatherPartyTask? GatherParty { get; set; }
     public bool RefreshTrustNpcLevels { get; set; } = true;
     public DadShareStopPolicyDto StopPolicy { get; set; } = new();
     public DadShareLevelingModeDto LevelingMode { get; set; } = new();

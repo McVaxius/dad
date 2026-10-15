@@ -86,6 +86,8 @@ public sealed class DadWorkerExecutionService
             {
                 return BuildAck(false, command, $"Worker assignment rejected: {validationBlocker}");
             }
+            if (!hasRecordedStatus && activeCommand == null && queueExecutionService.HasOwnedGatheringWork)
+                return BuildAck(false, command, "Owned GBR cleanup remains unresolved; finish cleanup before another assignment.");
 
             if (!hasRecordedStatus &&
                 !DadDependencyMutationBoundaryRules.CanCross(
@@ -188,7 +190,7 @@ public sealed class DadWorkerExecutionService
                 var cancelledRunId = activeCommand.RunId;
                 DadRunStepResultDto? executorCancellation = null;
                 if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||
-                    status.ModuleId == DadModuleId.Mogtome)
+                    status.ModuleId is DadModuleId.Mogtome or DadModuleId.GatherParty)
                     executorCancellation = queueExecutionService.CancelActiveExecutor(cancel.Reason);
                 else if (participantQueueContent != null)
                 {
@@ -196,18 +198,20 @@ public sealed class DadWorkerExecutionService
                     participantQueueContent = null;
                     lastParticipantQueueTransition = string.Empty;
                 }
+                if (status.ModuleId == DadModuleId.GatherParty && executorCancellation != null)
+                    status.StepResult = executorCancellation.Clone();
 
-                var lootGoblinCancellationAcknowledged = status.ModuleId != DadModuleId.LootGoblin ||
-                    activeCommand.Role != DadWorkerExecutionRole.QueueLeader ||
-                    IsAcknowledgedLootGoblinCancellation(executorCancellation, cancelledRunId);
-                var finalState = lootGoblinCancellationAcknowledged
+                var ownedHelperCancellationAcknowledged = status.ModuleId != DadModuleId.GatherParty &&
+                    (status.ModuleId != DadModuleId.LootGoblin || activeCommand.Role != DadWorkerExecutionRole.QueueLeader) ||
+                    IsAcknowledgedOwnedHelperCancellation(executorCancellation, cancelledRunId);
+                var finalState = ownedHelperCancellationAcknowledged
                     ? DadWorkerExecutionState.Cancelled
                     : DadWorkerExecutionState.Failed;
                 var finalSummary = cancel.Reason;
-                if (!lootGoblinCancellationAcknowledged)
+                if (!ownedHelperCancellationAcknowledged)
                 {
                     finalSummary = executorCancellation == null || string.IsNullOrWhiteSpace(executorCancellation.FailureReason)
-                        ? "LootGoblin did not acknowledge exact terminal cancellation."
+                        ? "The owned helper did not acknowledge exact terminal cancellation."
                         : executorCancellation.FailureReason;
                     if (executorCancellation != null)
                         status.StepResult = executorCancellation.Clone();
@@ -236,11 +240,20 @@ public sealed class DadWorkerExecutionService
                     CommandId = cancelledCommandId,
                     RunId = cancelledRunId,
                     WorkerSessionId = presenceService.WorkerSessionId,
-                    Accepted = lootGoblinCancellationAcknowledged,
+                    Accepted = ownedHelperCancellationAcknowledged,
                     Summary = status.Summary,
                     Status = status.Clone(),
                 };
             }
+
+            // Failed native cleanup is still owned even after its worker command became terminal.
+            // Acknowledgement polling must neither claim success nor repeat the native action.
+            if (queueExecutionService.HasOwnedGatheringWork && string.Equals(status.RunId, cancel.RunId, StringComparison.OrdinalIgnoreCase))
+                return new DadWorkerExecutionAck
+                {
+                    CommandId = status.CommandId, RunId = cancel.RunId, WorkerSessionId = presenceService.WorkerSessionId,
+                    Accepted = false, Summary = status.Summary, Status = status.Clone(),
+                };
 
             // Review H3: a cancel can arrive after ACK but before Update() dequeues the command.
             // Drain any matching pending command so it never starts on the next frame.
@@ -282,6 +295,8 @@ public sealed class DadWorkerExecutionService
     {
         lock (stateLock)
         {
+            var previousRole = status.Role;
+            var preserveGatherIdentity = status.ModuleId == DadModuleId.GatherParty;
             combatRotationService.ReleaseOwnedDungeonRsrAggro();
             if (cancellationPending && activeCommand != null)
             {
@@ -298,35 +313,36 @@ public sealed class DadWorkerExecutionService
                 };
             }
 
-            var hadWork = activeCommand != null || !pendingCommands.IsEmpty || !status.IsTerminal && status.State != DadWorkerExecutionState.Idle;
+            var hadWork = activeCommand != null || !pendingCommands.IsEmpty || queueExecutionService.HasOwnedGatheringWork ||
+                          !status.IsTerminal && status.State != DadWorkerExecutionState.Idle;
             gearPreparation.Reset();
             pendingCommands.DrainAll();
 
             var runId = activeCommand?.RunId ?? status.RunId;
             var commandId = activeCommand?.CommandId ?? status.CommandId;
-            var activeLootGoblinLeader = activeCommand?.Role == DadWorkerExecutionRole.QueueLeader &&
-                                         status.ModuleId == DadModuleId.LootGoblin;
+            var activeOwnedHelper = activeCommand?.Role == DadWorkerExecutionRole.QueueLeader &&
+                                         status.ModuleId == DadModuleId.LootGoblin || queueExecutionService.HasOwnedGatheringWork;
             shoppingService.CancelActive(reason);
             var shoppingResults = shoppingService.Results.Select(static result => result.Clone()).ToList();
             if (activeCommand?.Role == DadWorkerExecutionRole.Participant && participantQueueContent != null)
                 queueExecutionService.ResetParticipantQueueObserver(activeCommand.RunId);
             var executorCancellation = queueExecutionService.CancelAll(reason);
-            var lootGoblinCancellationAcknowledged = !activeLootGoblinLeader ||
-                IsAcknowledgedLootGoblinCancellation(executorCancellation, runId);
+            var ownedHelperCancellationAcknowledged = !activeOwnedHelper ||
+                IsAcknowledgedOwnedHelperCancellation(executorCancellation, runId);
             if (shoppingService.IsCancellationPending && activeCommand != null)
             {
-                if (activeLootGoblinLeader && !lootGoblinCancellationAcknowledged)
+                if (activeOwnedHelper && !ownedHelperCancellationAcknowledged)
                     status.StepResult = executorCancellation.Clone();
                 participantQueueContent = null;
                 lastParticipantQueueTransition = string.Empty;
                 cancelledRuns.Record(runId);
-                var pendingSummary = lootGoblinCancellationAcknowledged
+                var pendingSummary = ownedHelperCancellationAcknowledged
                     ? reason
                     : string.IsNullOrWhiteSpace(executorCancellation.FailureReason)
-                        ? "LootGoblin did not acknowledge exact terminal cancellation."
+                        ? "The owned helper did not acknowledge exact terminal cancellation."
                         : executorCancellation.FailureReason;
                 HoldForShoppingCancellation(
-                    lootGoblinCancellationAcknowledged
+                    ownedHelperCancellationAcknowledged
                         ? DadWorkerExecutionState.Cancelled
                         : DadWorkerExecutionState.Failed,
                     pendingSummary,
@@ -353,26 +369,28 @@ public sealed class DadWorkerExecutionService
                 CommandId = commandId,
                 RunId = runId,
                 WorkerSessionId = presenceService.WorkerSessionId,
+                Role = preserveGatherIdentity ? previousRole : default,
+                ModuleId = preserveGatherIdentity ? DadModuleId.GatherParty : DadModuleId.None,
                 State = hadWork
-                    ? lootGoblinCancellationAcknowledged
+                    ? ownedHelperCancellationAcknowledged
                         ? DadWorkerExecutionState.Cancelled
                         : DadWorkerExecutionState.Failed
                     : DadWorkerExecutionState.Idle,
                 IsTerminal = hadWork,
                 UpdatedAtUtc = DadClock.UtcNow,
                 Summary = hadWork
-                    ? lootGoblinCancellationAcknowledged
+                    ? ownedHelperCancellationAcknowledged
                         ? reason
                         : string.IsNullOrWhiteSpace(executorCancellation.FailureReason)
-                            ? "LootGoblin did not acknowledge exact terminal cancellation."
+                            ? "The owned helper did not acknowledge exact terminal cancellation."
                             : executorCancellation.FailureReason
                     : "No local DAD worker execution was active.",
-                FailureReason = hadWork && !lootGoblinCancellationAcknowledged
+                FailureReason = hadWork && !ownedHelperCancellationAcknowledged
                     ? string.IsNullOrWhiteSpace(executorCancellation.FailureReason)
-                        ? "LootGoblin did not acknowledge exact terminal cancellation."
+                        ? "The owned helper did not acknowledge exact terminal cancellation."
                         : executorCancellation.FailureReason
                     : hadWork ? reason : string.Empty,
-                StepResult = activeLootGoblinLeader ? executorCancellation.Clone() : new DadRunStepResultDto(),
+                StepResult = activeOwnedHelper ? executorCancellation.Clone() : new DadRunStepResultDto(),
                 ShoppingResults = shoppingResults,
             };
             shoppingService.Reset();
@@ -382,7 +400,7 @@ public sealed class DadWorkerExecutionService
                 CommandId = commandId,
                 RunId = runId,
                 WorkerSessionId = presenceService.WorkerSessionId,
-                Accepted = lootGoblinCancellationAcknowledged,
+                Accepted = ownedHelperCancellationAcknowledged,
                 Summary = status.Summary,
                 Status = status.Clone(),
             };
@@ -444,7 +462,7 @@ public sealed class DadWorkerExecutionService
             {
                 shoppingService.CancelActive("Worker execution timeout.");
                 if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||
-                    status.ModuleId == DadModuleId.Mogtome)
+                    status.ModuleId is DadModuleId.Mogtome or DadModuleId.GatherParty)
                     queueExecutionService.CancelActiveExecutor("Worker execution timeout.");
                 if (shoppingService.IsCancellationPending)
                 {
@@ -465,7 +483,7 @@ public sealed class DadWorkerExecutionService
             }
 
             if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader ||
-                status.ModuleId == DadModuleId.Mogtome)
+                status.ModuleId is DadModuleId.Mogtome or DadModuleId.GatherParty)
                 UpdateQueueLeader();
             else
                 UpdateParticipant();
@@ -575,7 +593,8 @@ public sealed class DadWorkerExecutionService
             return;
         }
 
-        shoppingService.Begin(command.Plan.Request, command.ModuleIndex, localAssignment, DadClock.UtcNow);
+        if (module.ModuleId != DadModuleId.GatherParty)
+            shoppingService.Begin(command.Plan.Request, command.ModuleIndex, localAssignment, DadClock.UtcNow);
         passiveLootGoblinPending = module.ModuleId == DadModuleId.LootGoblin &&
                                    command.Role == DadWorkerExecutionRole.Participant;
         if (passiveLootGoblinPending && !shoppingService.IsRequired)
@@ -622,6 +641,13 @@ public sealed class DadWorkerExecutionService
             status.Summary = "Worker preparation is waiting for normal world-stable prequeue safety proof before durability or ADS inspection.";
             status.UpdatedAtUtc = DadClock.UtcNow;
             commandStatuses[activeCommand.CommandId] = status.Clone();
+            return;
+        }
+
+        if (module.ModuleId == DadModuleId.GatherParty)
+        {
+            prequeuePrepared = true;
+            BeginQueueWork(activeCommand, module);
             return;
         }
 
@@ -734,7 +760,7 @@ public sealed class DadWorkerExecutionService
     {
         if (command.Role == DadWorkerExecutionRole.Participant)
         {
-            if (module.ModuleId == DadModuleId.Mogtome)
+            if (module.ModuleId is DadModuleId.Mogtome or DadModuleId.GatherParty)
             {
                 queueExecutionService.SetWorkerRole(command.Role);
                 ApplyLeaderResult(queueExecutionService.ExecuteModule(command.Plan, module, command.Participants));
@@ -914,7 +940,7 @@ public sealed class DadWorkerExecutionService
                                    condition[ConditionFlag.WaitingForDutyFinder] ||
                                    condition[ConditionFlag.BoundByDuty] ||
                                    condition[ConditionFlag.BoundByDuty56];
-        var valid = status.ModuleId != DadModuleId.LootGoblin && queueOrDutyCommitted
+        var valid = (status.ModuleId == DadModuleId.GatherParty || status.ModuleId != DadModuleId.LootGoblin && queueOrDutyCommitted)
             ? DadWorkerCommandValidationRules.TryValidateMutationIdentity(
                 activeCommand,
                 localRuntime,
@@ -964,7 +990,7 @@ public sealed class DadWorkerExecutionService
             return false;
         }
 
-        if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader || status.ModuleId == DadModuleId.Mogtome)
+        if (activeCommand.Role == DadWorkerExecutionRole.QueueLeader || status.ModuleId is DadModuleId.Mogtome or DadModuleId.GatherParty)
             queueExecutionService.CancelActiveExecutor("Frozen worker mutation authority changed.");
 
         Finish(
@@ -1037,12 +1063,12 @@ public sealed class DadWorkerExecutionService
         Finish(DadWorkerExecutionState.Completed, true, summary, string.Empty);
     }
 
-    private static bool IsAcknowledgedLootGoblinCancellation(
+    private static bool IsAcknowledgedOwnedHelperCancellation(
         DadRunStepResultDto? result,
         string expectedRunId)
         => result != null &&
            string.Equals(result.RunId, expectedRunId, StringComparison.Ordinal) &&
-           result.ModuleId == DadModuleId.LootGoblin &&
+           (result.ModuleId is DadModuleId.LootGoblin or DadModuleId.GatherParty) &&
            result.ParticipantState == DadParticipantState.Cancelled &&
            result.ExecutorStatus.Status == DadRunStatus.Cancelled &&
            !result.ExecutorStatus.IsActive;

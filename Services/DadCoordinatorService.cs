@@ -12,6 +12,9 @@ public sealed class DadCoordinatorService
     private static readonly TimeSpan CancellationRetryInterval = TimeSpan.FromSeconds(2);
 
     private readonly Configuration configuration;
+    private DadGatherPlanProbe? gatherDispatchProbe;
+    private DadGatherPlanProbe? gatherCompletionProbe;
+    private string gatherProbeRunId = string.Empty;
     private readonly ConfigManager configManager;
     private readonly DadCharacterIntelligenceService characterIntelligenceService;
     private readonly DadRosterCatalogService rosterCatalogService;
@@ -642,12 +645,13 @@ public sealed class DadCoordinatorService
     public DadRunResult CancelAllLocal(string reason)
     {
         reason = string.IsNullOrWhiteSpace(reason) ? "Stopped by DAD Stop-all." : reason;
+        var ownedGatheringWork = queueExecutionService.HasOwnedGatheringWork;
         var runId = activePlan?.Request.RequestId ?? CurrentResult.RequestId;
         var cancelAllAck = workerExecutionService.CancelAll(reason);
         ConsumeShoppingResults(cancelAllAck.Status.ShoppingResults);
         if (localWorkerFinalizationPending)
             return CurrentResult.Clone();
-        queueExecutionService.CancelAll(reason);
+        if (!ownedGatheringWork) queueExecutionService.CancelAll(reason);
         claimService.ReleaseAllClaims();
 
         if (activePlan == null || !IsBusy)
@@ -1409,6 +1413,18 @@ public sealed class DadCoordinatorService
 
         if (!TryRefreshStrictMutationBoundary("party assembly and invite dispatch"))
             return;
+
+        if (activePlan.CompositeModuleId == DadModuleId.GatherParty)
+        {
+            foreach (var participant in activeParticipants)
+            {
+                participant.State = DadParticipantState.AssemblyConfirmed;
+                participant.StatusText = "Gathering clients execute independently; no party assembly is required.";
+            }
+            CurrentResult.Participants = activeParticipants.Select(participant => participant.Clone()).ToList();
+            Transition(DadRunPhase.QueuePreparing, DadRunStatus.Running, "Gathering clients ready; checking carried stock and fixed allocations.");
+            return;
+        }
 
         if (TryResolveSingleWorkerAssembly(activePlan))
             return;
@@ -2226,9 +2242,73 @@ public sealed class DadCoordinatorService
            snapshot.ActiveModuleReference?.ModuleIndex == activeModuleIndex &&
            string.Equals(snapshot.ActiveModuleReference.ModuleId, module.ModuleId.ToString(), StringComparison.Ordinal);
 
+    private bool TryFreezeGatheringOrders(DadPlannedModuleExecution module)
+    {
+        if (activePlan?.Request.GatherParty == null) return false;
+        if (gatherProbeRunId != activePlan.Request.RequestId)
+        {
+            gatherProbeRunId = activePlan.Request.RequestId;
+            gatherDispatchProbe = gatherCompletionProbe = null;
+            activePlan.Request.GatherOrders = [];
+        }
+        if (gatherDispatchProbe?.Preview != null && activePlan.Request.GatherOrders.Count > 0) return true;
+        gatherDispatchProbe ??= new(activePlan.Request.GatherParty, activeParticipants, activePlan.Request.RequestId, DadClock.UtcNow);
+        gatherDispatchProbe.Update(transportService.SendGatherStockQuery, DadClock.UtcNow,
+            activePlan.Orchestration.WaitPolicy.GetParticipantReadyTimeout());
+        var error = gatherDispatchProbe.Error;
+        if (string.IsNullOrEmpty(error) && gatherDispatchProbe.Preview is { CanStart: false } invalid)
+            error = string.Join(" | ", invalid.Blockers);
+        if (!string.IsNullOrEmpty(error))
+        {
+            ApplyModuleRoutingResult(module, BuildWorkerFailureResult(module, error), replaceExisting: activeStepResultIndex >= 0);
+            return false;
+        }
+        if (gatherDispatchProbe.Preview == null)
+        {
+            CurrentResult.ActiveTaskStatus = "Reading selected clients' carried stock and gathering eligibility.";
+            CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
+            Publish();
+            return false;
+        }
+        activePlan.Request.GatherOrders = gatherDispatchProbe.Preview.Items.SelectMany(item => item.Orders).ToList();
+        return true;
+    }
+
+    private bool TryVerifyGatheringCompletion(DadPlannedModuleExecution module)
+    {
+        if (activePlan?.Request.GatherParty == null) return false;
+        if (gatherCompletionProbe == null)
+        {
+            var target = activePlan.Request.GatherParty.Clone();
+            target.Allocations.Clear();
+            gatherCompletionProbe = new(target, activeParticipants, activePlan.Request.RequestId, DadClock.UtcNow);
+        }
+        gatherCompletionProbe.Update(transportService.SendGatherStockQuery, DadClock.UtcNow,
+            activePlan.Orchestration.WaitPolicy.GetParticipantReadyTimeout());
+        var error = gatherCompletionProbe.Error;
+        if (string.IsNullOrEmpty(error) && gatherCompletionProbe.Preview is { Fulfilled: false })
+            error = "The final combined carried stock does not meet the gathering targets. Fixed shares will not be redistributed.";
+        if (!string.IsNullOrEmpty(error))
+        {
+            ApplyModuleRoutingResult(module, BuildWorkerFailureResult(module, error), replaceExisting: true);
+            return false;
+        }
+        if (gatherCompletionProbe.Preview == null)
+        {
+            CurrentResult.ActiveTaskStatus = "Verifying final combined carried stock after owned GBR cleanup.";
+            CurrentResult.BlockedReason = CurrentResult.ActiveTaskStatus;
+            Publish();
+            return false;
+        }
+        return true;
+    }
+
     private void DispatchWorkerExecution(DadPlannedModuleExecution module)
     {
         if (activePlan == null)
+            return;
+
+        if (module.ModuleId == DadModuleId.GatherParty && !TryFreezeGatheringOrders(module))
             return;
 
         var barrierRequired = DadWorkerPrequeueBarrierRules.IsRequired(
@@ -2280,7 +2360,8 @@ public sealed class DadCoordinatorService
                 {
                     SchemaVersion = DadWorkerCommandSchemaRules.ResolveEmissionSchema(
                         activePlan.Request.PreDutyRepairPolicy,
-                        activePlan.Request.ShoppingAssociations),
+                        activePlan.Request.ShoppingAssociations,
+                        activePlan.Request.GatherParty),
                     CommandId = DadWorkerCommandIdentityRules.Build(
                         activePlan.Request.RequestId,
                         activeModuleIndex,
@@ -2291,7 +2372,7 @@ public sealed class DadCoordinatorService
                     Role = role,
                     Plan = workerPlan,
                     Participants = participantView.Select(static candidate => candidate.Clone()).ToList(),
-                    TimeoutSeconds = persistentStartup
+                    TimeoutSeconds = persistentStartup || module.ModuleId == DadModuleId.GatherParty
                         ? 0
                         : Math.Max(
                             60,
@@ -2719,6 +2800,8 @@ public sealed class DadCoordinatorService
                     replaceExisting: true);
                 return;
             }
+            if (module.ModuleId == DadModuleId.GatherParty && !TryVerifyGatheringCompletion(module))
+                return;
             var result = leaderStatus?.StepResult.Clone() ?? BuildWorkerProgressResult(module, $"All {statuses.Count} workers completed.");
             result.Success = true;
             result.Deferred = false;
@@ -2729,6 +2812,8 @@ public sealed class DadCoordinatorService
             result.ExecutorStatus.Phase = DadRunPhase.Finalizing;
             result.ExecutorStatus.CompletedAtUtc ??= DadClock.UtcNow;
             result.ExecutorStatus.UpdatedAtUtc = DadClock.UtcNow;
+            if (module.ModuleId == DadModuleId.GatherParty)
+                result.ExecutorStatus.GatherCounts = gatherCompletionProbe!.Preview!.Items.ToDictionary(item => item.ItemId, item => item.OnHand);
             activeModuleCompleted = true;
             ApplyModuleRoutingResult(module, result, replaceExisting: true);
             workerStatuses.Clear();
@@ -2746,6 +2831,19 @@ public sealed class DadCoordinatorService
                 $"{statuses.Count(static worker => worker.IsTerminal)} LAN complete; authenticated endpoint settlement pending.");
         progress.ExecutorStatus.IsActive = true;
         progress.ExecutorStatus.Status = DadRunStatus.Running;
+        if (module.ModuleId == DadModuleId.GatherParty)
+        {
+            // A finished leader's Finalizing phase is not the independent workers' phase.
+            // Keep routing until every fixed share and the final combined stock are proved.
+            progress.ParticipantState = DadParticipantState.Running;
+            progress.ExecutorStatus.Phase = DadRunPhase.InDutyOrTask;
+            progress.ExecutorStatus.CompletedAtUtc = null;
+            progress.Summary = $"Gathering clients: {statuses.Count(worker => worker.IsTerminal && worker.Success)}/{statuses.Count} complete.";
+            progress.ExecutorStatus.Summary = progress.Summary;
+            var ids = activePlan.Request.GatherParty!.Items.Where(item => item.Enabled).Select(item => item.ItemId).Order().ToArray();
+            progress.ExecutorStatus.GatherCounts = statuses.All(worker => ids.SequenceEqual(worker.StepResult.ExecutorStatus.GatherCounts.Keys.Order()))
+                ? ids.ToDictionary(id => id, id => statuses.Sum(worker => worker.StepResult.ExecutorStatus.GatherCounts[id])) : [];
+        }
         ApplyModuleRoutingResult(module, progress, replaceExisting: true);
     }
 
@@ -3074,8 +3172,9 @@ public sealed class DadCoordinatorService
             .Distinct(StringComparer.OrdinalIgnoreCase));
 
         var participantState = ResolveModuleParticipantState(result);
-        foreach (var participant in activeParticipants)
-            participant.State = participantState;
+        if (module.ModuleId != DadModuleId.GatherParty)
+            foreach (var participant in activeParticipants)
+                participant.State = participantState;
 
         presenceService.SetLeaderState(activePlan.Request.RequestId, participantState, result.Summary);
         CurrentResult.Participants = activeParticipants.Select(static participant => participant.Clone()).ToList();
@@ -3351,6 +3450,11 @@ public sealed class DadCoordinatorService
 
     private void FinishSuccessfulWork(string summary)
     {
+        if (activePlan?.CompositeModuleId == DadModuleId.GatherParty)
+        {
+            Transition(DadRunPhase.Finalizing, DadRunStatus.Running, summary);
+            return;
+        }
         if (!activeScheduleRepeatBoundary.PreservePartyAfterCompletion)
         {
             BeginPartyTeardown(summary);

@@ -54,6 +54,9 @@ public sealed class DadRunRequest
     public DadSquadronTask? Squadron { get; set; }
     public DadVariantVvdTask? VariantVvd { get; set; }
     public DadLootGoblinTask? LootGoblin { get; set; }
+    public DadGatherPartyTask? GatherParty { get; set; }
+    // Runtime-only frozen orders travel with the admitted run, never with a saved preset.
+    public List<DadGatherWorkerOrder> GatherOrders { get; set; } = [];
 
     public DadRunRequest Clone()
     {
@@ -77,6 +80,8 @@ public sealed class DadRunRequest
         clone.Squadron = Squadron?.Clone();
         clone.VariantVvd = VariantVvd?.Clone();
         clone.LootGoblin = LootGoblin?.Clone();
+        clone.GatherParty = GatherParty?.Clone();
+        clone.GatherOrders = GatherOrders.ToList();
         return clone;
     }
 
@@ -97,6 +102,7 @@ public sealed class DadRunRequest
         if (Squadron != null) count++;
         if (VariantVvd != null) count++;
         if (LootGoblin != null) count++;
+        if (GatherParty != null) count++;
         return count;
     }
 
@@ -171,6 +177,9 @@ public sealed class DadRunRequest
         if (LootGoblin != null)
             parts.Add($"LootGoblin configured-map run (party {LootGoblin.ExpectedPartySize})");
 
+        if (GatherParty != null)
+            parts.Add($"GBR Gather Party '{GatherParty.Name}' ({GatherParty.Items.Count(item => item.Enabled)} targets)");
+
         if (parts.Count == 0)
             return "No dad tasks configured.";
 
@@ -234,6 +243,7 @@ public sealed class DadRunRequest
                 _ when Squadron != null => DadModuleId.Squadron,
                 _ when VariantVvd != null => DadModuleId.VariantVvd,
                 _ when LootGoblin != null => DadModuleId.LootGoblin,
+                _ when GatherParty != null => DadModuleId.GatherParty,
                 _ => DadModuleId.Duty,
             };
         }
@@ -306,6 +316,7 @@ public sealed class DadRunRequest
                     DadModuleId.Squadron => "Squadron",
                     DadModuleId.VariantVvd => "VariantVvd",
                     DadModuleId.LootGoblin => "LootGoblin",
+                    DadModuleId.GatherParty => "GatherParty",
                     _ => Orchestration.LocalOnlyOverride ? "LocalOnly" : "ServerDad",
                 };
         }

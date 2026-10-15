@@ -27,7 +27,18 @@ public static class DadEffectivePlannerGroupProjection
                 .ToList()
             : normalizedRows;
 
-        return DadSchedulerGroupCloneRules.CloneWithSlots(source, projectedRows);
+        var projected = DadSchedulerGroupCloneRules.CloneWithSlots(source, projectedRows);
+        if (activityMode == DadPlannerActivityMode.GatherParty)
+        {
+            foreach (var slot in projected.Slots)
+            {
+                slot.RequiredRole = DadPartyRole.Any;
+                slot.RequiredJobId = null;
+                slot.LevelSeekTarget = null;
+                slot.SkipIfDailyRouletteRewardReceived = false;
+            }
+        }
+        return projected;
     }
 
     public static DadPlannerGroup BindResolvedSchedulerSlots(

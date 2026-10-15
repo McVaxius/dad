@@ -45,6 +45,13 @@
     <Compile Include="..\Services\DadHubProtocol.cs" Link="DadHubProtocol.cs" />
     <Compile Include="..\Services\DadTransportRuntime.cs" Link="DadTransportRuntime.cs" />
     <Compile Include="..\Services\DadIpcJson.cs" Link="DadIpcJson.cs" />
+    <Compile Include="..\Services\DadGatherListImport.cs" Link="DadGatherListImport.cs" />
+    <Compile Include="..\Services\DadGatherBuddyListAdapter.cs" Link="DadGatherBuddyListAdapter.cs" />
+    <Compile Include="..\Services\DadGatherWorkerRun.cs" Link="DadGatherWorkerRun.cs" />
+    <Compile Include="..\Services\DadGatherStockQueryRules.cs" Link="DadGatherStockQueryRules.cs" />
+    <Compile Include="..\Services\DadGatherOrderRules.cs" Link="DadGatherOrderRules.cs" />
+    <Compile Include="..\Services\DadGatherPlanProbe.cs" Link="DadGatherPlanProbe.cs" />
+    <Compile Include="..\Services\DadGatherPartyPlanningRules.cs" Link="DadGatherPartyPlanningRules.cs" />
     <Compile Include="..\Services\DadWireIngressNormalizer.cs" Link="DadWireIngressNormalizer.cs" />
     <Compile Include="..\Services\DadAtomicFileStore.cs" Link="DadAtomicFileStore.cs" />
     <Compile Include="..\Services\DadAccountConfigPersistence.cs" Link="DadAccountConfigPersistence.cs" />

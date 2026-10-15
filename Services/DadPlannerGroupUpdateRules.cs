@@ -26,6 +26,7 @@ public static class DadPlannerGroupUpdateRules
         target.RouletteTarget = source.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
         target.MogtomePreset = source.MogtomePreset;
         target.MogtomeDutyPolicy = source.MogtomeDutyPolicy;
+        target.GatherParty = source.GatherParty?.Clone() ?? new();
         target.RefreshTrustNpcLevels = source.RefreshTrustNpcLevels;
         target.StopPolicy = source.StopPolicy.Clone();
         DadSharedPlanRules.ReconcileStopTarget(target);

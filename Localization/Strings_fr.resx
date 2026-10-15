@@ -8707,4 +8707,126 @@ Les lignes</value>
   <data name="I536.0" xml:space="preserve"><value>Afficher le statut dans la barre de titre</value></data>
   <data name="I536.1" xml:space="preserve"><value>Statut détaillé dans la barre de titre</value></data>
   <data name="I536.6" xml:space="preserve"><value>Équipe prête</value></data>
+  <data name="gather_000" xml:space="preserve"><value>Groupe de récolte GBR</value></data>
+  <data name="gather_001" xml:space="preserve"><value>Liste de récolte</value></data>
+  <data name="gather_002" xml:space="preserve"><value>Les quantités souhaitées visent le total des inventaires des personnages. Les autres stockages sont exclus.</value></data>
+  <data name="gather_003" xml:space="preserve"><value>Importer GBR ou Teamcraft</value></data>
+  <data name="gather_004" xml:space="preserve"><value>Importer la liste de récolte</value></data>
+  <data name="gather_005" xml:space="preserve"><value>Liste importée. Vérifiez les objectifs avant de démarrer.</value></data>
+  <data name="gather_006" xml:space="preserve"><value>Ajouter une ressource</value></data>
+  <data name="gather_007" xml:space="preserve"><value>Choisir une ressource</value></data>
+  <data name="gather_008" xml:space="preserve"><value>Vider la liste</value></data>
+  <data name="gather_009" xml:space="preserve"><value>Actualiser les inventaires</value></data>
+  <data name="gather_010" xml:space="preserve"><value>Répartir également</value></data>
+  <data name="gather_011" xml:space="preserve"><value>Objet</value></data>
+  <data name="gather_012" xml:space="preserve"><value>En stock</value></data>
+  <data name="gather_013" xml:space="preserve"><value>Restant</value></data>
+  <data name="gather_014" xml:space="preserve"><value>Retirer la ressource</value></data>
+  <data name="gather_015" xml:space="preserve"><value>Rechercher une ressource</value></data>
+  <data name="gather_016" xml:space="preserve"><value>Actualisez les inventaires pour prévisualiser les allocations fixes.</value></data>
+  <data name="gather_017" xml:space="preserve"><value>Sélectionnez des clients DAD directement connectés pour lire leurs stocks.</value></data>
+  <data name="gather_018" xml:space="preserve"><value>Lecture des inventaires et des possibilités de récolte des clients sélectionnés.</value></data>
+  <data name="gather_019" xml:space="preserve"><value>Allocations fixes prêtes. Le démarrage revérifie les stocks actuels.</value></data>
+  <data name="gather_020" xml:space="preserve"><value>S'arrête lorsque toutes les allocations fixes et les objectifs de stock cumulé sont atteints.</value></data>
+  <data name="gather_021" xml:space="preserve"><value>Récolte de l'allocation fixe.</value></data>
+  <data name="gather_022" xml:space="preserve"><value>Ce client n'a rien à récolter.</value></data>
+  <data name="gather_023" xml:space="preserve"><value>Allocation récoltée et stock en inventaire vérifié.</value></data>
+  <data name="gather_024" xml:space="preserve"><value>GBR s'est arrêté avant d'atteindre les objectifs de stock fixes.</value></data>
+  <data name="gather_025" xml:space="preserve"><value>Récolte annulée.</value></data>
+  <data name="gather_026" xml:space="preserve"><value>Clients de récolte : {0}/{1} terminés.</value></data>
+  <data name="gather_027" xml:space="preserve"><value>En attente de points de récolte ({0}/{1}).</value></data>
+  <data name="gather_028" xml:space="preserve"><value>Récolte de l'allocation fixe ({0}/{1}).</value></data>
+  <data name="gather_029" xml:space="preserve"><value>ID d'objet : {0} ; lieu de récolte préféré : {1}</value></data>
+  <data name="gather_030" xml:space="preserve"><value>Stock en inventaire : {0} ; objectif GBR : {1}</value></data>
+  <data name="gather_031" xml:space="preserve"><value>Répartition MIN/BOT fixe selon le stock porté total visé. Les clients récoltent séparément.</value></data>
+  <data name="gather_032" xml:space="preserve"><value>Récolte native</value></data>
+  <data name="gather_033" xml:space="preserve"><value>Importez ou modifiez les matériaux, actualisez le stock, vérifiez la répartition fixe, puis démarrez.</value></data>
+  <data name="gather_034" xml:space="preserve"><value>Des clients MIN/BOT indépendants exécutent des quotas de stock porté via des listes GBR gérées par DAD.</value></data>
+  <data name="gather_035" xml:space="preserve"><value>Les clients récoltent séparément ; aucune formation de groupe requise.</value></data>
+  <data name="gather_036" xml:space="preserve"><value>Clients prêts ; vérification du stock porté et de la répartition fixe.</value></data>
+  <data name="gather_037" xml:space="preserve"><value>Vérification du stock porté total après libération du travail GBR géré par DAD.</value></data>
+  <data name="gather_038" xml:space="preserve"><value>Le stock porté total final n&apos;atteint pas les objectifs. Les parts fixes ne seront pas redistribuées.</value></data>
+  <data name="gather_039" xml:space="preserve"><value>Le stock porté a changé depuis la planification. Actualisez le plan.</value></data>
+  <data name="gather_040" xml:space="preserve"><value>L&apos;inventaire porté est illisible.</value></data>
+  <data name="gather_041" xml:space="preserve"><value>Activez au moins un objectif valide dans la limite d&apos;objets.</value></data>
+  <data name="gather_042" xml:space="preserve"><value>Les objectifs exigent des ID d&apos;objet/ligne distincts et des quantités de 1 à 999999.</value></data>
+  <data name="gather_043" xml:space="preserve"><value>Sélectionnez au moins un client de récolte connecté.</value></data>
+  <data name="gather_044" xml:space="preserve"><value>L&apos;identité d&apos;un client sélectionné est incomplète.</value></data>
+  <data name="gather_045" xml:space="preserve"><value>Les clients doivent avoir des emplacements, sessions, personnages et comptes distincts.</value></data>
+  <data name="gather_046" xml:space="preserve"><value>Le client {0} est indisponible ou son inventaire porté est illisible.</value></data>
+  <data name="gather_047" xml:space="preserve"><value>Une répartition modifiée est invalide, dupliquée ou désigne un client/objectif absent.</value></data>
+  <data name="gather_048" xml:space="preserve"><value>Le stock porté de l&apos;objet {0} est invalide.</value></data>
+  <data name="gather_049" xml:space="preserve"><value>Le client {0} ne peut pas récolter l&apos;objet {1}.</value></data>
+  <data name="gather_050" xml:space="preserve"><value>Les parts modifiées de l&apos;objet {0} doivent totaliser le manque actuel de {1}.</value></data>
+  <data name="gather_051" xml:space="preserve"><value>Aucun client sélectionné ne peut récolter l&apos;objet {0}.</value></data>
+  <data name="gather_052" xml:space="preserve"><value>La cible GBR du client {0}, objet {1}, dépasse 999999.</value></data>
+  <data name="gather_053" xml:space="preserve"><value>La récolte exige des matériaux valides et des clients dans la limite d&apos;emplacements DAD.</value></data>
+  <data name="gather_054" xml:space="preserve"><value>Délai de lecture du stock dépassé. Vérifiez que tous les clients DAD sélectionnés sont connectés et prennent en charge la récolte.</value></data>
+  <data name="gather_055" xml:space="preserve"><value>La réponse de stock ne correspond pas à la requête et au client actuels.</value></data>
+  <data name="gather_056" xml:space="preserve"><value>Le stock de récolte est indisponible ou incomplet.</value></data>
+  <data name="gather_057" xml:space="preserve"><value>La récolte exige une seule affectation locale exacte.</value></data>
+  <data name="gather_058" xml:space="preserve"><value>Une opération de récolte gérée doit encore être libérée.</value></data>
+  <data name="gather_059" xml:space="preserve"><value>La récolte GBR est indisponible sur ce client.</value></data>
+  <data name="gather_060" xml:space="preserve"><value>Prêt à récolter la quantité définie pour ce client.</value></data>
+  <data name="gather_061" xml:space="preserve"><value>La récolte nécessite GBR IPC v2.</value></data>
+  <data name="gather_062" xml:space="preserve"><value>L&apos;instance GBR chargée est indisponible.</value></data>
+  <data name="gather_063" xml:space="preserve"><value>Récolte GBR indisponible : {0}</value></data>
+  <data name="gather_064" xml:space="preserve"><value>GBR fonctionne déjà indépendamment.</value></data>
+  <data name="gather_065" xml:space="preserve"><value>GBR fonctionne déjà indépendamment. Arrêtez-le avant de lancer la récolte DAD.</value></data>
+  <data name="gather_066" xml:space="preserve"><value>L&apos;inventaire porté n&apos;est pas prêt.</value></data>
+  <data name="gather_067" xml:space="preserve"><value>La requête de stock est incomplète ou périmée.</value></data>
+  <data name="gather_068" xml:space="preserve"><value>La requête ne correspond pas à un client/compte/personnage local prêt.</value></data>
+  <data name="gather_069" xml:space="preserve"><value>La libération du travail GBR géré reste en échec. Vérifiez l&apos;erreur avant un nouvel arrêt global explicite.</value></data>
+  <data name="gather_070" xml:space="preserve"><value>Collez un export de récolte de 1 Mio maximum.</value></data>
+  <data name="gather_071" xml:space="preserve"><value>L&apos;export ne contient aucun objectif de récolte.</value></data>
+  <data name="gather_072" xml:space="preserve"><value>L&apos;objet est inconnu ou son ID récoltable ne peut pas être identifié.</value></data>
+  <data name="gather_073" xml:space="preserve"><value>Les quantités doivent être comprises entre 1 et 999999.</value></data>
+  <data name="gather_074" xml:space="preserve"><value>Ligne ID d&apos;objet/quantité ou ligne Teamcraft commençant par la quantité attendue.</value></data>
+  <data name="gather_075" xml:space="preserve"><value>La quantité totale de l&apos;objet {0} doit être de 1 à 999999.</value></data>
+  <data name="gather_076" xml:space="preserve"><value>L&apos;objet GBR {0} apparaît plusieurs fois.</value></data>
+  <data name="gather_077" xml:space="preserve"><value>Liste de récolte importée</value></data>
+  <data name="gather_078" xml:space="preserve"><value>L&apos;export de récolte dépasse la limite d&apos;objets.</value></data>
+  <data name="gather_079" xml:space="preserve"><value>Export GBR invalide : {0}</value></data>
+  <data name="gather_080" xml:space="preserve"><value>Version de liste GBR non prise en charge.</value></data>
+  <data name="gather_081" xml:space="preserve"><value>La liste GBR décompressée dépasse 1 Mio.</value></data>
+  <data name="gather_082" xml:space="preserve"><value>Objets, quantités ou lieux préférés GBR manquants.</value></data>
+  <data name="gather_083" xml:space="preserve"><value>La liste GBR dépasse la limite d&apos;objets.</value></data>
+  <data name="gather_084" xml:space="preserve"><value>La récolte doit être la seule tâche de l&apos;exécution.</value></data>
+  <data name="gather_085" xml:space="preserve"><value>La récolte dépasse la limite de clients sélectionnés DAD.</value></data>
+  <data name="gather_086" xml:space="preserve"><value>La récolte exige des clients DAD directs sans job de combat imposé.</value></data>
+  <data name="gather_087" xml:space="preserve"><value>Récolte GBR « {0} » avec {1} client(s) indépendant(s)</value></data>
+  <data name="gather_088" xml:space="preserve"><value>{0} Libération du travail GBR géré non résolue : {1}</value></data>
+  <data name="gather_089" xml:space="preserve"><value>{0} La libération du travail GBR reste en échec. Vérifiez l&apos;erreur avant un nouvel arrêt global explicite.</value></data>
+  <data name="gather_090" xml:space="preserve"><value>Les ordres de récolte exigent le schéma de commande 4.</value></data>
+  <data name="gather_091" xml:space="preserve"><value>Les ordres de récolte exigent une tâche de récolte.</value></data>
+  <data name="gather_092" xml:space="preserve"><value>La liste GBR active ne correspond plus à cet ordre DAD.</value></data>
+  <data name="gather_093" xml:space="preserve"><value>Quantité portée GBR invalide.</value></data>
+  <data name="gather_094" xml:space="preserve"><value>Aucun lieu MIN/BOT pris en charge pour l&apos;objet {0}.</value></data>
+  <data name="gather_095" xml:space="preserve"><value>La récolte exige un identifiant d&apos;exécution.</value></data>
+  <data name="gather_096" xml:space="preserve"><value>La récolte exige des ordres d&apos;objets valides.</value></data>
+  <data name="gather_097" xml:space="preserve"><value>GBR a déjà une récolte DAD gérée ou non résolue.</value></data>
+  <data name="gather_098" xml:space="preserve"><value>Cette tentative GBR est terminée ; elle ne sera pas rejouée.</value></data>
+  <data name="gather_099" xml:space="preserve"><value>L&apos;ordre GBR contient des affectations invalides ou mélangées.</value></data>
+  <data name="gather_100" xml:space="preserve"><value>Échec de création de liste GBR.</value></data>
+  <data name="gather_101" xml:space="preserve"><value>Le stock porté de l&apos;objet {0} a changé. Actualisez le plan.</value></data>
+  <data name="gather_102" xml:space="preserve"><value>GBR n&apos;a pas ajouté l&apos;objet {0} à la liste gérée.</value></data>
+  <data name="gather_103" xml:space="preserve"><value>Lieu GBR préféré {0} indisponible.</value></data>
+  <data name="gather_104" xml:space="preserve"><value>GBR n&apos;a pas accepté le lieu préféré {0}.</value></data>
+  <data name="gather_105" xml:space="preserve"><value>Les objets GBR actifs ne correspondent pas à l&apos;ordre DAD exact.</value></data>
+  <data name="gather_106" xml:space="preserve"><value>GBR n&apos;a pas activé l&apos;ordre de récolte géré.</value></data>
+  <data name="gather_107" xml:space="preserve"><value>L&apos;arrêt ne correspond pas à l&apos;exécution GBR gérée.</value></data>
+  <data name="gather_108" xml:space="preserve"><value>GBR n&apos;a pas désactivé l&apos;ordre de récolte géré.</value></data>
+  <data name="gather_109" xml:space="preserve"><value>La structure des objets actifs GBR a changé.</value></data>
+  <data name="gather_110" xml:space="preserve"><value>GBR n&apos;a pas d&apos;objet récoltable MIN/BOT pour {0}.</value></data>
+  <data name="gather_111" xml:space="preserve"><value>L&apos;instance GBR a changé ; aucune action envoyée à la nouvelle.</value></data>
+  <data name="gather_112" xml:space="preserve"><value>Membre GBR {0} indisponible.</value></data>
+  <data name="gather_113" xml:space="preserve"><value>La récolte exige une tâche finie et des clients directs valides.</value></data>
+  <data name="gather_114" xml:space="preserve"><value>La répartition figée exacte objet/client est absente.</value></data>
+  <data name="gather_115" xml:space="preserve"><value>Les ordres ne correspondent pas aux compte/personnage/session/emplacement figés et aux objectifs.</value></data>
+  <data name="gather_116" xml:space="preserve"><value>La somme des parts n&apos;égale pas le manque total figé.</value></data>
+  <data name="gather_117" xml:space="preserve"><value>Ce client a déjà un autre ordre figé.</value></data>
+  <data name="gather_118" xml:space="preserve"><value>Un client exige une affectation figée client/objet valide.</value></data>
+  <data name="gather_119" xml:space="preserve"><value>Les ordres de récolte sont absents ou dépassent la limite.</value></data>
+  <data name="gather_120" xml:space="preserve"><value>La récolte exige son module et ses affectations exacts.</value></data>
+  <data name="gather_121" xml:space="preserve"><value>Groupe de récolte GBR</value></data>
 </root>

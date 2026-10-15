@@ -277,6 +277,27 @@ public sealed class DadPlannerService
             });
         }
 
+        if (request.GatherParty != null)
+        {
+            if (request.GetConfiguredTaskCount() != 1 || !DadGatherPartyPlanningRules.TryValidateTask(request.GatherParty, out rejectionReason))
+            {
+                if (string.IsNullOrWhiteSpace(rejectionReason)) rejectionReason = "Gathering must be the run's only task.";
+                return null;
+            }
+            var expectedClients = Math.Max(1, request.Orchestration.RosterIntent.ExpectedPartySize);
+            if (expectedClients > DadGatherPartyPlanningRules.MaximumClients)
+            {
+                rejectionReason = "Gathering exceeds DAD's selected-client limit.";
+                return null;
+            }
+            modules.Add(new()
+            {
+                ModuleId = DadModuleId.GatherParty, DisplayName = "GBR Gather Party", OwnerLabel = "Dad",
+                ExpectedPartySize = expectedClients, RequiresPeers = expectedClients > 1,
+                Summary = $"GBR Gather Party '{request.GatherParty.Name}' with {expectedClients} independent client(s)",
+            });
+        }
+
         if (request.Commendation != null)
         {
             if (request.Commendation.Attempts <= 0)
@@ -492,7 +513,7 @@ public sealed class DadPlannerService
         out string rejectionReason)
     {
         rejectionReason = string.Empty;
-        if (requiredParticipantCount <= 1 || request.Orchestration.LocalOnlyOverride)
+        if (request.GatherParty != null || requiredParticipantCount <= 1 || request.Orchestration.LocalOnlyOverride)
             return true;
 
         if (request.Orchestration.QueueAuthority != DadQueueAuthority.Leader)

@@ -4,6 +4,9 @@ namespace dad.Services;
 
 internal static class DadRuntimeHandlers
 {
+    internal static void ConfigureGathering(DadTransportService transport, IDadGatherClientService gathering)
+        => transport.ConfigureGatherStockHandler(gathering.Probe);
+
     internal static void ConfigureAlliance(DadTransportService transport, DadAlliancePartyFinderService alliance)
         => transport.ConfigureAlliancePartyFinderHandlers(alliance.AcceptHubInstruction,
             alliance.AcceptCancellation, alliance.BuildUiSnapshot);

@@ -27,14 +27,18 @@ internal static class DadWorkerCommandSchemaRules
     public const int LegacySchema = 1;
     public const int RepairPolicySchema = 2;
     public const int ShoppingSchema = 3;
+    public const int GatheringSchema = 4;
 
     public static bool IsSupported(int schemaVersion)
-        => schemaVersion is LegacySchema or RepairPolicySchema or ShoppingSchema;
+        => schemaVersion is LegacySchema or RepairPolicySchema or ShoppingSchema or GatheringSchema;
 
     public static int ResolveEmissionSchema(
         DadPreDutyRepairPolicy? policy,
-        IReadOnlyCollection<DadShoppingRunAssociation>? shoppingAssociations = null)
-        => shoppingAssociations is { Count: > 0 }
+        IReadOnlyCollection<DadShoppingRunAssociation>? shoppingAssociations = null,
+        DadGatherPartyTask? gatherParty = null)
+        => gatherParty != null
+            ? GatheringSchema
+            : shoppingAssociations is { Count: > 0 }
             ? ShoppingSchema
             : policy?.Enabled == true
                 ? RepairPolicySchema

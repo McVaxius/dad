@@ -23,10 +23,28 @@ public sealed class DadPresetProviderService
         DadPlannerActivityMode.Squadron,
         DadPlannerActivityMode.VariantVvd,
         DadPlannerActivityMode.LootGoblin,
+        DadPlannerActivityMode.GatherParty,
     ];
 
     private static readonly DadPlannerLaneDefinition[] PlannerLaneDefinitions =
     [
+        new()
+        {
+            ActivityMode = DadPlannerActivityMode.GatherParty,
+            RunFamily = DadPlannerRunFamily.FarmLoops,
+            ModuleId = DadModuleId.GatherParty,
+            DisplayName = "GBR Gather Party",
+            Summary = "Fixed MIN/BTN allocations from a combined carried-stock target. Clients gather independently.",
+            Maturity = DadLaneMaturity.LiveReady,
+            MaturityLabel = "Native gathering",
+            AccentColorHex = "#22C55E",
+            DefaultAuthorityMode = DadAuthorityMode.ServerDad,
+            DefaultTransportOwner = DadTransportOwner.DadDirect,
+            DefaultQueueAuthority = DadQueueAuthority.Leader,
+            ExpectedPartySize = 1,
+            RequiresRemoteParty = true,
+            NextAction = "Import or edit materials, refresh stock, review the fixed allocations, then Start.",
+        },
         new()
         {
             ActivityMode = DadPlannerActivityMode.Msq,
@@ -362,6 +380,7 @@ public sealed class DadPresetProviderService
             RouletteTarget = group.RouletteTarget?.Clone() ?? new DadQueueTarget { Kind = DadQueueTargetKind.Roulette },
             MogtomePreset = group.MogtomePreset,
             MogtomeDutyPolicy = group.MogtomeDutyPolicy,
+            GatherParty = group.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = group.RefreshTrustNpcLevels,
             StopPolicy = group.StopPolicy.Clone(),
             CompletionActions = group.CompletionActions?.Clone(),
@@ -898,6 +917,15 @@ public sealed class DadPresetProviderService
             ScheduleBlockers = [..plannerPreview.ScheduleBlockers],
         };
 
+        if (request.GatherParty != null && !DadGatherPartyPlanningRules.TryValidateTask(request.GatherParty, out var gatherError))
+        {
+            result.CanSchedule = false;
+            AddValidationBlocker(result.StaticBlockers, gatherError);
+            BlockRequest(result, gatherError);
+            PopulateRequestPreviewDetails(result, request, lane, selectedDuty);
+            return result;
+        }
+
         if (!string.IsNullOrWhiteSpace(shoppingBlocker))
         {
             result.CanSchedule = false;
@@ -1080,6 +1108,11 @@ public sealed class DadPresetProviderService
                     ExpectedPartySize = Math.Clamp(requestedPartySize, 1, 8),
                 };
                 break;
+            case DadPlannerActivityMode.GatherParty:
+                request.GatherParty = options.GatherParty.Clone();
+                request.StopPolicy = new() { Mode = DadPlannerStopMode.AfterRuns, AfterRuns = 1 };
+                request.RefreshRecommendedGear = false;
+                break;
             case DadPlannerActivityMode.Commendation:
                 request.Commendation = new DadCommendationTask
                 {
@@ -1176,6 +1209,7 @@ public sealed class DadPresetProviderService
             DadPlannerActivityMode.Squadron => "Squadron",
             DadPlannerActivityMode.VariantVvd => "Variant / VVD",
             DadPlannerActivityMode.LootGoblin => "LootGoblin",
+            DadPlannerActivityMode.GatherParty => "GBR Gather Party",
             _ => activityMode.ToString(),
         };
 
@@ -1322,6 +1356,7 @@ public sealed class DadPresetProviderService
             DadPlannerActivityMode.Squadron => "Squadron",
             DadPlannerActivityMode.VariantVvd => "Variant / VVD",
             DadPlannerActivityMode.LootGoblin => "LootGoblin Group",
+            DadPlannerActivityMode.GatherParty => "GBR Gather Party",
             _ => "Dad Planner",
         };
         var lane = ResolveLaneDefinition(options.ActivityMode);
@@ -1336,6 +1371,7 @@ public sealed class DadPresetProviderService
         }
         if (string.IsNullOrWhiteSpace(options.MogtomeDutyPolicy))
             options.MogtomeDutyPolicy = DadMogtomeDutyPolicies.PresetHandoff;
+        options.GatherParty ??= new();
         options.RouletteTarget ??= new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
         if (options.ActivityMode == DadPlannerActivityMode.DailyRoulette)
         {
@@ -1368,6 +1404,7 @@ public sealed class DadPresetProviderService
             ? DadMogtomeDutyPolicies.PresetHandoff
             : normalized.MogtomeDutyPolicy.Trim();
         normalized.RouletteTarget ??= new DadQueueTarget { Kind = DadQueueTargetKind.Roulette };
+        normalized.GatherParty ??= new();
         normalized.RunFamily = ResolveLaneDefinition(normalized.ActivityMode).RunFamily;
         normalized.InviteAuthority = DadInviteAuthority.PresetLeader;
         if (normalized.ActivityMode == DadPlannerActivityMode.DailyRoulette)
@@ -1496,6 +1533,9 @@ public sealed class DadPresetProviderService
             requestedPartySize <= 0 ? lane.ExpectedPartySize : requestedPartySize,
             DadPlannerSlotRules.MinSlotNumber,
             DadPlannerSlotRules.MaxSlotNumber);
+        if (lane.ActivityMode == DadPlannerActivityMode.GatherParty)
+            return Enumerable.Range(1, slotCount).Select(number =>
+                new PlannerSlotDefinition(DadPlannerSlotRules.FormatSlotId(number), DadPartyRole.Any)).ToList();
         if (slotCount == PartySlotDefinitions.Length)
             return PartySlotDefinitions;
 
@@ -2263,6 +2303,8 @@ public sealed class DadPresetProviderService
                 => Math.Clamp(options.DutyExpectedPartySize > 0
                     ? options.DutyExpectedPartySize
                     : selectedDuty?.QueueSize ?? lane.ExpectedPartySize, 1, 4),
+            DadPlannerActivityMode.GatherParty
+                => selectedGroup == null ? 1 : DadPlannerSlotRules.CountPrimarySlots(selectedGroup.Slots),
             DadPlannerActivityMode.LootGoblin
                 => selectedGroup == null
                     ? 1

@@ -43,7 +43,7 @@ public static class DadDroppedPeerContinuationRules
                 "A failed or cancelled peer cannot be internally satisfied after disconnect.");
         }
 
-        if (!isProtectedRole && cachedStatus is { EnteredDuty: true })
+        if (!isProtectedRole && ResolveModule(command) != DadModuleId.GatherParty && cachedStatus is { EnteredDuty: true })
         {
             if (leaderCommand != null && leaderStatus != null &&
                 Same(leaderCommand.RunId, command.RunId) &&

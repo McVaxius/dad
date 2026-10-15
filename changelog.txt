@@ -1,3 +1,16 @@
+2026-10-15 - GBR Gather Party presets and fixed worker orders (I572/I573)
+
+- Add the gathering task and preview models, native GBR exported-list and Teamcraft text import, editable quantities and preferred-node preservation. Keep parsing separate from execution.
+- Add a compact preset editor with searchable sheet items, editable targets, combined carried stock, remaining quantities, per-client shares, import, Clear list, stock refresh and even split. Preserve targets, preferred nodes and allocations in existing preset storage and sharing.
+- Calculate finite per-client shares from combined carried stock, using each client's starting stock plus its share as the native GBR target. Recheck stock and eligibility through authenticated worker queries before freezing orders. Validate exact identities and edited allocations; exclude other storage.
+- Dispatch schema-4 gathering orders through existing DAD workers. Skip party formation/teardown, combat preparation and duty timeouts. Track every share and verify fresh final combined stock before group completion. Never redistribute a disconnected share or replay a completed command.
+- Add owned native GBR list setup and cleanup; preserve independent GBR work and restore only list flags DAD changed. Timed-node waiting stays active and native toggles/status alone never prove completion. Failed cleanup remains visible, rejects false acknowledgements and new assignments, and requires another explicit Stop; polling does not resubmit native Stop.
+- Extend the production-linked Headless/Lifecycle Lab with task-specific stock, allocation, cancellation, failure and connection-loss coverage. Synthetic observations do not establish native game or GBR acceptance. Preserve release 1.1.0.0; no deployment or version change.
+- Localize the gathering activity identifier in existing settings/status displays. Extend the retained compiled UI checks to cover gathering labels, progress, deficits and nested failure messages in all fifteen catalogs.
+- Keep tight gathering-row padding active after applying dense controls so narrow tables show every bounded row above the horizontal scrollbar.
+- Scope gathering fields to the scrolling table's child window so long material names remain on their own row.
+- Measure the translated header, dense rows and scrollbar when sizing the gathering grid, keeping its final row fully visible with taller shaped text.
+
 2026-10-14 - Own-account Duty Support scheduling on Client Dads
 
 - Let Client Dads start their own saved solo Duty Support presets and pure own-account schedules, including local Wake/relog, requested jobs, Level-seek, repeats, cadence and failed-entry resume. Keep mixed/foreign-account work, multiplayer, templates, shared identities, shopping and other queued job types Coordinator-only.

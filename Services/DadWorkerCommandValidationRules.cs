@@ -35,6 +35,13 @@ internal static class DadWorkerCommandValidationRules
         if (!DadWorkerCommandSchemaRules.IsSupported(command.SchemaVersion))
             return Fail($"Unsupported worker command schema {command.SchemaVersion}.", out blocker);
 
+        if (command.Plan.Request.GatherOrders == null ||
+            command.Plan.Request.GatherOrders.Count > DadGatherPartyPlanningRules.MaximumItems * DadGatherPartyPlanningRules.MaximumClients)
+            return Fail("Gathering worker orders are missing or exceed the finite order limit.", out blocker);
+        if ((command.Plan.Request.GatherParty != null || command.Plan.Request.GatherOrders.Count > 0) &&
+            command.SchemaVersion < DadWorkerCommandSchemaRules.GatheringSchema)
+            return Fail("Worker command schema 4 is required for gathering orders.", out blocker);
+
         command.Plan.Request.PreDutyRepairPolicy ??= new DadPreDutyRepairPolicy();
         command.Plan.Request.PreDutyRepairPolicy.Normalize();
         if (command.SchemaVersion == DadWorkerCommandSchemaRules.LegacySchema &&
@@ -82,6 +89,13 @@ internal static class DadWorkerCommandValidationRules
 
         if (command.ModuleIndex < 0 || command.ModuleIndex >= command.Plan.Modules.Count)
             return Fail($"Worker command module index {command.ModuleIndex} is invalid.", out blocker);
+
+        if (command.Plan.Request.GatherParty != null &&
+            (command.Plan.Modules[command.ModuleIndex].ModuleId != DadModuleId.GatherParty || command.Participants == null ||
+             !DadGatherOrderRules.TryValidate(command.Plan.Request, command.Participants, out blocker)))
+            return Fail(string.IsNullOrWhiteSpace(blocker) ? "Gathering requires its exact gathering module and worker assignments." : blocker, out blocker);
+        if (command.Plan.Request.GatherParty == null && command.Plan.Request.GatherOrders.Count > 0)
+            return Fail("Gathering orders require a gathering task.", out blocker);
 
         if (!DadRunSlotManifestRules.TryCreate(command.Plan, out var manifest, out blocker))
             return false;

@@ -54,7 +54,7 @@ internal static class DadPlannerRuntimeValidation
                     MergePlannerPreviewBlocker(requestPreview, rejectionReason);
                 }
             }
-            else if (!requestPreview.Request.Orchestration.AutoPartyFormationOnly &&
+            else if (requestPreview.Request.GatherParty == null && !requestPreview.Request.Orchestration.AutoPartyFormationOnly &&
                      DadFullPartyExecutionRules.IsQueueAuthorityLocal(plan, liveLocalRuntimeTruth))
             {
                 var runtimeStatus = queue.PreviewModuleStart(plan);

@@ -659,6 +659,7 @@ public sealed class DadShareService
             },
             MogtomePreset = privacy.Sanitize(source.MogtomePreset),
             MogtomeDutyPolicy = privacy.Sanitize(source.MogtomeDutyPolicy),
+            GatherParty = BuildGatherTaskDto(source, privacy),
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = new DadShareStopPolicyDto
             {
@@ -781,6 +782,15 @@ public sealed class DadShareService
         };
     }
 
+    private static DadGatherPartyTask? BuildGatherTaskDto(DadPlannerGroup source, PrivacySession privacy)
+    {
+        if (source.ActivityMode != DadPlannerActivityMode.GatherParty) return null;
+        var task = source.GatherParty.Clone();
+        task.Name = privacy.Sanitize(task.Name);
+        foreach (var item in task.Items) item.Name = privacy.Sanitize(item.Name);
+        return task;
+    }
+
     private static DadShareScheduleDto BuildScheduleDto(DadScheduleDefinition source, PrivacySession privacy)
         => new()
         {
@@ -829,6 +839,7 @@ public sealed class DadShareService
             },
             MogtomePreset = source.MogtomePreset,
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
+            GatherParty = source.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
             StopPolicy = new DadRunStopPolicy
             {
@@ -1045,6 +1056,21 @@ public sealed class DadShareService
         }
         if (plan.DutyExpectedPartySize is < 1 or > 48)
             return Fail("Plan party size is invalid.", out error);
+        if (plan.ActivityMode == DadPlannerActivityMode.GatherParty)
+        {
+            if (!DadGatherPartyPlanningRules.TryValidateTask(plan.GatherParty, out error)) return false;
+            var task = plan.GatherParty!;
+            if (!ValidateText(task.Name, "Gathering list name", MaxTextLength, true, out error)) return false;
+            foreach (var item in task.Items)
+                if (!ValidateText(item.Name, "Gathering material name", MaxTextLength, true, out error)) return false;
+            if (task.Allocations.Any(allocation => allocation.Quantity is < 0 or > DadGatherPartyPlanningRules.MaximumQuantity ||
+                    !DadPlannerSlotRules.TryParseStrictSlotNumber(allocation.SlotId, out _) ||
+                    !task.Items.Any(item => item.Enabled && item.ItemId == allocation.ItemId)) ||
+                task.Allocations.Select(allocation => (allocation.ItemId, allocation.SlotId.ToUpperInvariant())).Distinct().Count() != task.Allocations.Count)
+                return Fail("Gathering share contains an invalid or duplicate fixed allocation.", out error);
+        }
+        else if (plan.GatherParty != null)
+            return Fail("A gathering payload requires the gathering activity.", out error);
         if (!ValidateText(plan.DutyDisplayName, "Duty name", MaxTextLength, true, out error) ||
             !ValidateText(plan.MogtomePreset, "MOGTOME preset", MaxTextLength, true, out error) ||
             !ValidateText(plan.MogtomeDutyPolicy, "MOGTOME duty policy", MaxTextLength, true, out error) ||

@@ -13,6 +13,8 @@ internal static class DadWorkerTimeoutRules
         bool enteredDuty,
         TimeSpan elapsed)
     {
+        // Native timed-node waiting is valid task progress, independent of duty startup timeouts.
+        if (moduleId == DadModuleId.GatherParty) return false;
         if (enteredDuty && moduleId is DadModuleId.Duty
                 or DadModuleId.Msq
                 or DadModuleId.DutySupport
