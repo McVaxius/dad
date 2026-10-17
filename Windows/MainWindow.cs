@@ -2334,7 +2334,7 @@ public sealed partial class MainWindow : Window, IDisposable
 
     private void DrawRetryFailedEntryPopup(DadVisibleRunState runState)
     {
-        if (!UiGui.BeginPopupModal(
+        if (!UiGui.BeginConfirmationPopup(
                 "Confirm retry failed schedule entry##dad-schedule-retry-confirm",
                 ImGuiWindowFlags.AlwaysAutoResize))
         {
@@ -2394,7 +2394,7 @@ public sealed partial class MainWindow : Window, IDisposable
 
     private void DrawDeleteSchedulePopup(DadScheduleSnapshot snapshot)
     {
-        if (!UiGui.BeginPopupModal("Confirm delete schedule##dad-delete-schedule", ImGuiWindowFlags.AlwaysAutoResize))
+        if (!UiGui.BeginConfirmationPopup("Confirm delete schedule##dad-delete-schedule", ImGuiWindowFlags.AlwaysAutoResize))
             return;
 
         var pending = snapshot.Schedules.FirstOrDefault(schedule =>

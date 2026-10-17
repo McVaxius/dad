@@ -606,7 +606,7 @@ public sealed class DadAutoPartyWindow : Window
 
     private void DrawUnpairConfirmation(DadAutoPartyConfiguration configuration)
     {
-        if (!UiGui.BeginPopupModal(
+        if (!UiGui.BeginConfirmationPopup(
                 "Confirm unpair##dad-autoparty-unpair",
                 ImGuiWindowFlags.AlwaysAutoResize))
         {
@@ -639,7 +639,7 @@ public sealed class DadAutoPartyWindow : Window
 
     private void DrawDeregistrationConfirmation()
     {
-        if (!UiGui.BeginPopupModal(
+        if (!UiGui.BeginConfirmationPopup(
                 "Confirm deregistration##dad-autoparty-deregister",
                 ImGuiWindowFlags.AlwaysAutoResize))
         {

@@ -1,3 +1,7 @@
+2026-10-16 - Confirmation popups without screen dimming (I576)
+
+- Keep unpair, deregister, schedule retry and schedule deletion confirmations in titled native popups without a full-screen dimmer. Preserve dialog IDs, validation, explicit confirmation/cancel actions and saved opacity. Outside dismissal never approves an action.
+
 2026-10-15 - GBR Gather Party presets and fixed worker orders (I572/I573)
 
 - Add the gathering task and preview models, native GBR exported-list and Teamcraft text import, editable quantities and preferred-node preservation. Keep parsing separate from execution.

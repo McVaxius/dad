@@ -245,10 +245,20 @@ internal static class UiGui
     }
     internal static bool Combo(string label,ref int value,string options)
     { var items=options.Split('\0').Where(v=>v.Length>0).ToArray();return Combo(label,ref value,items,items.Length); }
-    internal static bool BeginPopupModal(string original,ImGuiWindowFlags flags)
+    internal static bool BeginConfirmationPopup(string original,ImGuiWindowFlags flags)
     {
+        var context = ImGui.GetCurrentContext();
+        if (!ImGui.IsPopupOpen(original)) { context.NextWindowData.Flags = 0; return false; }
+        if ((context.NextWindowData.Flags & ImGuiNextWindowDataFlags.HasPos) == 0)
+        {
+            var viewport = ImGui.GetWindowViewport();
+            ImGui.SetNextWindowPos(viewport.Pos + viewport.Size * .5f, ImGuiCond.Appearing, new Vector2(.5f));
+        }
         ImGui.SetNextWindowSize(new Vector2(520*MaterialTheme.Metrics.Scale,0),ImGuiCond.Always);
-        var open=ImGui.BeginPopupModal(original,flags|ImGuiWindowFlags.HorizontalScrollbar);if(open) Title(original.Split("##",2)[0]);return open;
+        var open=ImGui.Begin(original,flags|ImGuiWindowFlags.Popup|ImGuiWindowFlags.NoCollapse|ImGuiWindowFlags.NoDocking|ImGuiWindowFlags.HorizontalScrollbar);
+        if (!open) { ImGui.EndPopup(); return false; }
+        try { Title(original.Split("##",2)[0]); } catch { ImGui.EndPopup(); throw; }
+        return true;
     }
     internal static void ReserveTitleSpace(Dalamud.Interface.Windowing.Window owner, string display, float minimumWidth)
     {
