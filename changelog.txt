@@ -1,3 +1,9 @@
+2026-10-18 - 1.1.0.3 - Consecutive Wake/Relog cleanup and party teardown
+
+- Release completed runs' exact wake ownership and early requested-job assignments before admitting another queued preset. Restore captured AutoRetainer Multi Mode state in place without relogging to the previous character; cancelling an unaccepted token leaves any active takeover untouched.
+- Keep coordinator progress active until all workers finish and the current run proves its managed party boundary. A worker's Finalizing phase cannot complete the coordinator or reuse a previous run's teardown proof.
+- Freeze each teardown/participant-leave prompt baseline before its command attempt so a fresh dialog can become ready across frames while retaining exact prompt checks and one approval per attempt.
+
 2026-10-16 - Confirmation popups without screen dimming (I576)
 
 - Keep unpair, deregister, schedule retry and schedule deletion confirmations in titled native popups without a full-screen dimmer. Preserve dialog IDs, validation, explicit confirmation/cancel actions and saved opacity. Outside dismissal never approves an action.
