@@ -5,6 +5,45 @@ namespace dad.Tests;
 
 public sealed class DadPartyTeardownRulesTests
 {
+    [Theory]
+    [InlineData(DadPartyTeardownMutationMode.DisbandAsLeader, false)]
+    [InlineData(DadPartyTeardownMutationMode.DisbandAsLeader, true)]
+    [InlineData(DadPartyTeardownMutationMode.LeaveAsFollower, false)]
+    [InlineData(DadPartyTeardownMutationMode.LeaveAsFollower, true)]
+    public void FreshTeardownPromptCanBecomeReadyOrReadableOnLaterTicks(
+        DadPartyTeardownMutationMode mode, bool initiallyReady)
+    {
+        var now = DateTime.UtcNow;
+        var controller = new DadPartyTeardownController([1UL, 2UL], 1,
+            mode == DadPartyTeardownMutationMode.DisbandAsLeader ? 1UL : 2UL,
+            mode, now, false, string.Empty);
+        var baseline = Observation(now) with
+        {
+            LocalContentId = mode == DadPartyTeardownMutationMode.DisbandAsLeader ? 1UL : 2UL,
+        };
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(baseline).Action);
+        var appearing = baseline with
+        {
+            NowUtc = now.AddMilliseconds(100),
+            PromptVisible = true,
+            PromptIdentity = "fresh-teardown",
+            PromptReady = initiallyReady,
+            PromptText = string.Empty,
+        };
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(appearing).Action);
+        Assert.Equal(DadPartyTeardownAction.None,
+            controller.Pulse(appearing with { NowUtc = now.AddMilliseconds(200) }).Action);
+        var ready = appearing with
+        {
+            NowUtc = now.AddMilliseconds(300),
+            PromptReady = true,
+            PromptText = mode == DadPartyTeardownMutationMode.DisbandAsLeader ? "Disband party?" : "Leave the party?",
+        };
+        Assert.Equal(DadPartyTeardownAction.ApprovePrompt, controller.Pulse(ready).Action);
+        Assert.Equal(DadPartyTeardownAction.None,
+            controller.Pulse(ready with { NowUtc = now.AddMilliseconds(400) }).Action);
+    }
+
     [Fact]
     public void CrossWorldLocalOnlyFrameCannotCompleteTeardown()
     {

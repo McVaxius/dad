@@ -5,6 +5,41 @@ namespace dad.Tests;
 public sealed class DadReliabilityIntegrationSourceContractTests
 {
     [Fact]
+    public void SuccessfulRunCompletionRequiresFreshPerRunPartyBoundaryProof()
+    {
+        var source = ReadRepositorySource("Services", "DadCoordinatorService.cs");
+        Assert.Contains("DadLifecycleCleanupRules.ResolveCoordinatorModulePhase(", source);
+        Assert.DoesNotContain("CurrentResult.Phase = result.ExecutorStatus.Phase;", source);
+        var completion = source.IndexOf("private void CompleteRun()", StringComparison.Ordinal);
+        var guard = source.IndexOf("if (!successfulPartyBoundarySettled)", completion, StringComparison.Ordinal);
+        var finalization = source.IndexOf("FinalizeRun(DadRunStatus.Completed", completion, StringComparison.Ordinal);
+        Assert.True(completion >= 0 && guard > completion && finalization > guard);
+        Assert.True(source.Split("successfulPartyBoundarySettled = false;", StringSplitOptions.None).Length >= 3);
+        var teardown = source.IndexOf("private void UpdatePartyTeardown()", StringComparison.Ordinal);
+        var aggregate = source.IndexOf("if (aggregate.Success)", teardown, StringComparison.Ordinal);
+        var proof = source.IndexOf("successfulPartyBoundarySettled = true;", aggregate, StringComparison.Ordinal);
+        var terminal = source.IndexOf("Transition(DadRunPhase.Finalizing", aggregate, StringComparison.Ordinal);
+        Assert.True(teardown >= 0 && aggregate > teardown && proof > aggregate && terminal > proof);
+    }
+
+    [Fact]
+    public void TerminalPlannerCleanupReleasesWakeOwnershipEvenWithoutEarlyAssignments()
+    {
+        var source = ReadRepositorySource("Services", "DadSchedulerService.cs");
+        var start = source.IndexOf("private void UpdateCompletedPlannerCleanup(", StringComparison.Ordinal);
+        Assert.True(start >= 0);
+        var end = source.IndexOf("private DadScheduledCrewJob? FindEquivalentActiveOrPendingJob", start, StringComparison.Ordinal);
+        var cleanup = source[start..end];
+        Assert.DoesNotContain("frozenEarlyAssignments.Count == 0", cleanup);
+        Assert.Contains("!visibleRun.IsTerminal", cleanup);
+        Assert.Contains("visibleRun.RequestId, frozenPlannerRequest.RequestId", cleanup);
+        Assert.Contains("CancelNonTerminalTakeovers(reason);", cleanup);
+        Assert.True(cleanup.IndexOf("CancelNonTerminalTakeovers(reason);", StringComparison.Ordinal) <
+                    cleanup.IndexOf("frozenPlannerRequest = null;", StringComparison.Ordinal));
+        Assert.Contains("CanStartNextQueuedJob(HasPendingCleanup)", source);
+    }
+
+    [Fact]
     public void ClientDutySupportPermissionIsWiredThroughUiQueueScheduleAndExactOwnedWake()
     {
         var plugin = ReadRepositorySource("Plugin.cs");

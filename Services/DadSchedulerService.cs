@@ -1827,7 +1827,7 @@ public sealed class DadSchedulerService
         TickScheduleEnqueue();
 
         var visibleRun = visibleRunProvider?.Invoke() ?? DadRunResult.Idle();
-        UpdateCompletedPlannerAssignmentCleanup(visibleRun);
+        UpdateCompletedPlannerCleanup(visibleRun);
         if (IsCrewFormationActive &&
             crewFormation!.Status.Phase != DadCrewFormationPhase.Preparing)
         {
@@ -5097,37 +5097,29 @@ public sealed class DadSchedulerService
         }
     }
 
-    private void UpdateCompletedPlannerAssignmentCleanup(DadRunResult visibleRun)
+    private void UpdateCompletedPlannerCleanup(DadRunResult visibleRun)
     {
         if (currentState.Phase != DadSchedulerPresetPhase.StartedPlanner ||
             frozenPlannerRequest == null ||
-            frozenEarlyAssignments.Count == 0 ||
             !visibleRun.IsTerminal ||
             !string.Equals(visibleRun.RequestId, frozenPlannerRequest.RequestId, StringComparison.Ordinal))
         {
             return;
         }
 
-        var cleanupJob = activeJob?.Clone() ?? new DadScheduledCrewJob
-        {
-            JobId = currentState.JobId,
-            JobType = currentState.JobType,
-            GroupId = currentState.GroupId,
-            PresetName = currentState.PresetName,
-            RequestedBy = currentState.RequestedBy,
-            CreatedAtUtc = currentState.StartedAtUtc,
-        };
-        var reason = $"Dad run {visibleRun.RequestId} reached terminal status {visibleRun.Status}; clearing every early requested-job assignment route.";
-        QueueEarlyAssignmentCancellations(cleanupJob, reason);
+        // Ready wake operations can still own AutoRetainer restoration state. Release
+        // the exact old tokens before a subsequent preset is admitted, even when no
+        // early requested-job assignment was needed for this run.
+        var reason = $"Dad run {visibleRun.RequestId} reached terminal status {visibleRun.Status}; releasing wake ownership and every early requested-job assignment route.";
+        CancelNonTerminalTakeovers(reason);
         log.Information(
-            "[dad] Queued terminal early-assignment cleanup request={RequestId} status={Status} attemptedRoutes={AttemptedRouteCount}.",
+            "[dad] Queued terminal planner cleanup request={RequestId} status={Status} attemptedRoutes={AttemptedRouteCount}.",
             visibleRun.RequestId,
             visibleRun.Status,
             frozenEarlyAssignments.Sum(static assignment => assignment.AttemptedWorkerSessionIds.Count));
         frozenEarlyAssignments = [];
         frozenPlannerRequest = null;
         postWakeLevelTargetsEvaluated = false;
-        UpdatePendingEarlyAssignmentCancellations();
     }
 
     private DadScheduledCrewJob? FindEquivalentActiveOrPendingJob(string groupId)
