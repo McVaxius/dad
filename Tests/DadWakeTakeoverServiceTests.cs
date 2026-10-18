@@ -697,6 +697,73 @@ public sealed class DadWakeTakeoverServiceTests
         Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FourClientRunCleanupAllowsNextPresetOnlyAfterOldOwnershipIsReleased(bool originalMultiMode)
+    {
+        for (var slot = 1; slot <= 4; slot++)
+        {
+            var clock = new TestClock();
+            var target = FakeTarget.Valid(wrongCharacter: true);
+            target.Snapshot.MultiModeEnabled = originalMultiMode;
+            using var service = new DadWakeTakeoverService(target, clock.UtcNow);
+            StartRelog(service, target, clock);
+            ActivateTargetCharacter(target);
+            service.Update();
+            Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
+
+            var next = Request();
+            next.SchedulerRunId = next.OperationToken = $"next-preset-slot-{slot}";
+            var rejected = service.Handle(next);
+            Assert.Contains("conflicting", rejected.BlockedReason, StringComparison.OrdinalIgnoreCase);
+
+            var cancel = Request();
+            cancel.MessageKind = DadWakeTakeoverMessageKind.Cancel;
+            Assert.True(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(service.Handle(cancel)));
+            Assert.Equal(originalMultiMode, target.Snapshot.MultiModeEnabled);
+            Assert.Equal("Target Character@World", target.Snapshot.Participant.ActiveCharacterKey.Value);
+
+            var accepted = service.Handle(next);
+            Assert.DoesNotContain("conflicting", accepted.BlockedReason, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(next.OperationToken, accepted.OperationToken);
+            Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        }
+    }
+
+    [Fact]
+    public void CancellingRejectedTokenAcknowledgesNoOwnershipWithoutTouchingActiveTakeover()
+    {
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.Snapshot.Participant.WorkerSessionId = new DadWorkerSessionId("worker-a");
+        using var service = new DadWakeTakeoverService(target);
+        service.Handle(Request());
+        var rejected = Request();
+        rejected.SchedulerRunId = rejected.OperationToken = "rejected-next-run";
+        Assert.Equal(DadWakeAcknowledgementState.Rejected, service.Handle(rejected).AcknowledgementState);
+        var actions = target.Actions.ToArray();
+
+        rejected.MessageKind = DadWakeTakeoverMessageKind.Cancel;
+        for (var retry = 0; retry < 2; retry++)
+        {
+            var result = service.Handle(rejected);
+            Assert.True(DadSchedulerRoutingRules.IsTakeoverCancellationComplete(
+                rejected, target.Snapshot.Participant.WorkerSessionId, result));
+            Assert.Equal(rejected.OperationToken, result.OperationToken);
+            Assert.Equal("scheduler-run", service.GetActiveStatus()!.OperationToken);
+            Assert.Equal(actions, target.Actions);
+        }
+
+        rejected.MessageKind = DadWakeTakeoverMessageKind.Prepare;
+        Assert.Equal(DadWakeTakeoverPhase.Cancelled, service.Handle(rejected).Phase);
+        rejected.MessageKind = DadWakeTakeoverMessageKind.Go;
+        rejected.CommitKind = DadWakeCommitKind.Reset;
+        rejected.ExecutionTimeUtc = DateTime.UtcNow.AddSeconds(-1);
+        Assert.Equal(DadWakeTakeoverPhase.Cancelled, service.Handle(rejected).Phase);
+        Assert.Equal("scheduler-run", service.GetActiveStatus()!.OperationToken);
+        Assert.Equal(actions, target.Actions);
+    }
+
     [Fact]
     public void DisconnectAfterReadyCleansUpInPlaceWithoutCharacterRestoration()
     {

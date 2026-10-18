@@ -80,6 +80,7 @@ public sealed class DadCoordinatorService
     private readonly HashSet<string> autoPartyCancellationCancelRequestedSlots =
         new(StringComparer.OrdinalIgnoreCase);
     private List<DadAssemblyInstructionDto> activePartyTeardownInstructions = [];
+    private bool successfulPartyBoundarySettled;
     private readonly Dictionary<string, DadRunStepResultDto> partyTeardownTerminalResults =
         new(StringComparer.OrdinalIgnoreCase);
     private DadScheduleRepeatBoundary activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
@@ -474,6 +475,7 @@ public sealed class DadCoordinatorService
         finalizationCancellationScopeOverride = null;
         partyInviteGateway.Reset();
         partyTeardownService.Reset();
+        successfulPartyBoundarySettled = false;
         activePartyTeardownInstructions = [];
         partyTeardownTerminalResults.Clear();
         slotResolutionTransitions.Clear();
@@ -3152,8 +3154,8 @@ public sealed class DadCoordinatorService
 
         CurrentResult.StepResults = stepResults.Select(static step => step.Clone()).ToList();
         CurrentResult.CurrentExecutorStatus = result.ExecutorStatus.Clone();
-        if (result.ExecutorStatus.Phase != DadRunPhase.Idle)
-            CurrentResult.Phase = result.ExecutorStatus.Phase;
+        CurrentResult.Phase = DadLifecycleCleanupRules.ResolveCoordinatorModulePhase(
+            CurrentResult.Phase, result.ExecutorStatus.Phase);
         CurrentResult.Status = DadRunStatus.Running;
         CurrentResult.ActiveTaskIndex = IsStopPolicyLoopEligible(activePlan)
             ? Math.Max(1, stopProgress.StartedRuns)
@@ -3452,6 +3454,7 @@ public sealed class DadCoordinatorService
     {
         if (activePlan?.CompositeModuleId == DadModuleId.GatherParty)
         {
+            successfulPartyBoundarySettled = true;
             Transition(DadRunPhase.Finalizing, DadRunStatus.Running, summary);
             return;
         }
@@ -3466,6 +3469,7 @@ public sealed class DadCoordinatorService
             $"{activeScheduleRepeatBoundary.RepeatIteration}/{activeScheduleRepeatBoundary.RepeatCount} " +
             "of the same schedule preset row.";
         log.Information("[dad] {Summary}", preservationSummary);
+        successfulPartyBoundarySettled = true;
         Transition(DadRunPhase.Finalizing, DadRunStatus.Running, preservationSummary);
     }
 
@@ -3479,6 +3483,7 @@ public sealed class DadCoordinatorService
                 activeSlotManifest != null,
                 activePlan.Orchestration.RequiredRosterCharacters.Count))
         {
+            successfulPartyBoundarySettled = true;
             Transition(
                 DadRunPhase.Finalizing,
                 DadRunStatus.Running,
@@ -3647,6 +3652,7 @@ public sealed class DadCoordinatorService
             partyTeardownTerminalResults.Clear();
             if (aggregate.Success)
             {
+                successfulPartyBoundarySettled = true;
                 if (crewFormationTeardownRequested)
                     CancelActiveRun();
                 else
@@ -3669,6 +3675,7 @@ public sealed class DadCoordinatorService
         switch (decision.Action)
         {
             case DadPartyTeardownAction.Complete:
+                successfulPartyBoundarySettled = true;
                 if (crewFormationTeardownRequested)
                     CancelActiveRun();
                 else
@@ -3734,6 +3741,14 @@ public sealed class DadCoordinatorService
 
     private void CompleteRun()
     {
+        if (!successfulPartyBoundarySettled)
+        {
+            // Defence in depth against a terminal child phase leaking through
+            // any future routing path. A fresh run never inherits prior proof.
+            Transition(DadRunPhase.RoutingModules, DadRunStatus.Running,
+                "Worker finalization is not run completion; waiting for all workers and the managed party teardown boundary.");
+            return;
+        }
         var deferredReasons = stepResults
             .Where(static step => step.Deferred && !string.IsNullOrWhiteSpace(step.BlockedReason))
             .Select(static step => step.BlockedReason)
@@ -4856,6 +4871,7 @@ public sealed class DadCoordinatorService
         remoteAssignmentTracker.Clear();
         partyInviteGateway.Reset();
         partyTeardownService.Reset();
+        successfulPartyBoundarySettled = false;
         activePartyTeardownInstructions = [];
         partyTeardownTerminalResults.Clear();
         presenceService.ResetToIdle();

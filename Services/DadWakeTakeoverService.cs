@@ -85,6 +85,25 @@ public sealed class DadWakeTakeoverService : IDisposable
             var key = DadWakePolicyRules.BuildOperationKey(request);
             if (!operations.TryGetValue(key, out var operation))
             {
+                // A rejected/not-yet-created token owns nothing. Acknowledge its
+                // cancellation without touching another token's ownership. Keep a
+                // terminal record so a delayed Prepare/Go cannot rearm this token.
+                if (request.MessageKind == DadWakeTakeoverMessageKind.Cancel)
+                {
+                    operation = new OperationState(CloneRequest(request), utcNow())
+                    {
+                        Status = DadWakeTakeoverStatus.Blocked,
+                        Phase = DadWakeTakeoverPhase.Cancelled,
+                        Acknowledgement = DadWakeAcknowledgementState.Executed,
+                        CoordinatorAvailable = false,
+                        RestorationComplete = true,
+                        Summary = "No matching wake operation exists; cancellation owns nothing to release.",
+                    };
+                    Capture(operation, forceExternalRefresh: true);
+                    operations[key] = operation;
+                    return BuildResult(operation);
+                }
+
                 if (!string.IsNullOrWhiteSpace(activeOperationKey) &&
                     operations.TryGetValue(activeOperationKey, out var active) &&
                     (!IsTerminal(active.Phase) || active.CleanupPending || RequiresRestoration(active)))

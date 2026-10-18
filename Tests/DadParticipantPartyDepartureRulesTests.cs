@@ -5,6 +5,43 @@ namespace dad.Tests;
 
 public sealed class DadParticipantPartyDepartureRulesTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FreshLeavePromptCanBecomeReadyOrReadableOnLaterTicks(bool initiallyReady)
+    {
+        var now = DateTime.UtcNow;
+        var controller = new DadParticipantPartyDepartureController(2, now, false);
+        Assert.Equal(DadParticipantPartyDepartureAction.SendLeave, controller.Pulse(Observation(now)).Action);
+        var appearing = Observation(now.AddMilliseconds(100), prompt: true, promptIdentity: "fresh-leave") with
+        {
+            PromptReady = initiallyReady,
+            PromptText = string.Empty,
+        };
+        Assert.Equal(DadParticipantPartyDepartureAction.None, controller.Pulse(appearing).Action);
+        Assert.Equal(DadParticipantPartyDepartureAction.None,
+            controller.Pulse(appearing with { NowUtc = now.AddMilliseconds(200) }).Action);
+        Assert.Equal(DadParticipantPartyDepartureAction.ApprovePrompt,
+            controller.Pulse(Observation(now.AddMilliseconds(300), prompt: true, promptIdentity: "fresh-leave")).Action);
+        Assert.Equal(DadParticipantPartyDepartureAction.None,
+            controller.Pulse(Observation(now.AddMilliseconds(400), prompt: true, promptIdentity: "fresh-leave")).Action);
+    }
+
+    [Fact]
+    public void FreshDisbandPromptIsNotApprovedByParticipantLeaveRecovery()
+    {
+        var now = DateTime.UtcNow;
+        var controller = new DadParticipantPartyDepartureController(2, now, false);
+        controller.Pulse(Observation(now));
+        var wrongPrompt = Observation(now.AddMilliseconds(100), prompt: true, promptIdentity: "disband") with
+        {
+            PromptText = "Disband party?",
+        };
+        Assert.Equal(DadParticipantPartyDepartureAction.None, controller.Pulse(wrongPrompt).Action);
+        Assert.Equal(DadParticipantPartyDepartureAction.None,
+            controller.Pulse(wrongPrompt with { NowUtc = now.AddSeconds(1) }).Action);
+    }
+
     [Fact]
     public void SoloOrAlreadyWithExpectedInviterCompletesWithoutMutation()
     {

@@ -60,7 +60,7 @@ public sealed class DadPartyTeardownController
     private readonly DateTime startedAtUtc;
     private DateTime nextAttemptUtc;
     private int commandAttempts;
-    private DadPromptObservation lastPrompt;
+    private DadPromptObservation commandPromptBaseline;
     private bool commandSent;
     private int approvedCommandAttempt;
     private int partyMenuCallbackAttempts;
@@ -105,7 +105,7 @@ public sealed class DadPartyTeardownController
         this.mutationMode = mutationMode;
         this.startedAtUtc = startedAtUtc;
         this.allowFreshUnprovenPromptApproval = allowFreshUnprovenPromptApproval;
-        lastPrompt = new DadPromptObservation(
+        commandPromptBaseline = new DadPromptObservation(
             promptVisible,
             promptReady,
             promptIdentity,
@@ -176,8 +176,7 @@ public sealed class DadPartyTeardownController
             observation.PromptIdentity,
             observation.PromptText,
             observation.PromptVisible && !observation.OtherReadyPromptVisible);
-        var promptBaseline = lastPrompt;
-        lastPrompt = currentPrompt;
+        var promptBaseline = commandPromptBaseline;
 
         if (observation.IsInDuty ||
             observation.IsQueued ||
@@ -265,6 +264,9 @@ public sealed class DadPartyTeardownController
         if (observation.NowUtc < nextAttemptUtc || commandAttempts >= MaximumAttempts)
             return new DadPartyTeardownDecision(DadPartyTeardownAction.None, "Waiting for the guarded breakup attempt or confirmation window.");
 
+        // Preserve freshness across the dialog's opening/ready/text-population
+        // frames while retaining one approval per frozen command attempt.
+        commandPromptBaseline = currentPrompt;
         commandAttempts++;
         commandSent = true;
         nextAttemptUtc = observation.NowUtc + AttemptThrottle;

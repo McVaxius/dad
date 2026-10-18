@@ -50,7 +50,7 @@ public sealed class DadParticipantPartyDepartureController
     private readonly DateTime startedAtUtc;
     private DateTime nextAttemptUtc;
     private int commandAttempts;
-    private DadPromptObservation lastPrompt;
+    private DadPromptObservation commandPromptBaseline;
     private bool commandSent;
     private int approvedCommandAttempt;
     private int partyMenuCallbackAttempts;
@@ -69,7 +69,7 @@ public sealed class DadParticipantPartyDepartureController
         this.expectedInviterContentId = expectedInviterContentId;
         this.startedAtUtc = startedAtUtc;
         this.allowFreshUnprovenPromptApproval = allowFreshUnprovenPromptApproval;
-        lastPrompt = new DadPromptObservation(
+        commandPromptBaseline = new DadPromptObservation(
             promptVisible,
             promptReady,
             promptIdentity,
@@ -121,8 +121,7 @@ public sealed class DadParticipantPartyDepartureController
             observation.PromptIdentity,
             observation.PromptText,
             observation.PromptVisible && !observation.OtherReadyPromptVisible);
-        var promptBaseline = lastPrompt;
-        lastPrompt = currentPrompt;
+        var promptBaseline = commandPromptBaseline;
 
         if (observation.IsInDuty || observation.IsQueued || !observation.IsWorldStable)
         {
@@ -202,6 +201,9 @@ public sealed class DadParticipantPartyDepartureController
                 "Waiting for the guarded participant leave attempt or confirmation window.");
         }
 
+        // Compare every later readiness/text observation against the state before
+        // this command, not the previous tick of the newly opening dialog.
+        commandPromptBaseline = currentPrompt;
         commandAttempts++;
         commandSent = true;
         nextAttemptUtc = observation.NowUtc + AttemptThrottle;

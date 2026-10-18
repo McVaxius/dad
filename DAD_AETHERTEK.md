@@ -122,6 +122,8 @@ Clients on the same machine can use loopback transport. LAN setups require the s
 8. DAD sends party formation to exact Slot1, verifies Slot1's returned PartyList, and starts the supported queue there.
 9. During and after the duty, DAD reports progress, completion, blockers, and recovery state.
 10. At the final party boundary, DAD refreshes the exact roster, waits for Slot1's guarded disband result, then waits for every follower to leave or prove solo.
+    A worker's `Finalizing` phase is not the coordinator's finalization permission. If Slot1 exits the duty before the followers, the coordinator continues polling the complete worker set; it cannot bypass managed teardown. Successful completion requires a fresh per-run party-boundary acknowledgement (or the existing explicit rosterless/repeat-preservation exception), never proof retained from a previous preset.
+    Party teardown and participant leave recovery freeze the prompt baseline before each command attempt. A fresh dialog may need several frames to become ready and populate its text; those intermediate frames do not make it a pre-existing dialog. Exact operation/text checks and one approval per attempt remain mandatory. Participant leave recovery never approves a disband confirmation.
 
 ## Integrations
 
@@ -140,6 +142,7 @@ The **DAD Dependencies** window stays open while local DAD is enabled and any re
 
 - **XA Database** can provide stored roster and job-level truth. Local runtime and connected DAD snapshots also contribute current roster state.
 - **AutoRetainer** is observed so DAD does not relog or take over while retainer work is still active.
+- After a planner run reaches a terminal result, DAD releases each exact wake/relog operation as well as its early requested-job assignments. This includes successful runs and runs that needed no requested-job assignment. Any DAD-owned suppression/reservation cleanup and in-place restoration of the captured AutoRetainer Multi Mode state must acknowledge before the next queued preset starts. Cleanup never relogs back to the previous character. Cancelling a token that was never accepted is an idempotent acknowledgement and cannot release another active token's ownership; conflicting new takeover requests still fail closed.
 - **VERMAXION** optionally provides reservation and handoff safety around post-processing, and can launch a selected DAD preset or schedule through DAD's public IPC. When it is confirmed absent, DAD can use readable idle AutoRetainer with its own verified suppression lease; no new character-postprocess callback is required. Busy, unreadable, or conflicting ownership still blocks takeover. The title-login path likewise accepts freshly confirmed VERMAXION absence without bypassing its other safety gates.
 - **Lifestream** supports configured character relog handling.
 - **Fren Rider** is an unconditional DAD dependency and is the default in-duty owner for movement, combat coordination, and exit behavior when that mode is selected.

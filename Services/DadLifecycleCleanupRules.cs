@@ -9,6 +9,16 @@ internal readonly record struct DadLifecycleCleanupDecision(
 
 internal static class DadLifecycleCleanupRules
 {
+    public static DadRunPhase ResolveCoordinatorModulePhase(DadRunPhase current, DadRunPhase worker)
+        => worker switch
+        {
+            DadRunPhase.Idle => current,
+            // A child worker is not the owner of the coordinator's finalization
+            // boundary. Poll all workers and settle the party before finalizing.
+            DadRunPhase.Finalizing => DadRunPhase.RoutingModules,
+            _ => worker,
+        };
+
     public static DadLifecycleCleanupDecision Decide(bool hasRecordedResult, bool cleanupPending)
         => !hasRecordedResult
             ? new DadLifecycleCleanupDecision(
