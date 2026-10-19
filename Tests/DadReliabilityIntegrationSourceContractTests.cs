@@ -5,6 +5,26 @@ namespace dad.Tests;
 public sealed class DadReliabilityIntegrationSourceContractTests
 {
     [Fact]
+    public void FinalAnyJobReadinessWaitIsClassifiedBeforeAdmissionAndHandledBeforeTerminalHistory()
+    {
+        var coordinator = ReadRepositorySource("Services", "DadCoordinatorService.cs");
+        var bind = coordinator.IndexOf("DadRunSlotManifestRules.TryBindWorkerSessions(", StringComparison.Ordinal);
+        var deferred = coordinator.IndexOf("DadRunResult.StartReadinessPending(request, rejectionReason)", bind, StringComparison.Ordinal);
+        var claim = coordinator.IndexOf("activeSlotManifest =", deferred, StringComparison.Ordinal);
+        Assert.True(bind >= 0 && deferred > bind && claim > deferred);
+        var scheduler = ReadRepositorySource("Services", "DadSchedulerService.cs");
+        var response = scheduler.IndexOf("result ??= DadRunResult.Rejected(strictRequest", StringComparison.Ordinal);
+        var wait = scheduler.IndexOf("TryReleaseUnacceptedReadinessStart(strictRequest, result)", response, StringComparison.Ordinal);
+        var history = scheduler.IndexOf("RecordTerminalResult(currentState);", wait, StringComparison.Ordinal);
+        Assert.True(response >= 0 && wait > response && history > wait);
+        var boundary = scheduler[wait..scheduler.IndexOf("currentState.PlannerStarted = result.Status", wait, StringComparison.Ordinal)];
+        Assert.Contains("nextRefreshUtc = currentState.UpdatedAtUtc + RefreshInterval;", boundary);
+        Assert.Contains("postWakeLevelTargetsEvaluated = false;", boundary);
+        Assert.DoesNotContain("CancelNonTerminalTakeovers", boundary);
+        Assert.DoesNotContain("RecordTerminalResult", boundary);
+    }
+
+    [Fact]
     public void RelogRecoveryReusesForcedSafetyAndDoesNotCancelOrReplayTitleLogin()
     {
         var wake = ReadRepositorySource("Services", "DadWakeTakeoverService.cs");

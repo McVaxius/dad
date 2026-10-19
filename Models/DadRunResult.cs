@@ -85,6 +85,33 @@ public sealed class DadRunResult
         Request = request,
     };
 
+    // No coordinator plan, worker lease or queue mutation was accepted. Keep the
+    // existing rejection wire shape, with structured runtime-readiness evidence.
+    public static DadRunResult StartReadinessPending(DadRunRequest request, string reason)
+    {
+        var result = Rejected(request, reason);
+        result.CurrentExecutorStatus = new DadModuleExecutionStatusDto
+        {
+            RunId = request.RequestId,
+            ModuleId = result.ModuleId,
+            Status = DadRunStatus.Rejected,
+            Phase = DadRunPhase.Planning,
+            StepName = "run-start-readiness",
+            Deferred = true,
+            CanStart = false,
+            Summary = reason,
+            BlockedReason = reason,
+            Blockers = [new DadModuleBlockerDto
+            {
+                ModuleId = result.ModuleId,
+                Capability = "RuntimeReadiness",
+                Severity = DadModuleBlockerSeverity.Blocked,
+                Summary = reason,
+            }],
+        };
+        return result;
+    }
+
     public static DadRunResult FromPlan(DadRunPlan plan, DadRunStatus status, string summary) => new()
     {
         RequestId = plan.Request.RequestId,

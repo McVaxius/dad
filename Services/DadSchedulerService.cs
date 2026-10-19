@@ -2084,6 +2084,19 @@ public sealed class DadSchedulerService
         }
 
         result ??= DadRunResult.Rejected(strictRequest, "Planner start callback returned no result.");
+        if (strictRevalidationTracker.TryReleaseUnacceptedReadinessStart(strictRequest, result))
+        {
+            currentState.Phase = DadSchedulerPresetPhase.WaitingForHeartbeat;
+            currentState.PlannerStarted = false;
+            currentState.BlockedReason = string.Empty;
+            currentState.Summary = $"Final planner admission is waiting for fresh runtime readiness: {result.Summary}";
+            currentState.UpdatedAtUtc = DadClock.UtcNow;
+            postWakeLevelTargetsEvaluated = false;
+            nextRefreshUtc = currentState.UpdatedAtUtc + RefreshInterval;
+            // Retain the exact job/request/takeover ownership and schedule cursor.
+            // The next ordinary tick re-runs readiness and strict contract checks.
+            return;
+        }
         currentState.PlannerStarted = result.Status != DadRunStatus.Rejected;
         currentState.Phase = currentState.PlannerStarted
             ? DadSchedulerPresetPhase.StartedPlanner

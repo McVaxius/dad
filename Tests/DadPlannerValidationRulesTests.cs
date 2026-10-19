@@ -6,6 +6,67 @@ namespace dad.Tests;
 public sealed class DadPlannerValidationRulesTests
 {
     [Fact]
+    public void ExactUnacceptedReadinessResultSurvivesCloneAndWireAndCanReleaseOnlyItsClaim()
+    {
+        var request = new DadRunRequest { RequestId = "frozen" };
+        var result = DadRunResult.StartReadinessPending(request, "Waiting for exact live Any job readiness.");
+        result = System.Text.Json.JsonSerializer.Deserialize<DadRunResult>(
+            System.Text.Json.JsonSerializer.Serialize(result.Clone()))!;
+        Assert.True(DadPlannerValidationRules.IsUnacceptedStartReadinessWait(request, result));
+        var tracker = new DadStrictPlannerRevalidationTracker();
+        Assert.False(tracker.TryReleaseUnacceptedReadinessStart(request, result));
+        for (var attempt = 0; attempt < 200; attempt++)
+        {
+            Assert.True(tracker.TryClaimStart());
+            Assert.False(tracker.TryClaimStart());
+            Assert.True(tracker.TryReleaseUnacceptedReadinessStart(request, result));
+            Assert.False(tracker.TryReleaseUnacceptedReadinessStart(request, result));
+        }
+    }
+
+    [Theory]
+    [InlineData(0)] // ordinary rejection with identical text
+    [InlineData(1)] // unrelated blocker
+    [InlineData(2)] // accepted run
+    [InlineData(3)] // wrong request id
+    [InlineData(4)] // executor already started
+    [InlineData(5)] // executor active
+    [InlineData(6)] // execution result exists
+    [InlineData(7)] // participant lease exists
+    [InlineData(8)] // changed frozen duty
+    [InlineData(9)] // wrong nested request id
+    [InlineData(10)] // missing deferred proof
+    [InlineData(11)] // wrong executor request id
+    [InlineData(12)] // completed task
+    [InlineData(13)] // executor completed
+    public void UnknownAcceptedOrContradictoryStartResultsCannotReopenClaim(int conflict)
+    {
+        var request = new DadRunRequest { RequestId = "frozen", PremadeDuty = new() { ContentFinderConditionId = 4 } };
+        var result = DadRunResult.StartReadinessPending(request.Clone(), "Waiting for exact live Any job readiness.");
+        switch (conflict)
+        {
+            case 0: result = DadRunResult.Rejected(request, result.Summary); break;
+            case 1: result.CurrentExecutorStatus.Blockers.Add(new() { Capability = "Identity", Severity = DadModuleBlockerSeverity.Blocked }); break;
+            case 2: result.Status = DadRunStatus.Running; break;
+            case 3: result.RequestId = "other"; break;
+            case 4: result.CurrentExecutorStatus.StartedAtUtc = DateTime.UtcNow; break;
+            case 5: result.CurrentExecutorStatus.IsActive = true; break;
+            case 6: result.StepResults.Add(new()); break;
+            case 7: result.Leases.Add(new()); break;
+            case 8: result.Request!.PremadeDuty!.ContentFinderConditionId = 5; break;
+            case 9: result.Request!.RequestId = "other"; break;
+            case 10: result.CurrentExecutorStatus.Deferred = false; break;
+            case 11: result.CurrentExecutorStatus.RunId = "other"; break;
+            case 12: result.CompletedTaskCount = 1; break;
+            case 13: result.CurrentExecutorStatus.CompletedAtUtc = DateTime.UtcNow; break;
+        }
+        var tracker = new DadStrictPlannerRevalidationTracker();
+        Assert.True(tracker.TryClaimStart());
+        Assert.False(tracker.TryReleaseUnacceptedReadinessStart(request, result));
+        Assert.False(tracker.TryClaimStart());
+    }
+
+    [Fact]
     public void SchedulerTerminalReasonPreservesReadinessAndIndependentSlotCause()
     {
         var preview = new DadPlannerRunRequestPreview

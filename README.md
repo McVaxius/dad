@@ -801,6 +801,14 @@ ID to distinguish the running DLL from an older build. Review reports for person
   unnecessary AR commands; that account still needs relog GO and final readiness. Account pipelines remain independent,
   and the actual run still waits for every required slot. Logical wake orders do not expire. The five-second coordinator cadence
   and mini-window snapshots affect status freshness only, not local ownership timing.
+- An `Any` job slot still freezes its combat class/job only from the exact live character and Content ID. If world
+  readiness disappears between scheduler preview and final Coordinator binding, the Coordinator returns structured
+  pre-admission `RuntimeReadiness` evidence rather than accepting a run. The scheduler retains its exact request,
+  ownership and schedule cursor, waits on its ordinary two-second refresh cadence and fully revalidates before
+  another start attempt. It records no terminal job and consumes no duty-exit retry budget for this wait. Other slots'
+  hard contradictions override readiness waits; wrong identity/CID, ambiguous routes and missing/noncombat live jobs
+  remain rejected. An accepted start, ordinary rejection or uncertain callback never reopens the start claim. Cancel
+  and strict frozen-contract validation remain authoritative; no preset class needs to be hard-coded as a workaround.
 - Guarded Client Dad data-center travel distinguishes accepted requests from confirmed arrival. Accepted travel that
   ends back on the wrong DC retries after five seconds of continuously fresh exact world-ready/automation-idle proof;
   explicit-false calls also retry every five seconds with fresh safety checks. There is no travel-specific attempt cap

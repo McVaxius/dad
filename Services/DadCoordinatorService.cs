@@ -393,9 +393,12 @@ public sealed class DadCoordinatorService
                     unboundManifest,
                     onlineParticipants,
                     out acceptedManifest,
-                    out rejectionReason))
+                    out rejectionReason,
+                    out var readinessPending))
             {
-                return DadRunResult.Rejected(request, rejectionReason);
+                return readinessPending
+                    ? DadRunResult.StartReadinessPending(request, rejectionReason)
+                    : DadRunResult.Rejected(request, rejectionReason);
             }
 
             if (acceptedManifest.Slots.Any(static slot =>
