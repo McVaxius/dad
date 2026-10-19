@@ -44,7 +44,7 @@ public sealed class DadScheduleDutyExitRetryRuntimeTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void RealSchedulerAdvancesOneEntryWhenNormalRetryPreflightSkips(bool dailyReward)
+    public void RealSchedulerAdvancesOneEntryWhenNormalRetryPreflightSkipsAfterProvenPartyTeardown(bool dailyReward)
     {
         var (scheduler, config, schedule) = Fixture();
         Invoke(scheduler, "TryProcessWaitingDadRun", schedule, FailedRun(), Now);
@@ -64,6 +64,49 @@ public sealed class DadScheduleDutyExitRetryRuntimeTests
         Assert.Equal(1, config.ActiveScheduleRun.CurrentEntryIndex);
         Assert.Equal(0, config.ActiveScheduleRun.DutyExitRetryCount);
         Assert.Null(config.ActiveScheduleRun.DutyExitRetrySource);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RealSchedulerNeverAdvancesRetrySkipWithoutPartyTeardownProof(bool dailyReward)
+    {
+        var (scheduler, config, schedule) = Fixture();
+        Invoke(scheduler, "TryProcessWaitingDadRun", schedule, FailedRun(), Now);
+        var state = config.ActiveScheduleRun;
+        state.DutyExitRetrySource!.CurrentExecutorStatus.DutyExitPartyTeardownCompleted = false;
+        state.ActiveSchedulerJobId = "retry-job";
+        state.Phase = DadRuntime::dad.Models.DadScheduleRunPhase.WaitingForScheduler;
+        config.SchedulerHistory.Add(new()
+        {
+            JobId = "retry-job", Success = true,
+            FinalPhase = DadRuntime::dad.Models.DadSchedulerPresetPhase.Skipped,
+            SkipKind = dailyReward ? DadRuntime::dad.Models.DadSchedulerSkipKind.DailyRouletteReward
+                : DadRuntime::dad.Models.DadSchedulerSkipKind.LevelSeek,
+        });
+        Invoke(scheduler, "ProcessScheduleSchedulerJob", schedule, state, RuntimeRun.Idle(), Now.AddSeconds(2));
+        Assert.Equal(DadRuntime::dad.Models.DadScheduleRunStatus.Blocked, config.ActiveScheduleRun.Status);
+        Assert.Equal(0, config.ActiveScheduleRun.CompletedEntryExecutions);
+        Assert.Equal(0, config.ActiveScheduleRun.SkippedEntryExecutions);
+        Assert.Equal(0, config.ActiveScheduleRun.CurrentEntryIndex);
+        Assert.Contains("teardown", config.ActiveScheduleRun.Summary);
+    }
+
+    [Fact]
+    public void OrdinaryPreflightSkipDoesNotNeedOrRequestPartyTeardown()
+    {
+        var (scheduler, config, schedule) = Fixture();
+        var state = config.ActiveScheduleRun;
+        state.ActiveSchedulerJobId = "ordinary-job";
+        config.SchedulerHistory.Add(new()
+        {
+            JobId = "ordinary-job", Success = true,
+            FinalPhase = DadRuntime::dad.Models.DadSchedulerPresetPhase.Skipped,
+            SkipKind = DadRuntime::dad.Models.DadSchedulerSkipKind.LevelSeek,
+        });
+        Invoke(scheduler, "ProcessScheduleSchedulerJob", schedule, state, RuntimeRun.Idle(), Now);
+        Assert.Equal(1, config.ActiveScheduleRun.CurrentEntryIndex);
+        Assert.Equal(1, config.ActiveScheduleRun.SkippedEntryExecutions);
     }
 
     [Fact]
@@ -139,7 +182,7 @@ public sealed class DadScheduleDutyExitRetryRuntimeTests
         return (scheduler, config, schedule);
     }
 
-    private static RuntimeRun FailedRun()
+    internal static RuntimeRun FailedRun()
     {
         var rows = Enumerable.Range(1, 4).Select(i => new DadRosterCharacterRef
         {
@@ -149,7 +192,7 @@ public sealed class DadScheduleDutyExitRetryRuntimeTests
         {
             RequestId = "failed-run", Status = DadRunStatus.PartialFailure, ModuleId = DadModuleId.PremadeDuty,
             ScheduleFailureKind = DadScheduleFailureKind.EntryTerminalFailure, CompletedAtUtc = Now,
-            CurrentExecutorStatus = new() { DutyExitedWithoutCompletion = true },
+            CurrentExecutorStatus = new() { DutyExitedWithoutCompletion = true, DutyExitPartyTeardownCompleted = true },
             Request = new() { PremadeDuty = new() { ContentFinderConditionId = 4 },
                 Orchestration = new() { RequiredRosterCharacters = rows } },
             Participants = rows.Select((row, i) => new DadParticipantSnapshot

@@ -5506,8 +5506,14 @@ public sealed class DadSchedulerService
     {
         var live = BuildParticipantSet(characterIntelligenceService.CurrentPool)
             .Where(row => row.IsLocalClient || transportService.IsWorkerOnline(row.WorkerSessionId)).ToList();
-        var decision = DadScheduleDutyExitRetryRules.EvaluateReadiness(state, live, HasPendingCleanup,
-            GetAdmissionBlocker(localDutySupport: false), now,
+        var cleanupPending = HasPendingCleanup;
+        var admissionBlocker = GetAdmissionBlocker(localDutySupport: false);
+        // BuildLiveSafetySnapshot stamps the current clock during capture. A
+        // timestamp taken at tick entry would make that fresh local heartbeat
+        // look like future evidence on every update. Sample after all inputs.
+        now = DadClock.UtcNow;
+        var decision = DadScheduleDutyExitRetryRules.EvaluateReadiness(state, live, cleanupPending,
+            admissionBlocker, now,
             TimeSpan.FromSeconds(Math.Max(3, configuration.HeartbeatStaleSeconds)));
         state.Summary = decision.Summary;
         state.UpdatedAtUtc = now;
@@ -5542,6 +5548,13 @@ public sealed class DadSchedulerService
 
             if (result.FinalPhase == DadSchedulerPresetPhase.Skipped)
             {
+                if (state.DutyExitRetrySource is { } source &&
+                    !source.CurrentExecutorStatus.DutyExitPartyTeardownCompleted)
+                {
+                    BlockActiveScheduleRun("Retry skip refused: the failed run has no exact party teardown completion proof.",
+                        DadScheduleFailureKind.EntryTerminalFailure);
+                    return;
+                }
                 var advanced = DadScheduleRules.AdvanceAfterEntry(
                     state,
                     schedule.Entries,

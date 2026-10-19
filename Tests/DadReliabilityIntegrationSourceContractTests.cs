@@ -49,6 +49,28 @@ public sealed class DadReliabilityIntegrationSourceContractTests
     }
 
     [Fact]
+    public void AbandonedDutyKeepsAuthenticatedRunOwnershipThroughExistingExactTeardown()
+    {
+        var source = ReadRepositorySource("Services", "DadCoordinatorService.cs");
+        Assert.Contains("if (TryBeginDutyExitRetryTeardown(result))", source);
+        Assert.Contains("if (pendingDutyExitFailure != null)", source);
+        var begin = source.IndexOf("private bool TryBeginDutyExitRetryTeardown", StringComparison.Ordinal);
+        var end = source.IndexOf("private void FinishSuccessfulWork", begin, StringComparison.Ordinal);
+        var cleanup = source[begin..end];
+        Assert.Contains("DadScheduleDutyExitRetryRules.RequiresPartyTeardownBeforeRetry", cleanup);
+        Assert.Contains("DadClock.UtcNow - failure.StartedAtUtc >= DadScheduleDutyExitRetryRules.ReadinessBudget", cleanup);
+        Assert.Contains("CurrentResult.Phase == DadRunPhase.Finalizing && successfulPartyBoundarySettled", cleanup);
+        Assert.Contains("CurrentResult.CurrentExecutorStatus.DutyExitPartyTeardownCompleted = true;", cleanup);
+        Assert.Contains("FinalizeRun(failure.Status", cleanup);
+        Assert.Contains("UpdatePartyTeardown();", cleanup);
+        Assert.Contains("BeginPartyTeardown(", cleanup);
+        Assert.DoesNotContain("DadRunStatus.Completed", cleanup);
+        Assert.DoesNotContain("HandleCancelRun", cleanup);
+        Assert.DoesNotContain("HandleWakeRequest", cleanup);
+        Assert.True(source.Split("pendingDutyExitFailure = null;", StringSplitOptions.None).Length >= 3);
+    }
+
+    [Fact]
     public void TerminalPlannerCleanupReleasesWakeOwnershipEvenWithoutEarlyAssignments()
     {
         var source = ReadRepositorySource("Services", "DadSchedulerService.cs");

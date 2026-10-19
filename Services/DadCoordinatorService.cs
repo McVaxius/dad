@@ -81,6 +81,8 @@ public sealed class DadCoordinatorService
         new(StringComparer.OrdinalIgnoreCase);
     private List<DadAssemblyInstructionDto> activePartyTeardownInstructions = [];
     private bool successfulPartyBoundarySettled;
+    private PendingDutyExitFailure? pendingDutyExitFailure;
+    private sealed record PendingDutyExitFailure(DadRunStatus Status, string Summary, string Reason, DateTime StartedAtUtc);
     private readonly Dictionary<string, DadRunStepResultDto> partyTeardownTerminalResults =
         new(StringComparer.OrdinalIgnoreCase);
     private DadScheduleRepeatBoundary activeScheduleRepeatBoundary = DadScheduleRepeatBoundary.Standalone;
@@ -175,6 +177,12 @@ public sealed class DadCoordinatorService
         if (autoPartyCancellationPending)
         {
             UpdateAutoPartyCancellation();
+            return;
+        }
+
+        if (pendingDutyExitFailure != null)
+        {
+            UpdateDutyExitRetryTeardown();
             return;
         }
 
@@ -446,6 +454,7 @@ public sealed class DadCoordinatorService
         activePlan = plan;
         this.persistentStartup = persistentStartup;
         crewFormationTeardownRequested = false;
+        pendingDutyExitFailure = null;
         ClearPendingLocalWorkerFinalization();
         autoPartyCancellationPending = false;
         autoPartyFinalizationStatus = DadRunStatus.Cancelled;
@@ -3195,6 +3204,8 @@ public sealed class DadCoordinatorService
 
         if (!result.Success)
         {
+            if (TryBeginDutyExitRetryTeardown(result))
+                return;
             FinalizeRun(
                 result.TimedOut ? DadRunStatus.TimedOut : DadRunStatus.PartialFailure,
                 result.Summary,
@@ -3459,6 +3470,57 @@ public sealed class DadCoordinatorService
             DadRunPhase.Finalizing => DadParticipantState.Failed,
             _ => result.Deferred ? DadParticipantState.QueuePending : DadParticipantState.Running,
         };
+    }
+
+    private bool TryBeginDutyExitRetryTeardown(DadRunStepResultDto result)
+    {
+        if (activePlan == null || activeSlotManifest == null || result.TimedOut)
+            return false;
+
+        var candidate = CurrentResult.Clone();
+        candidate.Status = DadRunStatus.PartialFailure;
+        if (candidate.ScheduleFailureKind == DadScheduleFailureKind.None)
+            candidate.ScheduleFailureKind = DadScheduleFailureKind.EntryTerminalFailure;
+        candidate.CompletedAtUtc = DadClock.UtcNow;
+        if (!DadScheduleDutyExitRetryRules.RequiresPartyTeardownBeforeRetry(configuration.ActiveScheduleRun, candidate))
+            return false;
+
+        pendingDutyExitFailure = new(DadRunStatus.PartialFailure, result.Summary,
+            string.IsNullOrWhiteSpace(result.FailureReason) ? "Dad module routing failed." : result.FailureReason,
+            DadClock.UtcNow);
+        successfulPartyBoundarySettled = false;
+        UpdateDutyExitRetryTeardown();
+        return true;
+    }
+
+    private void UpdateDutyExitRetryTeardown()
+    {
+        if (pendingDutyExitFailure is not { } failure || activePlan == null)
+            return;
+
+        if (DadClock.UtcNow - failure.StartedAtUtc >= DadScheduleDutyExitRetryRules.ReadinessBudget)
+        {
+            FinalizeRun(DadRunStatus.PartialFailure,
+                "Automatic retry blocked: failed duty party teardown did not finish within five minutes.",
+                failure.Reason);
+            return;
+        }
+
+        if (CurrentResult.Phase == DadRunPhase.Finalizing && successfulPartyBoundarySettled)
+        {
+            // Publish failure, not completion. The scheduler may now run ordinary
+            // skip preflight knowing no party was left behind by this attempt.
+            CurrentResult.CurrentExecutorStatus.DutyExitPartyTeardownCompleted = true;
+            foreach (var step in stepResults.Where(static step => step.ExecutorStatus.DutyExitedWithoutCompletion))
+                step.ExecutorStatus.DutyExitPartyTeardownCompleted = true;
+            FinalizeRun(failure.Status, failure.Summary + " Exact party teardown completed before retry preflight.", failure.Reason);
+            return;
+        }
+
+        if (CurrentResult.Phase == DadRunPhase.TearingDownParty)
+            UpdatePartyTeardown();
+        else
+            BeginPartyTeardown("Duty exited without completion; settling the exact party before retry/skip preflight.");
     }
 
     private void FinishSuccessfulWork(string summary)
@@ -4883,6 +4945,7 @@ public sealed class DadCoordinatorService
         partyInviteGateway.Reset();
         partyTeardownService.Reset();
         successfulPartyBoundarySettled = false;
+        pendingDutyExitFailure = null;
         activePartyTeardownInstructions = [];
         partyTeardownTerminalResults.Clear();
         presenceService.ResetToIdle();

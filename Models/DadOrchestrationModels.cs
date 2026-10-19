@@ -622,6 +622,9 @@ public sealed class DadModuleExecutionStatusDto
     public int MaxRetryAttempts { get; set; }
     // Structured evidence, not a timeout guess or a failure-message substring.
     public bool DutyExitedWithoutCompletion { get; set; }
+    // Coordinator evidence: the failed run's exact party was fully torn down
+    // before releasing its authenticated participant assignments.
+    public bool DutyExitPartyTeardownCompleted { get; set; }
     public DateTime? StartedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAtUtc { get; set; }
@@ -645,6 +648,7 @@ public sealed class DadModuleExecutionStatusDto
         RetryAttempt = RetryAttempt,
         MaxRetryAttempts = MaxRetryAttempts,
         DutyExitedWithoutCompletion = DutyExitedWithoutCompletion,
+        DutyExitPartyTeardownCompleted = DutyExitPartyTeardownCompleted,
         StartedAtUtc = StartedAtUtc,
         UpdatedAtUtc = UpdatedAtUtc,
         CompletedAtUtc = CompletedAtUtc,

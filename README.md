@@ -680,6 +680,9 @@ ID to distinguish the running DLL from an older build. Review reports for person
 - Before blocking, a scheduled premade duty or daily roulette may make **one additional attempt per entry/repeat**
   when the exact queue leader proves an exit without matching `DutyCompleted` after the ten-second grace period.
   This is not a generic timeout retry. The failed attempt remains failed and does not increment completed entries.
+  Before releasing the failed run, DAD uses guarded Slot1 disband plus exact follower leave/solo proof on every slot;
+  failed cleanup or a five-minute teardown deadline blocks recovery. Thus a satisfied level/daily preflight can skip
+  safely without leaving the previous party behind. Ordinary skips do not disband unrelated parties.
   DAD persists the consumed retry budget, waits for acknowledged cleanup and fresh safe readiness of every original
   worker/account/character/Content ID, then uses a fresh ordinary scheduler request. Level-target and enabled daily-reward
   skip checks run again, and normal party assembly runs if still needed. Recovery readiness is bounded to five minutes

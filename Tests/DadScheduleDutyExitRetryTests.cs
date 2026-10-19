@@ -10,6 +10,27 @@ public sealed class DadScheduleDutyExitRetryTests
     private static readonly DateTime Now = new(2026, 10, 19, 3, 0, 0, DateTimeKind.Utc);
 
     [Fact]
+    public void EligibleAbandonedRunMustSettleItsPartyBeforeRetryCanBeReserved()
+    {
+        var run = FailedRun();
+        run.CurrentExecutorStatus.DutyExitPartyTeardownCompleted = false;
+        Assert.True(DadScheduleDutyExitRetryRules.RequiresPartyTeardownBeforeRetry(State(), run));
+        Assert.False(DadScheduleDutyExitRetryRules.CanReserve(State(), run));
+        run.CurrentExecutorStatus.DutyExitPartyTeardownCompleted = true;
+        Assert.True(DadScheduleDutyExitRetryRules.CanReserve(State(), run));
+        run.Status = DadRunStatus.Cancelled;
+        Assert.False(DadScheduleDutyExitRetryRules.RequiresPartyTeardownBeforeRetry(State(), run));
+    }
+
+    [Fact]
+    public void PersistedRetryWithoutTeardownProofCannotResumeOrReachSkipPreflight()
+    {
+        var state = Reserved();
+        state.DutyExitRetrySource!.CurrentExecutorStatus.DutyExitPartyTeardownCompleted = false;
+        Assert.Equal(DadDutyExitRetryAction.Block, Ready(state, Live()).Action);
+    }
+
+    [Fact]
     public void ReservesOnlyOneAttemptWithoutCompletingOrAdvancingTheFailedEntry()
     {
         var run = FailedRun();
@@ -34,6 +55,7 @@ public sealed class DadScheduleDutyExitRetryTests
     [InlineData("rejected")]
     [InlineData("generic-timeout")]
     [InlineData("no-typed-evidence")]
+    [InlineData("no-party-teardown-proof")]
     [InlineData("unknown-leader")]
     [InlineData("reload")]
     [InlineData("wrong-run")]
@@ -55,6 +77,7 @@ public sealed class DadScheduleDutyExitRetryTests
             case "rejected": run.Status = DadRunStatus.Rejected; break;
             case "generic-timeout": run.Status = DadRunStatus.TimedOut; break;
             case "no-typed-evidence": run.CurrentExecutorStatus.DutyExitedWithoutCompletion = false; break;
+            case "no-party-teardown-proof": run.CurrentExecutorStatus.DutyExitPartyTeardownCompleted = false; break;
             case "unknown-leader": run.ScheduleFailureKind = DadScheduleFailureKind.MissingOrUnknownLeaderState; break;
             case "reload": run.ScheduleFailureKind = DadScheduleFailureKind.CoordinatorReloadAbandonment; break;
             case "wrong-run": run.RequestId = "other"; break;
@@ -80,6 +103,7 @@ public sealed class DadScheduleDutyExitRetryTests
     [InlineData("external-owner")]
     [InlineData("stale")]
     [InlineData("pre-failure-heartbeat")]
+    [InlineData("future-heartbeat")]
     public void WaitsForEveryOriginalClientAndFreshSafeProof(string scenario)
     {
         var state = Reserved();
@@ -93,6 +117,7 @@ public sealed class DadScheduleDutyExitRetryTests
             case "external-owner": live[3].ExternalAutomationHeld = true; break;
             case "stale": live[3].LastHeartbeatUtc = Now.AddMinutes(-1); break;
             case "pre-failure-heartbeat": live[3].LastHeartbeatUtc = Now; break;
+            case "future-heartbeat": live[3].LastHeartbeatUtc = Now.AddMinutes(1); break;
         }
         var decision = DadScheduleDutyExitRetryRules.EvaluateReadiness(state, live,
             scenario == "cleanup", scenario == "admission" ? "pending coordinator cancellation" : "",
@@ -182,6 +207,7 @@ public sealed class DadScheduleDutyExitRetryTests
         Assert.Equal(Now, loaded.DutyExitRetryPendingSinceUtc);
         Assert.Equal(4, loaded.Clone().DutyExitRetrySource!.Participants.Count);
         Assert.True(loaded.DutyExitRetrySource!.CurrentExecutorStatus.DutyExitedWithoutCompletion);
+        Assert.True(loaded.DutyExitRetrySource.CurrentExecutorStatus.DutyExitPartyTeardownCompleted);
         var failed = DadScheduleRules.BlockRun(loaded, "retry failed", Now.AddMinutes(1), DadScheduleFailureKind.EntryTerminalFailure).ToResult(false).Clone();
         var schedule = new DadScheduleDefinition
         {
@@ -256,7 +282,7 @@ public sealed class DadScheduleDutyExitRetryTests
         {
             RequestId = "failed-run", Status = DadRunStatus.PartialFailure, ModuleId = DadModuleId.PremadeDuty,
             ScheduleFailureKind = DadScheduleFailureKind.EntryTerminalFailure, CompletedAtUtc = Now,
-            CurrentExecutorStatus = new() { DutyExitedWithoutCompletion = true },
+            CurrentExecutorStatus = new() { DutyExitedWithoutCompletion = true, DutyExitPartyTeardownCompleted = true },
             Request = new()
             {
                 RequestId = "failed-run", PremadeDuty = new() { ContentFinderConditionId = 4 },

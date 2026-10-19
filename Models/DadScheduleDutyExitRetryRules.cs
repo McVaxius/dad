@@ -10,6 +10,10 @@ public static class DadScheduleDutyExitRetryRules
     public static readonly TimeSpan ReadinessBudget = TimeSpan.FromMinutes(5);
 
     public static bool CanReserve(DadScheduleRunState state, DadRunResult run)
+        => RequiresPartyTeardownBeforeRetry(state, run) &&
+           run.CurrentExecutorStatus.DutyExitPartyTeardownCompleted;
+
+    public static bool RequiresPartyTeardownBeforeRetry(DadScheduleRunState state, DadRunResult run)
         => state.IsActive && state.Phase == DadScheduleRunPhase.WaitingForDadRun && !state.DryRun &&
            state.DutyExitRetryCount == 0 && state.DutyExitRetrySource == null &&
            Same(state.ActivePlannerRequestId, run.RequestId) &&
@@ -40,7 +44,8 @@ public static class DadScheduleDutyExitRetryRules
         bool cleanupPending, string admissionBlocker, DateTime now, TimeSpan heartbeatBudget)
     {
         var source = state.DutyExitRetrySource;
-        if (state.DutyExitRetryCount != MaximumRetries || source?.CompletedAtUtc is not { } completed || !HasExactRoster(source))
+        if (state.DutyExitRetryCount != MaximumRetries || source?.CompletedAtUtc is not { } completed ||
+            !source.CurrentExecutorStatus.DutyExitPartyTeardownCompleted || !HasExactRoster(source))
             return Block("Automatic retry lost its exact failed-run provenance.");
         var since = state.DutyExitRetryPendingSinceUtc ?? completed;
         if (now - since >= ReadinessBudget)
