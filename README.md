@@ -675,8 +675,20 @@ ID to distinguish the running DLL from an older build. Review reports for person
   definition cannot supply a total, DAD omits that denominator instead of guessing.
 - A blocked Schedule entry caused by an ordinary entry failure or coordinator/plugin reload can be resumed only
   through the operator's **Resume from failed entry** action. DAD creates a new run at the exact persisted cursor,
-  retains prior history, requires all clients and DAD/scheduler work to be idle, and never replays automatically.
+  retains prior history, and requires all clients and DAD/scheduler work to be idle. Reload abandonment never replays automatically.
   Cancelled runs remain terminal and cannot be resumed.
+- Before blocking, a scheduled premade duty or daily roulette may make **one additional attempt per entry/repeat**
+  when the exact queue leader proves an exit without matching `DutyCompleted` after the ten-second grace period.
+  This is not a generic timeout retry. The failed attempt remains failed and does not increment completed entries.
+  Before releasing the failed run, DAD uses guarded Slot1 disband plus exact follower leave/solo proof on every slot;
+  failed cleanup or a five-minute teardown deadline blocks recovery. Thus a satisfied level/daily preflight can skip
+  safely without leaving the previous party behind. Ordinary skips do not disband unrelated parties.
+  DAD persists the consumed retry budget, waits for acknowledged cleanup and fresh safe readiness of every original
+  worker/account/character/Content ID, then uses a fresh ordinary scheduler request. Level-target and enabled daily-reward
+  skip checks run again, and normal party assembly runs if still needed. Recovery readiness is bounded to five minutes
+  after reservation. Changed identities/duty/authority, Cancel, unrelated failures and already-partially-completed run loops
+  do not auto-retry; another failure stops. Explicit resume does not replenish the entry's automatic budget. See
+  [the schedule recovery guide](DAD_AETHERTEK.md) for the exact scope and exclusions.
 - Scheduled worker commands with `TimeoutSeconds <= 0` have no outer command deadline and remain active until explicit
   cancellation or an executor/queue-pulse result completes them. Positive values begin at worker execution start and
   clamp to 30–7,200 seconds through preparation and queueing. After `Duty`, `Msq`, `DutySupport`, `Trust`, `PremadeDuty`,
@@ -789,6 +801,32 @@ ID to distinguish the running DLL from an older build. Review reports for person
   unnecessary AR commands; that account still needs relog GO and final readiness. Account pipelines remain independent,
   and the actual run still waits for every required slot. Logical wake orders do not expire. The five-second coordinator cadence
   and mini-window snapshots affect status freshness only, not local ownership timing.
+- An `Any` job slot still freezes its combat class/job only from the exact live character and Content ID. If world
+  readiness disappears between scheduler preview and final Coordinator binding, the Coordinator returns structured
+  pre-admission `RuntimeReadiness` evidence rather than accepting a run. The scheduler retains its exact request,
+  ownership and schedule cursor, waits on its ordinary two-second refresh cadence and fully revalidates before
+  another start attempt. It records no terminal job and consumes no duty-exit retry budget for this wait. Other slots'
+  hard contradictions override readiness waits; wrong identity/CID, ambiguous routes and missing/noncombat live jobs
+  remain rejected. An accepted start, ordinary rejection or uncertain callback never reopens the start claim. Cancel
+  and strict frozen-contract validation remain authoritative; no preset class needs to be hard-coded as a workaround.
+- Guarded Client Dad data-center travel distinguishes accepted requests from confirmed arrival. Accepted travel that
+  ends back on the wrong DC retries after five seconds of continuously fresh exact world-ready/automation-idle proof;
+  explicit-false calls also retry every five seconds with fresh safety checks. There is no travel-specific attempt cap
+  or total timeout while the assignment remains active. Busy travel, logout/login/loading/casting, stale observations or
+  interrupted identity cannot trigger a duplicate journey. Recovery stops at arrival/cancellation; immutable identity
+  contradictions and uncertain IPC still fail closed. DAD never cancels Lifestream to force a retry. See the travel
+  integration notes in [DAD_AETHERTEK.md](DAD_AETHERTEK.md).
+- Accepted in-world `/ays relog` commands likewise do not prove arrival. If the exact original source character
+  remains or returns after an aborted attempt, DAD retries after five continuously fresh, same-location, world-stable
+  idle seconds, without an attempt limit or total retry timeout. Every retry retains the existing operation's frozen
+  target and ownership, requires a connected coordinator, readable DAD-owned suppression, Multi Mode off, and safe idle
+  AutoRetainer/Lifestream/external automation, then forces another live safety read immediately before dispatch.
+  Busy services, title/logout/login/loading/casting, stale or cached location observations, observation gaps and
+  coordinator disconnection cannot authorize replay. A prerequisite return to the frozen home world uses the same
+  guarded five-second recovery; explicit-false return-home IPC calls retry every five seconds. Different stable
+  characters, changed source identity and uncertain dispatch still fail closed. Arrival/cancellation stops recovery;
+  DAD does not cancel running travel or repeat AR reset just to retry. Unattended 24/7 gameplay remains a live-test
+  acceptance criterion, not a guarantee provided by these guards.
 - A connected Client Dad that is logged out can enter one separate title-idle login path only from a fresh exclusive
   ready `_TitleMenu`; Character Select is never eligible. The exact account route and requested catalog character must
   match, all condition flags must be clear, and title movies, connection/navigation, dialogs, multiple, unknown, or
@@ -801,8 +839,9 @@ ID to distinguish the running DLL from an older build. Review reports for person
   `MovieStaffList` may receive one Escape only while Multi Mode is already off, AutoRetainer and Lifestream are
   readable and idle, and VERMAXION is freshly idle or confirmed absent. Login still waits for a later fresh valid
   `_TitleMenu`. Busy or unreadable automation keeps
-  waiting without a new timeout. The in-world `/ays relog` sequence remains unchanged, while a visiting source
-  character's frozen identity, home destination, and relog target stay visible throughout Data Center return travel.
+  waiting without a new timeout. This title-login acceptance policy is separate from the guarded in-world relog retry
+  above; a visiting source character's frozen identity, home destination, and relog target stay visible throughout
+  Data Center return travel.
 - The v2 wire format uses string reservation states (`Pending`, `Granting`, `Granted`, `Released`, `Rejected`). DAD
   also accepts the legacy VERMAXION numeric values `0` through `4` in that order. Unknown/malformed states fail
   closed; verified-idle compatibility is reserved for genuine v2 IPC unavailability, not invalid v2 responses. If

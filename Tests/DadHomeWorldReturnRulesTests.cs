@@ -10,6 +10,53 @@ public sealed class DadHomeWorldReturnRulesTests
     private static readonly DadCharacterKey RelogTarget = new("Target@Coeurl");
 
     [Fact]
+    public void AcceptedButAbortedReturnHomeRetriesAfterFiveFreshSafeIdleSeconds()
+    {
+        var gate = new DadHomeWorldReturnGate();
+        var participant = ParticipantAt(63, "Siren", Now);
+        Assert.Equal(DadHomeWorldReturnAction.InvokeLifestream, gate.Evaluate(participant, true, false, RelogTarget, Now).Action);
+        gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.Accepted, "accepted"), Now);
+        participant.CurrentLocation!.ObservedAtUtc = Now.AddMinutes(1);
+        Assert.Equal(DadHomeWorldReturnAction.Wait, gate.Evaluate(participant, true, false, RelogTarget, Now.AddMinutes(1)).Action);
+        participant.CurrentLocation.ObservedAtUtc = Now.AddMinutes(1).AddSeconds(5);
+        Assert.Equal(DadHomeWorldReturnAction.InvokeLifestream, gate.Evaluate(participant, true, false, RelogTarget, Now.AddMinutes(1).AddSeconds(5)).Action);
+    }
+
+    [Fact]
+    public void RepeatedAcceptedReturnHomeAbortsHaveNoAttemptLimit()
+    {
+        var gate = new DadHomeWorldReturnGate();
+        var participant = ParticipantAt(63, "Siren", Now);
+        var now = Now;
+        for (var attempt = 0; attempt < 200; attempt++)
+        {
+            participant.CurrentLocation!.ObservedAtUtc = now;
+            Assert.Equal(DadHomeWorldReturnAction.InvokeLifestream, gate.Evaluate(participant, true, false, RelogTarget, now).Action);
+            gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.Accepted, "accepted"), now);
+            Assert.Equal(DadHomeWorldReturnAction.Wait, gate.Evaluate(participant, true, false, RelogTarget, now).Action);
+            now = now.AddSeconds(5);
+        }
+        Assert.Equal(200, gate.InvocationCount);
+    }
+
+    [Fact]
+    public void BusyTravelCannotReplayEvenAfterOneDayAndRestartsIdleProof()
+    {
+        var gate = new DadHomeWorldReturnGate();
+        var participant = ParticipantAt(63, "Siren", Now);
+        Assert.Equal(DadHomeWorldReturnAction.InvokeLifestream, gate.Evaluate(participant, true, false, RelogTarget, Now).Action);
+        gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.Accepted, "accepted"), Now);
+        gate.Evaluate(participant, true, false, RelogTarget, Now);
+        participant.CurrentLocation!.ObservedAtUtc = Now.AddDays(1);
+        Assert.Equal(DadHomeWorldReturnAction.Wait, gate.Evaluate(participant, true, true, RelogTarget, Now.AddDays(1)).Action);
+        Assert.Equal(DadHomeWorldReturnAction.Wait, gate.Evaluate(participant, true, false, RelogTarget, Now.AddDays(1)).Action);
+        participant.CurrentLocation.ObservedAtUtc = Now.AddDays(1).AddSeconds(4);
+        Assert.Equal(DadHomeWorldReturnAction.Wait, gate.Evaluate(participant, true, false, RelogTarget, Now.AddDays(1).AddSeconds(4)).Action);
+        participant.CurrentLocation.ObservedAtUtc = Now.AddDays(1).AddSeconds(5);
+        Assert.Equal(DadHomeWorldReturnAction.InvokeLifestream, gate.Evaluate(participant, true, false, RelogTarget, Now.AddDays(1).AddSeconds(5)).Action);
+    }
+
+    [Fact]
     public void HomeWorldWithFreshStableProofAndIdleLifestreamIsReady()
     {
         var decision = new DadHomeWorldReturnGate().Evaluate(
@@ -37,7 +84,7 @@ public sealed class DadHomeWorldReturnRulesTests
         Assert.Equal("Coeurl", gate.FrozenHomeWorldName);
         Assert.Equal("Target@Coeurl", gate.FrozenRelogTargetCharacterKey);
         Assert.Equal(
-            "Character@Coeurl is waiting to start Data Center travel back to home world Coeurl before DAD relogs to Target@Coeurl; invoking Lifestream.ChangeWorld('Coeurl') attempt 1/3.",
+            "Character@Coeurl is waiting to start Data Center travel back to home world Coeurl before DAD relogs to Target@Coeurl; invoking Lifestream.ChangeWorld('Coeurl') attempt 1.",
             invoke.Summary);
         gate.RecordInvocationResult(
             new DadLifestreamChangeWorldResult(DadLifestreamChangeWorldOutcome.Accepted, "accepted"),
@@ -74,27 +121,23 @@ public sealed class DadHomeWorldReturnRulesTests
     }
 
     [Fact]
-    public void ExplicitFalseAllowsThreeAttemptsAtTenSecondIntervals()
+    public void ExplicitFalseKeepsRetryingAtFiveSecondIntervalsWithoutAttemptLimit()
     {
         var gate = new DadHomeWorldReturnGate();
         var participant = ParticipantAt(63, "Siren", Now);
 
-        Assert.Equal(DadHomeWorldReturnAction.InvokeLifestream, gate.Evaluate(participant, true, false, RelogTarget, Now).Action);
-        gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.ExplicitFalse, "false"), Now);
-        participant.CurrentLocation!.ObservedAtUtc = Now.AddSeconds(9);
-        var retryWait = gate.Evaluate(participant, true, false, RelogTarget, Now.AddSeconds(9));
-        Assert.Equal(DadHomeWorldReturnAction.Wait, retryWait.Action);
-        Assert.Contains("Character@Coeurl", retryWait.Summary, StringComparison.Ordinal);
-        Assert.Contains("Target@Coeurl", retryWait.Summary, StringComparison.Ordinal);
-        participant.CurrentLocation.ObservedAtUtc = Now.AddSeconds(10);
-        Assert.Equal(DadHomeWorldReturnAction.InvokeLifestream, gate.Evaluate(participant, true, false, RelogTarget, Now.AddSeconds(10)).Action);
-        gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.ExplicitFalse, "false"), Now.AddSeconds(10));
-        participant.CurrentLocation.ObservedAtUtc = Now.AddSeconds(20);
-        Assert.Equal(DadHomeWorldReturnAction.InvokeLifestream, gate.Evaluate(participant, true, false, RelogTarget, Now.AddSeconds(20)).Action);
-        gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.ExplicitFalse, "false"), Now.AddSeconds(20));
-
-        Assert.Equal(3, gate.InvocationCount);
-        Assert.Equal(DadHomeWorldReturnAction.Reject, gate.Evaluate(participant, true, false, RelogTarget, Now.AddSeconds(20)).Action);
+        for (var attempt = 0; attempt < 200; attempt++)
+        {
+            var now = Now.AddSeconds(attempt * 5);
+            participant.CurrentLocation!.ObservedAtUtc = now;
+            var invoke = gate.Evaluate(participant, true, false, RelogTarget, now);
+            Assert.Equal(DadHomeWorldReturnAction.InvokeLifestream, invoke.Action);
+            Assert.Equal(attempt + 1, invoke.AttemptNumber);
+            gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.ExplicitFalse, "false"), now);
+            participant.CurrentLocation.ObservedAtUtc = now.AddSeconds(4);
+            Assert.Equal(DadHomeWorldReturnAction.Wait, gate.Evaluate(participant, true, false, RelogTarget, now.AddSeconds(4)).Action);
+        }
+        Assert.Equal(200, gate.InvocationCount);
     }
 
     [Fact]

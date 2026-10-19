@@ -170,8 +170,8 @@ public sealed class DadClientTravelGate
 {
     public const uint OceRegionId = 4;
     public const int OceVisitorCharacterCap = 40;
-    public const int MaxChangeWorldAttempts = 3;
-    public static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(10);
+    public static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
+    public static readonly TimeSpan AcceptedIdleRetryDelay = TimeSpan.FromSeconds(5);
     public static readonly TimeSpan MaxOceRosterProofAge = TimeSpan.FromSeconds(30);
 
     private string immutableSignature = string.Empty;
@@ -181,6 +181,10 @@ public sealed class DadClientTravelGate
     private int invocationCount;
     private DateTime nextAttemptUtc = DateTime.MinValue;
     private string terminalSummary = string.Empty;
+    private DateTime? safeIdleSinceUtc;
+    private DateTime? lastSafeIdleObservationUtc;
+    private string assignedWorkerSessionId = string.Empty;
+    private string safeIdleLocation = string.Empty;
 
     public int InvocationCount => invocationCount;
 
@@ -210,45 +214,67 @@ public sealed class DadClientTravelGate
         if (terminalFailure)
             return Reject(terminalSummary);
 
+        var now = NormalizeUtc(nowUtc);
         var participant = context.Participant ?? new DadParticipantSnapshot();
         if (!ExactAssignmentIdentityMatches(assignment, participant))
-            return Wait("Waiting for the exact assigned account, character, Content ID, worker, run, and slot before data-center travel.");
+            return WaitWithoutIdleProof("Waiting for the exact assigned account, character, Content ID, worker, run, and slot before data-center travel.");
+        if (string.IsNullOrEmpty(assignedWorkerSessionId))
+            assignedWorkerSessionId = participant.WorkerSessionId.Value;
+        else if (!Same(assignedWorkerSessionId, participant.WorkerSessionId.Value))
+        {
+            terminalFailure = true;
+            terminalSummary = "The exact assigned worker changed during data-center travel; recovery failed closed.";
+            return Reject(terminalSummary);
+        }
 
         var current = participant.CurrentLocation;
         if (!DadCoordinatorTravelRules.IsFreshComplete(current, nowUtc))
-            return Wait("Waiting for fresh current-world, data-center, and region proof before data-center travel.");
+            return WaitWithoutIdleProof("Waiting for fresh current-world, data-center, and region proof before data-center travel.");
 
-        if (current!.DataCenterId == target.DataCenterId &&
-            Same(current.DataCenterName, target.DataCenterName) &&
-            current.RegionId == target.RegionId &&
-            Same(current.RegionName, target.RegionName))
+        if (IsOnTargetDataCenter(current!, target))
         {
+            ResetIdleProof();
             return Ready($"Current data center matches frozen Slot1 data center {target.DataCenterName}.");
         }
 
-        if (acceptedInvocation)
-            return Wait($"Lifestream accepted travel to {target.WorldName}; waiting for fresh {target.DataCenterName} location proof.");
-
         if (!TryAuthorizeDestination(context, target, nowUtc, out var policyBlocker))
+        {
+            ResetIdleProof();
             return Reject(policyBlocker);
+        }
 
         var safety = context.Safety ?? new DadClientTravelSafetyEvidence();
-        if (!participant.WorldReadyStable || !participant.PostArReady)
-            return Wait("Waiting for world-stable post-AR readiness before invoking Lifestream.");
+        if (!participant.IsAvailable || !participant.WorldReadyStable || !participant.PostArReady)
+            return WaitWithoutIdleProof("Waiting for world-stable post-AR readiness before invoking Lifestream.");
         if (!safety.VermaxionSafe || participant.ExternalAutomationHeld)
-            return Wait("Waiting for VERMAXION to prove automation is idle before invoking Lifestream.");
+            return WaitWithoutIdleProof("Waiting for VERMAXION to prove automation is idle before invoking Lifestream.");
         if (!safety.AutoRetainerAvailable || safety.AutoRetainerBusy || safety.AutoRetainerMultiModeEnabled)
-            return Wait("Waiting for AutoRetainer to be available, idle, and out of Multi Mode before invoking Lifestream.");
+            return WaitWithoutIdleProof("Waiting for AutoRetainer to be available, idle, and out of Multi Mode before invoking Lifestream.");
         if (!safety.LifestreamAvailable || safety.LifestreamBusy)
-            return Wait("Waiting for Lifestream to be available and idle before invoking world travel.");
+            return WaitWithoutIdleProof("Waiting for Lifestream to be available and idle before invoking world travel.");
         if (invocationPending)
             return Wait("A Lifestream.ChangeWorld result is pending; no duplicate invocation is permitted.");
 
-        var now = NormalizeUtc(nowUtc);
+        if (acceptedInvocation)
+        {
+            // An accepted IPC call only queued travel; logout/DC travel can fail
+            // later. Require sustained fresh, exact, safe wrong-DC/idle proof,
+            // not merely elapsed time, before allowing another invocation.
+            var locationSignature = $"{current!.WorldId}|{current.DataCenterId}|{current.RegionId}";
+            if (safeIdleLocation != locationSignature || lastSafeIdleObservationUtc is not { } last || now < last ||
+                now - last > DadCoordinatorTravelRules.MaxLocationProofAge)
+                safeIdleSinceUtc = now;
+            safeIdleLocation = locationSignature;
+            lastSafeIdleObservationUtc = now;
+            safeIdleSinceUtc ??= now;
+            if (now - safeIdleSinceUtc.Value < AcceptedIdleRetryDelay)
+                return Wait($"Accepted travel has not reached {target.DataCenterName}; verifying five seconds of fresh safe Lifestream-idle proof before retry (attempts so far: {invocationCount}).");
+            acceptedInvocation = false;
+            ResetIdleProof();
+        }
+
         if (now < nextAttemptUtc)
             return Wait($"Waiting until {nextAttemptUtc:O} before retrying an explicit false Lifestream result.");
-        if (invocationCount >= MaxChangeWorldAttempts)
-            return Reject("Lifestream.ChangeWorld exhausted its three explicit-false attempts.");
 
         invocationPending = true;
         return new DadClientTravelDecision
@@ -256,7 +282,7 @@ public sealed class DadClientTravelGate
             Action = DadClientTravelAction.InvokeLifestream,
             AttemptNumber = invocationCount + 1,
             DestinationWorldName = target.WorldName,
-            Summary = $"Invoke Lifestream.ChangeWorld('{target.WorldName}') attempt {invocationCount + 1}/{MaxChangeWorldAttempts}.",
+            Summary = $"Invoke Lifestream.ChangeWorld('{target.WorldName}') attempt {invocationCount + 1}; retries continue until arrival or cancellation.",
         };
     }
 
@@ -271,13 +297,10 @@ public sealed class DadClientTravelGate
         {
             case DadLifestreamChangeWorldOutcome.Accepted:
                 acceptedInvocation = true;
-                break;
-            case DadLifestreamChangeWorldOutcome.ExplicitFalse when invocationCount < MaxChangeWorldAttempts:
-                nextAttemptUtc = NormalizeUtc(nowUtc) + RetryInterval;
+                ResetIdleProof();
                 break;
             case DadLifestreamChangeWorldOutcome.ExplicitFalse:
-                terminalFailure = true;
-                terminalSummary = "Lifestream.ChangeWorld returned explicit false three times; travel failed closed.";
+                nextAttemptUtc = NormalizeUtc(nowUtc) + RetryInterval;
                 break;
             default:
                 terminalFailure = true;
@@ -297,7 +320,26 @@ public sealed class DadClientTravelGate
         invocationCount = 0;
         nextAttemptUtc = DateTime.MinValue;
         terminalSummary = string.Empty;
+        assignedWorkerSessionId = string.Empty;
+        ResetIdleProof();
     }
+
+    private void ResetIdleProof()
+    {
+        safeIdleSinceUtc = null;
+        lastSafeIdleObservationUtc = null;
+        safeIdleLocation = string.Empty;
+    }
+
+    private DadClientTravelDecision WaitWithoutIdleProof(string summary)
+    {
+        ResetIdleProof();
+        return Wait(summary);
+    }
+
+    private static bool IsOnTargetDataCenter(DadWorldLocationObservation current, DadCoordinatorTravelTarget target)
+        => current.DataCenterId == target.DataCenterId && Same(current.DataCenterName, target.DataCenterName) &&
+           current.RegionId == target.RegionId && Same(current.RegionName, target.RegionName);
 
     private static bool TryAuthorizeDestination(
         DadClientTravelContext context,
@@ -431,8 +473,8 @@ public sealed class DadClientTravelGate
     private static DadClientTravelDecision Ready(string summary)
         => new() { Action = DadClientTravelAction.Ready, Summary = summary };
 
-    private static DadClientTravelDecision Wait(string summary)
-        => new() { Action = DadClientTravelAction.Wait, Summary = summary };
+    private DadClientTravelDecision Wait(string summary)
+        => new() { Action = DadClientTravelAction.Wait, AttemptNumber = invocationCount, Summary = summary };
 
     private static DadClientTravelDecision Reject(string summary)
         => new() { Action = DadClientTravelAction.Reject, Summary = summary };

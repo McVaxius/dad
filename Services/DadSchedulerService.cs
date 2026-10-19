@@ -238,6 +238,13 @@ public sealed class DadSchedulerService
 
     internal bool HasPendingCancellationCleanup => HasPendingCleanup;
 
+    // Keep the read-only wait/deadline progressing even while admission is
+    // blocked by cleanup. The ordinary job-start gate still prevents mutation.
+    internal bool HasPendingDutyExitRetry => configuration.ActiveScheduleRun is
+        { IsActive: true, DutyExitRetryPendingSinceUtc: not null, DutyExitRetrySource: { } source } state &&
+        (string.IsNullOrWhiteSpace(state.ActivePlannerRequestId) ||
+         string.Equals(state.ActivePlannerRequestId, source.RequestId, StringComparison.Ordinal));
+
     internal void ConfigureCrewFormation(
         Func<DadRunRequest, DadRunResult> startRegularParty,
         Func<string, DadPlannerGroup, DadActivityPreset, DadAlliancePartyFinderStatus> createAllianceParty,
@@ -2077,6 +2084,19 @@ public sealed class DadSchedulerService
         }
 
         result ??= DadRunResult.Rejected(strictRequest, "Planner start callback returned no result.");
+        if (strictRevalidationTracker.TryReleaseUnacceptedReadinessStart(strictRequest, result))
+        {
+            currentState.Phase = DadSchedulerPresetPhase.WaitingForHeartbeat;
+            currentState.PlannerStarted = false;
+            currentState.BlockedReason = string.Empty;
+            currentState.Summary = $"Final planner admission is waiting for fresh runtime readiness: {result.Summary}";
+            currentState.UpdatedAtUtc = DadClock.UtcNow;
+            postWakeLevelTargetsEvaluated = false;
+            nextRefreshUtc = currentState.UpdatedAtUtc + RefreshInterval;
+            // Retain the exact job/request/takeover ownership and schedule cursor.
+            // The next ordinary tick re-runs readiness and strict contract checks.
+            return;
+        }
         currentState.PlannerStarted = result.Status != DadRunStatus.Rejected;
         currentState.Phase = currentState.PlannerStarted
             ? DadSchedulerPresetPhase.StartedPlanner
@@ -3124,6 +3144,18 @@ public sealed class DadSchedulerService
         if (nextJob == null)
             return false;
 
+        var retryState = configuration.ActiveScheduleRun;
+        var isDutyExitRetry = retryState is { DutyExitRetrySource: not null } &&
+                             string.Equals(retryState.ActiveSchedulerJobId, nextJob.JobId, StringComparison.Ordinal);
+        if (isDutyExitRetry && !retryState!.IsActive)
+        {
+            configuration.SchedulerQueue.Remove(nextJob);
+            configuration.Save();
+            return false;
+        }
+        if (isDutyExitRetry && !IsDutyExitRetryReady(retryState!, now))
+            return false;
+
         configuration.SchedulerQueue.Remove(nextJob);
         configuration.Save();
 
@@ -3168,6 +3200,18 @@ public sealed class DadSchedulerService
         {
             activeJob = nextJob.Clone();
             currentState = BuildBlockedQueuedState(nextJob, $"Queued preset '{nextJob.GroupId}' could not build planner preview.");
+            RecordTerminalResult(currentState);
+            return true;
+        }
+
+        if (isDutyExitRetry &&
+            (preview.Request == null || string.IsNullOrWhiteSpace(preview.Request.RequestId) ||
+             string.Equals(preview.Request.RequestId, retryState!.DutyExitRetrySource!.RequestId, StringComparison.OrdinalIgnoreCase) ||
+             !DadScheduleDutyExitRetryRules.SameSelection(retryState!.DutyExitRetrySource!.Request, preview.Request)))
+        {
+            activeJob = nextJob.Clone();
+            currentState = BuildBlockedQueuedState(nextJob,
+                "Automatic retry refused a reused request identity or changed duty, roster, requested job or queue authority; explicit operator restart is required.");
             RecordTerminalResult(currentState);
             return true;
         }
@@ -5405,6 +5449,20 @@ public sealed class DadSchedulerService
         if (state.Phase != DadScheduleRunPhase.WaitingForDadRun)
             return false;
 
+        if (state.DutyExitRetryPendingSinceUtc.HasValue && state.DutyExitRetrySource is { } retrySource &&
+            string.Equals(state.ActivePlannerRequestId, retrySource.RequestId, StringComparison.Ordinal))
+        {
+            if (!IsDutyExitRetryReady(state, now))
+                return true;
+            // Refresh roster/job evidence, then use the ordinary scheduler path:
+            // level targets, daily reward preflight, wake and party formation.
+            characterIntelligenceService.RequestPeerSnapshots();
+            // Keep the original recovery deadline through queued admission. The
+            // fresh request ID below prevents re-entering this branch for attempt 2.
+            MaterializeScheduleEntryJob(schedule, state, now);
+            return true;
+        }
+
         var run = ResolveScheduleDadRunResult(state.ActivePlannerRequestId, visibleRun);
         if (run == null || !run.IsTerminal)
         {
@@ -5418,6 +5476,14 @@ public sealed class DadSchedulerService
 
         if (run.Status != DadRunStatus.Completed)
         {
+            if (DadScheduleDutyExitRetryRules.CanReserve(state, run))
+            {
+                configuration.ActiveScheduleRun = DadScheduleDutyExitRetryRules.Reserve(state, run, now);
+                configuration.Save();
+                log.Information("[dad] Reserved automatic duty-exit retry 1/1 for schedule entry {Entry}, repeat {Repeat}, failed request {RequestId}.",
+                    state.CurrentEntryIndex + 1, state.RepeatIteration, run.RequestId);
+                return true;
+            }
             var detail = string.IsNullOrWhiteSpace(run.FailureReason)
                 ? FormatScheduleText(run.Summary, run.Status.ToString())
                 : run.FailureReason;
@@ -5429,7 +5495,8 @@ public sealed class DadSchedulerService
                         ? DadScheduleFailureKind.PreStartRejected
                         : DadScheduleFailureKind.EntryTerminalFailure;
             BlockActiveScheduleRun(
-                $"Schedule '{state.ScheduleName}' stopped after '{state.CurrentPresetName}' ended with {run.Status}: {detail}",
+                $"Schedule '{state.ScheduleName}' stopped after '{state.CurrentPresetName}' ended with {run.Status}: {detail}" +
+                (state.DutyExitRetryCount > 0 ? " Automatic retry 1/1 was already consumed; no further automatic attempt will run." : string.Empty),
                 failureKind);
             return true;
         }
@@ -5446,6 +5513,31 @@ public sealed class DadSchedulerService
         else
             configuration.Save();
         return true;
+    }
+
+    private bool IsDutyExitRetryReady(DadScheduleRunState state, DateTime now)
+    {
+        var live = BuildParticipantSet(characterIntelligenceService.CurrentPool)
+            .Where(row => row.IsLocalClient || transportService.IsWorkerOnline(row.WorkerSessionId)).ToList();
+        var cleanupPending = HasPendingCleanup;
+        var admissionBlocker = GetAdmissionBlocker(localDutySupport: false);
+        // BuildLiveSafetySnapshot stamps the current clock during capture. A
+        // timestamp taken at tick entry would make that fresh local heartbeat
+        // look like future evidence on every update. Sample after all inputs.
+        now = DadClock.UtcNow;
+        var decision = DadScheduleDutyExitRetryRules.EvaluateReadiness(state, live, cleanupPending,
+            admissionBlocker, now,
+            TimeSpan.FromSeconds(Math.Max(3, configuration.HeartbeatStaleSeconds)));
+        state.Summary = decision.Summary;
+        state.UpdatedAtUtc = now;
+        if (decision.Action == DadDutyExitRetryAction.Block)
+        {
+            // No retry-owned queue item may outlive a blocked schedule.
+            configuration.SchedulerQueue.RemoveAll(job =>
+                string.Equals(job.JobId, state.ActiveSchedulerJobId, StringComparison.Ordinal));
+            BlockActiveScheduleRun(decision.Summary, DadScheduleFailureKind.EntryTerminalFailure);
+        }
+        return decision.Action == DadDutyExitRetryAction.Retry;
     }
 
     private void ProcessScheduleSchedulerJob(
@@ -5469,6 +5561,13 @@ public sealed class DadSchedulerService
 
             if (result.FinalPhase == DadSchedulerPresetPhase.Skipped)
             {
+                if (state.DutyExitRetrySource is { } source &&
+                    !source.CurrentExecutorStatus.DutyExitPartyTeardownCompleted)
+                {
+                    BlockActiveScheduleRun("Retry skip refused: the failed run has no exact party teardown completion proof.",
+                        DadScheduleFailureKind.EntryTerminalFailure);
+                    return;
+                }
                 var advanced = DadScheduleRules.AdvanceAfterEntry(
                     state,
                     schedule.Entries,
@@ -5921,6 +6020,8 @@ public sealed class DadSchedulerService
         configuration.ActiveScheduleRun.BlockedReason = configuration.ActiveScheduleRun.BlockedReason?.Trim() ?? string.Empty;
         configuration.ActiveScheduleRun.RetriedFromRunId = configuration.ActiveScheduleRun.RetriedFromRunId?.Trim() ?? string.Empty;
         configuration.ActiveScheduleRun.ScheduleRevisionAtStart = Math.Max(0, configuration.ActiveScheduleRun.ScheduleRevisionAtStart);
+        configuration.ActiveScheduleRun.DutyExitRetryCount = Math.Clamp(
+            configuration.ActiveScheduleRun.DutyExitRetryCount, 0, DadScheduleDutyExitRetryRules.MaximumRetries);
         configuration.ActiveScheduleRun.RepeatIteration = Math.Max(1, configuration.ActiveScheduleRun.RepeatIteration);
         configuration.ActiveScheduleRun.TotalEntryExecutions = Math.Max(0, configuration.ActiveScheduleRun.TotalEntryExecutions);
         configuration.ActiveScheduleRun.CompletedEntryExecutions = Math.Clamp(
@@ -5948,6 +6049,7 @@ public sealed class DadSchedulerService
             result.CurrentGroupId = result.CurrentGroupId?.Trim() ?? string.Empty;
             result.CurrentPresetName = result.CurrentPresetName?.Trim() ?? string.Empty;
             result.ScheduleRevisionAtStart = Math.Max(0, result.ScheduleRevisionAtStart);
+            result.DutyExitRetryCount = Math.Clamp(result.DutyExitRetryCount, 0, DadScheduleDutyExitRetryRules.MaximumRetries);
             result.CurrentEntryIndex = Math.Max(0, result.CurrentEntryIndex);
             result.RepeatIteration = Math.Max(1, result.RepeatIteration);
             result.CompletedEntryExecutions = Math.Max(0, result.CompletedEntryExecutions);

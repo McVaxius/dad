@@ -145,26 +145,26 @@ public sealed class DadCoordinatorTravelRulesTests
     }
 
     [Fact]
-    public void ExplicitFalseRetriesAreBoundedToThreeAtTenSecondIntervals()
+    public void ExplicitFalseRetriesContinueWithoutAttemptLimitAtFiveSecondIntervals()
     {
         var gate = new DadClientTravelGate();
         var context = Context(currentDcId: 10, targetDcId: 20, targetRegionId: 2, homeRegionId: 2);
 
-        Assert.Equal(DadClientTravelAction.InvokeLifestream, gate.Evaluate(context, Now).Action);
-        gate.RecordInvocationResult(new DadLifestreamChangeWorldResult(DadLifestreamChangeWorldOutcome.ExplicitFalse, "false"), Now);
-        Assert.Equal(DadClientTravelAction.Wait, gate.Evaluate(context, Now.AddSeconds(9)).Action);
-        Assert.Equal(DadClientTravelAction.InvokeLifestream, gate.Evaluate(context, Now.AddSeconds(10)).Action);
-        gate.RecordInvocationResult(new DadLifestreamChangeWorldResult(DadLifestreamChangeWorldOutcome.ExplicitFalse, "false"), Now.AddSeconds(10));
-        context.Participant.CurrentLocation!.ObservedAtUtc = Now.AddSeconds(20);
-        Assert.Equal(DadClientTravelAction.InvokeLifestream, gate.Evaluate(context, Now.AddSeconds(20)).Action);
-        gate.RecordInvocationResult(new DadLifestreamChangeWorldResult(DadLifestreamChangeWorldOutcome.ExplicitFalse, "false"), Now.AddSeconds(20));
-
-        Assert.Equal(3, gate.InvocationCount);
-        Assert.Equal(DadClientTravelAction.Reject, gate.Evaluate(context, Now.AddMinutes(1)).Action);
+        for (var attempt = 1; attempt <= 200; attempt++)
+        {
+            var second = (attempt - 1) * 5;
+            var retry = Observe(gate, context, second);
+            Assert.Equal(DadClientTravelAction.InvokeLifestream, retry.Action);
+            Assert.Equal(attempt, retry.AttemptNumber);
+            gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.ExplicitFalse, "false"), Now.AddSeconds(second));
+            Assert.Equal(DadClientTravelAction.Wait, Observe(gate, context, second + 4).Action);
+        }
+        Assert.Equal(200, gate.InvocationCount);
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, Observe(gate, context, 1000).Action);
     }
 
     [Fact]
-    public void AcceptedInvocationIsNeverRepeatedAndWaitsForTargetDcProof()
+    public void AcceptedInvocationDoesNotRepeatBeforeRecoveryProofAndWaitsForTargetDcProof()
     {
         var gate = new DadClientTravelGate();
         var context = Context(currentDcId: 10, targetDcId: 20, targetRegionId: 2, homeRegionId: 2);
@@ -175,6 +175,215 @@ public sealed class DadCoordinatorTravelRulesTests
         context.Participant.CurrentLocation = Location(20, "TargetDC", 4, "ArrivedWorld", 2, "North America", Now.AddSeconds(2));
         Assert.Equal(DadClientTravelAction.Ready, gate.Evaluate(context, Now.AddSeconds(2)).Action);
         Assert.Equal(1, gate.InvocationCount);
+    }
+
+    [Fact]
+    public void AcceptedButAbortedTravelRetriesAfterFiveSecondsOfFreshSafeIdleProof()
+    {
+        var gate = new DadClientTravelGate();
+        var context = Context(currentDcId: 10, targetDcId: 20, targetRegionId: 2, homeRegionId: 2);
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, gate.Evaluate(context, Now).Action);
+        gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.Accepted, "accepted"), Now);
+        for (var second = 1; second <= 5; second++)
+        {
+            context.Participant.CurrentLocation!.ObservedAtUtc = Now.AddSeconds(second);
+            Assert.Equal(DadClientTravelAction.Wait, gate.Evaluate(context, Now.AddSeconds(second)).Action);
+        }
+        context.Participant.CurrentLocation!.ObservedAtUtc = Now.AddSeconds(6);
+        var retry = gate.Evaluate(context, Now.AddSeconds(6));
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, retry.Action);
+        Assert.Equal(2, retry.AttemptNumber);
+    }
+
+    [Theory]
+    [InlineData("busy")]
+    [InlineData("unavailable")]
+    [InlineData("world")]
+    [InlineData("offline")]
+    [InlineData("post-ar")]
+    [InlineData("vermaxion")]
+    [InlineData("external-owner")]
+    [InlineData("ar-busy")]
+    [InlineData("ar-multimode")]
+    [InlineData("ar-unavailable")]
+    [InlineData("stale")]
+    [InlineData("identity")]
+    [InlineData("location-missing")]
+    public void InterruptedAcceptedTravelRecoveryRequiresANewFullSafeIdleWindow(string interruption)
+    {
+        var (gate, context) = AcceptedTravel();
+        Assert.Equal(DadClientTravelAction.Wait, Observe(gate, context, 1).Action);
+        Assert.Equal(DadClientTravelAction.Wait, Observe(gate, context, 3).Action);
+        context.Participant.CurrentLocation!.ObservedAtUtc = Now.AddSeconds(4);
+        switch (interruption)
+        {
+            case "busy": context.Safety.LifestreamBusy = true; break;
+            case "unavailable": context.Safety.LifestreamAvailable = false; break;
+            case "world": context.Participant.WorldReadyStable = false; break;
+            case "offline": context.Participant.IsAvailable = false; break;
+            case "post-ar": context.Participant.PostArReady = false; break;
+            case "vermaxion": context.Safety.VermaxionSafe = false; break;
+            case "external-owner": context.Participant.ExternalAutomationHeld = true; break;
+            case "ar-busy": context.Safety.AutoRetainerBusy = true; break;
+            case "ar-multimode": context.Safety.AutoRetainerMultiModeEnabled = true; break;
+            case "ar-unavailable": context.Safety.AutoRetainerAvailable = false; break;
+            case "stale": context.Participant.CurrentLocation.ObservedAtUtc = Now.AddMinutes(-1); break;
+            case "identity": context.Participant.Character.ContentId++; break;
+            case "location-missing": context.Participant.CurrentLocation = null; break;
+        }
+        Assert.Equal(DadClientTravelAction.Wait, gate.Evaluate(context, Now.AddSeconds(4)).Action);
+        var restored = Context(10, 20, 2, 2);
+        foreach (var second in new[] { 5, 6, 7, 8, 9 })
+            Assert.Equal(DadClientTravelAction.Wait, Observe(gate, restored, second).Action);
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, Observe(gate, restored, 10).Action);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ObservationGapsAndWorldChangesCannotCountAsContinuousIdle(bool worldChange)
+    {
+        var (gate, context) = AcceptedTravel();
+        Observe(gate, context, 1);
+        if (worldChange)
+            context.Participant.CurrentLocation!.WorldId++;
+        var restarted = worldChange ? 3 : 31;
+        foreach (var second in Enumerable.Range(restarted, 5))
+            Assert.Equal(DadClientTravelAction.Wait, Observe(gate, context, second).Action);
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, Observe(gate, context, restarted + 5).Action);
+    }
+
+    [Fact]
+    public void AcceptedFailuresRetryBeyondThreeAttemptsAndTenMinutesWithoutPendingDuplicates()
+    {
+        var (gate, context) = AcceptedTravel();
+        for (var attempt = 2; attempt <= 200; attempt++)
+        {
+            var start = (attempt - 2) * 6 + 1;
+            foreach (var second in Enumerable.Range(start, 5))
+                Assert.Equal(DadClientTravelAction.Wait, Observe(gate, context, second).Action);
+            var retry = Observe(gate, context, start + 5);
+            Assert.Equal(DadClientTravelAction.InvokeLifestream, retry.Action);
+            Assert.Equal(attempt, retry.AttemptNumber);
+            Assert.Equal(DadClientTravelAction.Wait, Observe(gate, context, start + 5).Action);
+            gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.Accepted, "accepted"), Now.AddSeconds(start + 5));
+        }
+        Assert.Equal(200, gate.InvocationCount);
+    }
+
+    [Fact]
+    public void BusyTravelWaitsWithoutTimeoutAndRetriesOnlyAfterItBecomesSafelyIdle()
+    {
+        var (gate, context) = AcceptedTravel();
+        context.Safety.LifestreamBusy = true;
+        Assert.Equal(DadClientTravelAction.Wait, Observe(gate, context, 300).Action);
+        Assert.Equal(DadClientTravelAction.Wait, Observe(gate, context, 600).Action);
+        Assert.Equal(DadClientTravelAction.Wait, Observe(gate, context, 86400).Action);
+        Assert.Equal(1, gate.InvocationCount);
+        context.Safety.LifestreamBusy = false;
+        foreach (var second in Enumerable.Range(86401, 5))
+            Assert.Equal(DadClientTravelAction.Wait, Observe(gate, context, second).Action);
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, Observe(gate, context, 86406).Action);
+        gate.Reset();
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, Observe(gate, context, 86407).Action);
+        Assert.Equal(0, gate.InvocationCount);
+    }
+
+    [Fact]
+    public void ConfirmedArrivalEvenAfterLongTravelStopsFurtherRetries()
+    {
+        var (gate, context) = AcceptedTravel();
+        context.Participant.CurrentLocation = Location(20, "TargetDC", 4, "TargetWorld", 2, "North America", Now.AddSeconds(600));
+        Assert.Equal(DadClientTravelAction.Ready, gate.Evaluate(context, Now.AddSeconds(600)).Action);
+        Assert.Equal(DadClientTravelAction.Ready, Observe(gate, context, 900).Action);
+        Assert.Equal(1, gate.InvocationCount);
+    }
+
+    [Theory]
+    [InlineData("logged-out")]
+    [InlineData("loading")]
+    [InlineData("casting")]
+    [InlineData("post-ar")]
+    public void MissingLifestreamBusyFlagNeverAllowsReplayDuringLogoutLoginOrLoading(string condition)
+    {
+        var (gate, context) = AcceptedTravel();
+        switch (condition)
+        {
+            case "logged-out": context.Participant.IsAvailable = false; break;
+            case "loading": context.Participant.CurrentLocation = null; break;
+            case "casting": context.Participant.WorldReadyStable = false; break;
+            case "post-ar": context.Participant.PostArReady = false; break;
+        }
+        foreach (var second in new[] { 300, 3600, 86400 })
+        {
+            if (context.Participant.CurrentLocation != null)
+                context.Participant.CurrentLocation.ObservedAtUtc = Now.AddSeconds(second);
+            Assert.Equal(DadClientTravelAction.Wait, gate.Evaluate(context, Now.AddSeconds(second)).Action);
+        }
+        Assert.Equal(1, gate.InvocationCount);
+        var restored = Context(10, 20, 2, 2);
+        foreach (var second in Enumerable.Range(86401, 5))
+            Assert.Equal(DadClientTravelAction.Wait, Observe(gate, restored, second).Action);
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, Observe(gate, restored, 86406).Action);
+    }
+
+    [Fact]
+    public void ChangedWorkerOrDestinationPolicyNeverAuthorizesAnAcceptedRecovery()
+    {
+        var (workerGate, workerContext) = AcceptedTravel();
+        workerContext.Participant.WorkerSessionId = "different-worker";
+        Assert.Equal(DadClientTravelAction.Reject, Observe(workerGate, workerContext, 1).Action);
+        Assert.Equal(1, workerGate.InvocationCount);
+        var (policyGate, policyContext) = AcceptedTravel();
+        policyContext.HomeRegionId = 3;
+        Assert.Equal(DadClientTravelAction.Reject, Observe(policyGate, policyContext, 1).Action);
+        Assert.Equal(1, policyGate.InvocationCount);
+    }
+
+    [Fact]
+    public void MixedExplicitFalseAndAcceptedRetriesKeepAttemptNumbersAndUncertaintyStillNeverRetries()
+    {
+        var gate = new DadClientTravelGate();
+        var context = Context(10, 20, 2, 2);
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, Observe(gate, context, 0).Action);
+        gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.ExplicitFalse, "false"), Now);
+        Assert.Equal(2, Observe(gate, context, 5).AttemptNumber);
+        gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.Accepted, "accepted"), Now.AddSeconds(5));
+        foreach (var second in Enumerable.Range(6, 5))
+            Assert.Equal(DadClientTravelAction.Wait, Observe(gate, context, second).Action);
+        Assert.Equal(3, Observe(gate, context, 11).AttemptNumber);
+        gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.Uncertain, "IPC exception"), Now.AddSeconds(11));
+        Assert.Equal(DadClientTravelAction.Reject, Observe(gate, context, 80).Action);
+        Assert.Equal(3, gate.InvocationCount);
+    }
+
+    [Fact]
+    public void OceVisitorCapacityMustBeAuthorizedAgainBeforeAcceptedRecovery()
+    {
+        var gate = new DadClientTravelGate();
+        var context = Context(10, 40, 4, 2);
+        context.OceCapacityProof = CompleteProof("account-a", 39);
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, gate.Evaluate(context, Now).Action);
+        gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.Accepted, "accepted"), Now);
+        context.OceCapacityProof = CompleteProof("account-a", 40);
+        context.OceCapacityProof.ObservedAtUtc = Now.AddSeconds(1);
+        Assert.Equal(DadClientTravelAction.Reject, Observe(gate, context, 1).Action);
+        Assert.Equal(1, gate.InvocationCount);
+    }
+
+    private static (DadClientTravelGate Gate, DadClientTravelContext Context) AcceptedTravel()
+    {
+        var gate = new DadClientTravelGate();
+        var context = Context(10, 20, 2, 2);
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, gate.Evaluate(context, Now).Action);
+        gate.RecordInvocationResult(new(DadLifestreamChangeWorldOutcome.Accepted, "accepted"), Now);
+        return (gate, context);
+    }
+
+    private static DadClientTravelDecision Observe(DadClientTravelGate gate, DadClientTravelContext context, int second)
+    {
+        context.Participant.CurrentLocation!.ObservedAtUtc = Now.AddSeconds(second);
+        return gate.Evaluate(context, Now.AddSeconds(second));
     }
 
     [Fact]

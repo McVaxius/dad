@@ -159,6 +159,7 @@ public sealed class DadPremadeDutyExecutor : IDadModuleExecutor
         if (exitDecision.Disposition == DadDutyExitDisposition.Abandoned)
         {
             Fail($"{configuredDisplayName} {resolvedContent.DutyName} exited before matching DutyCompleted; treating as abandoned.");
+            status.DutyExitedWithoutCompletion = true;
             return BuildStatusStep(status, DadParticipantState.Failed);
         }
 

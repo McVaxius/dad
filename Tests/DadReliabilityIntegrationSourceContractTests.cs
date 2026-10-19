@@ -5,6 +5,100 @@ namespace dad.Tests;
 public sealed class DadReliabilityIntegrationSourceContractTests
 {
     [Fact]
+    public void FinalAnyJobReadinessWaitIsClassifiedBeforeAdmissionAndHandledBeforeTerminalHistory()
+    {
+        var coordinator = ReadRepositorySource("Services", "DadCoordinatorService.cs");
+        var bind = coordinator.IndexOf("DadRunSlotManifestRules.TryBindWorkerSessions(", StringComparison.Ordinal);
+        var deferred = coordinator.IndexOf("DadRunResult.StartReadinessPending(request, rejectionReason)", bind, StringComparison.Ordinal);
+        var claim = coordinator.IndexOf("activeSlotManifest =", deferred, StringComparison.Ordinal);
+        Assert.True(bind >= 0 && deferred > bind && claim > deferred);
+        var scheduler = ReadRepositorySource("Services", "DadSchedulerService.cs");
+        var response = scheduler.IndexOf("result ??= DadRunResult.Rejected(strictRequest", StringComparison.Ordinal);
+        var wait = scheduler.IndexOf("TryReleaseUnacceptedReadinessStart(strictRequest, result)", response, StringComparison.Ordinal);
+        var history = scheduler.IndexOf("RecordTerminalResult(currentState);", wait, StringComparison.Ordinal);
+        Assert.True(response >= 0 && wait > response && history > wait);
+        var boundary = scheduler[wait..scheduler.IndexOf("currentState.PlannerStarted = result.Status", wait, StringComparison.Ordinal)];
+        Assert.Contains("nextRefreshUtc = currentState.UpdatedAtUtc + RefreshInterval;", boundary);
+        Assert.Contains("postWakeLevelTargetsEvaluated = false;", boundary);
+        Assert.DoesNotContain("CancelNonTerminalTakeovers", boundary);
+        Assert.DoesNotContain("RecordTerminalResult", boundary);
+    }
+
+    [Fact]
+    public void RelogRecoveryReusesForcedSafetyAndDoesNotCancelOrReplayTitleLogin()
+    {
+        var wake = ReadRepositorySource("Services", "DadWakeTakeoverService.cs");
+        Assert.Contains("ExecuteRelog(operation, retry: true)", wake);
+        Assert.Contains("!operation.TitleIdleRelogCommandAttempted", wake);
+        Assert.Contains("!operation.CoordinatorAvailable || !snapshot.SuppressionReadable", wake);
+        Assert.Contains("operation.RelogRetryGate.Reset();", wake);
+        Assert.Contains("operation.HomeWorldReturnGate.ResetIdleProof();", wake);
+        var start = wake.IndexOf("private void ExecuteRelog(", StringComparison.Ordinal);
+        var end = wake.IndexOf("private bool CanRetryRelog(", start, StringComparison.Ordinal);
+        var relog = wake[start..end];
+        Assert.Equal(2, relog.Split("Capture(operation, forceExternalRefresh: true)", StringSplitOptions.None).Length - 1);
+        Assert.Equal(2, relog.Split("retry && !CanRetryRelog(operation, snapshot)", StringSplitOptions.None).Length - 1);
+        Assert.DoesNotContain("ConnectAndLogin", relog);
+        Assert.DoesNotContain("Cancel", relog);
+        var home = ReadRepositorySource("Services", "DadHomeWorldReturnRules.cs");
+        Assert.DoesNotContain("MaxChangeWorldAttempts", home);
+        Assert.Contains("safeIdleRetry.Observe(participant, nowUtc)", home);
+        Assert.Contains("DadLifestreamChangeWorldOutcome.ExplicitFalse", home);
+        var target = ReadRepositorySource("Services", "DadWakeTakeoverTarget.cs");
+        Assert.Contains("presenceService.BuildLiveSafetySnapshot()", target);
+        Assert.Contains("AutoRetainerBusy = ar.IsBusy", target);
+        Assert.Contains("LifestreamBusy = lifestreamState.IsBusy", target);
+    }
+
+    [Fact]
+    public void TravelRecoveryUsesFreshProductionSafetyAndNeverCancelsLifestreamToMakeRoomForRetry()
+    {
+        var presence = ReadRepositorySource("Services", "DadPresenceService.cs");
+        Assert.Contains("AdvanceCoordinatorTravel(localCharacter, vermaxionStatus, autoRetainerStatus, nowUtc);", presence);
+        Assert.Contains("LifestreamAvailable = lifestreamStatus.Available", presence);
+        Assert.Contains("LifestreamBusy = lifestreamStatus.IsBusy", presence);
+        Assert.Contains("(ConditionFlag.Casting, \"casting\")", presence);
+        var gate = ReadRepositorySource("Services", "DadCoordinatorTravelRules.cs");
+        Assert.Contains("WaitWithoutIdleProof(\"Waiting for Lifestream to be available and idle", gate);
+        Assert.Contains("now - safeIdleSinceUtc.Value < AcceptedIdleRetryDelay", gate);
+        Assert.DoesNotContain("MaxChangeWorldAttempts", gate);
+        Assert.DoesNotContain("AcceptedRecoveryTimeout", gate);
+        var returnHome = ReadRepositorySource("Services", "DadHomeWorldReturnRules.cs");
+        Assert.DoesNotContain("DadClientTravelGate.RetryInterval", returnHome);
+        Assert.DoesNotContain("DadClientTravelGate.MaxChangeWorldAttempts", returnHome);
+        Assert.Contains("currentTravelAssignment = null;", presence);
+        Assert.Contains("if (assignment == null || target == null)", presence);
+        Assert.DoesNotContain("lifestream.Cancel", gate);
+        Assert.DoesNotContain("Lifestream.Abort", gate);
+    }
+
+    [Fact]
+    public void ScheduledDutyExitRetryUsesStructuredEvidenceAndNormalAdmissionAndSkipPipeline()
+    {
+        var executor = ReadRepositorySource("Services", "DadPremadeDutyExecutor.cs");
+        var exit = executor.IndexOf("exitDecision.Disposition == DadDutyExitDisposition.Abandoned", StringComparison.Ordinal);
+        var evidence = executor.IndexOf("status.DutyExitedWithoutCompletion = true;", exit, StringComparison.Ordinal);
+        Assert.True(exit >= 0 && evidence > exit);
+        var coordinator = ReadRepositorySource("Services", "DadCoordinatorService.cs");
+        Assert.Contains("workerStatus.StepResult.ExecutorStatus.DutyExitedWithoutCompletion", coordinator);
+        Assert.Contains("uncompletedDutyExitFailures == failures.Count", coordinator);
+        Assert.Contains("result.ExecutorStatus.DutyExitedWithoutCompletion = dutyExitedWithoutCompletion;", coordinator);
+        var scheduler = ReadRepositorySource("Services", "DadSchedulerService.cs");
+        Assert.Contains("DadScheduleDutyExitRetryRules.Reserve(state, run, now)", scheduler);
+        Assert.Contains("GetAdmissionBlocker(localDutySupport: false)", scheduler);
+        Assert.Contains("characterIntelligenceService.RequestPeerSnapshots();", scheduler);
+        var pending = scheduler.IndexOf("if (state.DutyExitRetryPendingSinceUtc.HasValue &&", StringComparison.Ordinal);
+        var next = scheduler.IndexOf("var run = ResolveScheduleDadRunResult", pending, StringComparison.Ordinal);
+        Assert.Contains("MaterializeScheduleEntryJob(schedule, state, now);", scheduler[pending..next]);
+        var selection = scheduler.IndexOf("DadScheduleDutyExitRetryRules.SameSelection", StringComparison.Ordinal);
+        var start = scheduler.IndexOf("() => StartPreset(group, preview, nextJob.DryRun, nextJob)", selection, StringComparison.Ordinal);
+        Assert.True(selection >= 0 && start > selection);
+        Assert.Contains("var levelSeek = EvaluateLevelSeek(group, plannerRequestPreview);", scheduler);
+        Assert.Contains("TryBeginDailyRewardPreflight(frozenLevelSeekGroup)", scheduler);
+        Assert.Contains("scheduler.HasPendingDutyExitRetry", ReadRepositorySource("Services", "DadRuntimeHandlers.cs"));
+    }
+
+    [Fact]
     public void SuccessfulRunCompletionRequiresFreshPerRunPartyBoundaryProof()
     {
         var source = ReadRepositorySource("Services", "DadCoordinatorService.cs");
@@ -20,6 +114,28 @@ public sealed class DadReliabilityIntegrationSourceContractTests
         var proof = source.IndexOf("successfulPartyBoundarySettled = true;", aggregate, StringComparison.Ordinal);
         var terminal = source.IndexOf("Transition(DadRunPhase.Finalizing", aggregate, StringComparison.Ordinal);
         Assert.True(teardown >= 0 && aggregate > teardown && proof > aggregate && terminal > proof);
+    }
+
+    [Fact]
+    public void AbandonedDutyKeepsAuthenticatedRunOwnershipThroughExistingExactTeardown()
+    {
+        var source = ReadRepositorySource("Services", "DadCoordinatorService.cs");
+        Assert.Contains("if (TryBeginDutyExitRetryTeardown(result))", source);
+        Assert.Contains("if (pendingDutyExitFailure != null)", source);
+        var begin = source.IndexOf("private bool TryBeginDutyExitRetryTeardown", StringComparison.Ordinal);
+        var end = source.IndexOf("private void FinishSuccessfulWork", begin, StringComparison.Ordinal);
+        var cleanup = source[begin..end];
+        Assert.Contains("DadScheduleDutyExitRetryRules.RequiresPartyTeardownBeforeRetry", cleanup);
+        Assert.Contains("DadClock.UtcNow - failure.StartedAtUtc >= DadScheduleDutyExitRetryRules.ReadinessBudget", cleanup);
+        Assert.Contains("CurrentResult.Phase == DadRunPhase.Finalizing && successfulPartyBoundarySettled", cleanup);
+        Assert.Contains("CurrentResult.CurrentExecutorStatus.DutyExitPartyTeardownCompleted = true;", cleanup);
+        Assert.Contains("FinalizeRun(failure.Status", cleanup);
+        Assert.Contains("UpdatePartyTeardown();", cleanup);
+        Assert.Contains("BeginPartyTeardown(", cleanup);
+        Assert.DoesNotContain("DadRunStatus.Completed", cleanup);
+        Assert.DoesNotContain("HandleCancelRun", cleanup);
+        Assert.DoesNotContain("HandleWakeRequest", cleanup);
+        Assert.True(source.Split("pendingDutyExitFailure = null;", StringSplitOptions.None).Length >= 3);
     }
 
     [Fact]

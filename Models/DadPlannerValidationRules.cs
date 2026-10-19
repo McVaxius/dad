@@ -40,6 +40,10 @@ public sealed class DadStrictPlannerRevalidationTracker
     public bool TryClaimStart()
         => Interlocked.CompareExchange(ref startClaimed, 1, 0) == 0;
 
+    public bool TryReleaseUnacceptedReadinessStart(DadRunRequest request, DadRunResult result)
+        => DadPlannerValidationRules.IsUnacceptedStartReadinessWait(request, result) &&
+           Interlocked.CompareExchange(ref startClaimed, 0, 1) == 1;
+
     public bool TryRecordDiagnostic(DadStrictPlannerRevalidationDisposition disposition)
         => disposition switch
         {
@@ -53,6 +57,26 @@ public sealed class DadStrictPlannerRevalidationTracker
 
 public static class DadPlannerValidationRules
 {
+    public static bool IsUnacceptedStartReadinessWait(DadRunRequest request, DadRunResult result)
+        => !string.IsNullOrWhiteSpace(request.RequestId) &&
+           result.Status == DadRunStatus.Rejected &&
+           result.Phase == DadRunPhase.Planning &&
+           result.CompletedTaskCount == 0 && result.ActiveTaskIndex == 0 &&
+           result.StepResults.Count == 0 && result.Leases.Count == 0 &&
+           string.Equals(request.RequestId, result.RequestId, StringComparison.Ordinal) &&
+           result.Request != null &&
+           string.Equals(request.RequestId, result.Request.RequestId, StringComparison.Ordinal) &&
+           DadSchedulerRoutingRules.MatchesFrozenRequestContract(request, result.Request, out _) &&
+           result.CurrentExecutorStatus is
+           {
+               Deferred: true, IsActive: false, StartedAtUtc: null, CompletedAtUtc: null,
+               Status: DadRunStatus.Rejected, Phase: DadRunPhase.Planning,
+               StepName: "run-start-readiness",
+           } &&
+           result.CurrentExecutorStatus.ModuleId == result.ModuleId &&
+           string.Equals(request.RequestId, result.CurrentExecutorStatus.RunId, StringComparison.Ordinal) &&
+           IsTransientRuntimeReadinessFailure(result.CurrentExecutorStatus);
+
     private static readonly string[] RuntimeReadinessCapabilities =
     [
         "RuntimeReadiness",

@@ -18,6 +18,8 @@ public readonly record struct DadHomeWorldReturnDecision(
 
 public sealed class DadHomeWorldReturnGate
 {
+    private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
+    private readonly DadSafeIdleRetryGate safeIdleRetry = new();
     private string frozenIdentity = string.Empty;
     private string frozenSourceCharacterKey = string.Empty;
     private string frozenHomeWorldName = string.Empty;
@@ -35,6 +37,9 @@ public sealed class DadHomeWorldReturnGate
     internal string FrozenSourceCharacterKey => frozenSourceCharacterKey;
     internal string FrozenHomeWorldName => frozenHomeWorldName;
     internal string FrozenRelogTargetCharacterKey => frozenRelogTargetCharacterKey;
+
+    // The caller also resets proof when its AR/ownership/coordinator gates are unsafe.
+    public void ResetIdleProof() => safeIdleRetry.Reset();
 
     public DadHomeWorldReturnDecision Evaluate(
         DadParticipantSnapshot participant,
@@ -61,6 +66,7 @@ public sealed class DadHomeWorldReturnGate
             !participant.WorldReadyStable ||
             !DadCoordinatorTravelRules.IsFreshComplete(participant.CurrentLocation, nowUtc))
         {
+            safeIdleRetry.Reset();
             return Wait(acceptedInvocation
                 ? BuildAcceptedTravelSummary()
                 : BuildBeforeAcceptanceSummary("waiting for fresh source-world proof."));
@@ -75,6 +81,7 @@ public sealed class DadHomeWorldReturnGate
                      Same(current.WorldName, frozenHomeWorldName);
         if (atHome)
         {
+            safeIdleRetry.Reset();
             return lifestreamAvailable && !lifestreamBusy
                 ? Ready(
                     $"{frozenSourceCharacterKey} is world-stable on home world {frozenHomeWorldName}; " +
@@ -84,12 +91,21 @@ public sealed class DadHomeWorldReturnGate
                     $"{frozenRelogTargetCharacterKey}; waiting for readable idle Lifestream.");
         }
 
-        if (acceptedInvocation)
-            return Wait(BuildAcceptedTravelSummary());
         if (!lifestreamAvailable || lifestreamBusy)
+        {
+            safeIdleRetry.Reset();
             return Wait(BuildBeforeAcceptanceSummary("waiting for readable idle Lifestream."));
+        }
         if (invocationPending)
             return Wait(BuildBeforeAcceptanceSummary("waiting for the pending ChangeWorld result without a duplicate."));
+
+        if (acceptedInvocation)
+        {
+            if (!safeIdleRetry.Observe(participant, nowUtc))
+                return Wait(BuildAcceptedTravelSummary());
+            acceptedInvocation = false;
+            safeIdleRetry.Reset();
+        }
 
         var now = EnsureUtc(nowUtc);
         if (now < nextAttemptUtc)
@@ -97,14 +113,11 @@ public sealed class DadHomeWorldReturnGate
             return Wait(BuildBeforeAcceptanceSummary(
                 $"waiting until {nextAttemptUtc:O} after an explicit-false ChangeWorld result."));
         }
-        if (invocationCount >= DadClientTravelGate.MaxChangeWorldAttempts)
-            return Fail("Return-home Lifestream.ChangeWorld exhausted three explicit-false attempts.");
-
         invocationPending = true;
         return new DadHomeWorldReturnDecision(
             DadHomeWorldReturnAction.InvokeLifestream,
             BuildBeforeAcceptanceSummary(
-                $"invoking Lifestream.ChangeWorld('{frozenHomeWorldName}') attempt {invocationCount + 1}/{DadClientTravelGate.MaxChangeWorldAttempts}."),
+                $"invoking Lifestream.ChangeWorld('{frozenHomeWorldName}') attempt {invocationCount + 1}."),
             frozenHomeWorldName,
             invocationCount + 1);
     }
@@ -116,18 +129,14 @@ public sealed class DadHomeWorldReturnGate
 
         invocationPending = false;
         invocationCount++;
+        safeIdleRetry.Reset();
         switch (result.Outcome)
         {
             case DadLifestreamChangeWorldOutcome.Accepted:
                 acceptedInvocation = true;
                 break;
-            case DadLifestreamChangeWorldOutcome.ExplicitFalse
-                when invocationCount < DadClientTravelGate.MaxChangeWorldAttempts:
-                nextAttemptUtc = EnsureUtc(nowUtc) + DadClientTravelGate.RetryInterval;
-                break;
             case DadLifestreamChangeWorldOutcome.ExplicitFalse:
-                terminalFailure = true;
-                terminalSummary = "Return-home Lifestream.ChangeWorld exhausted three explicit-false attempts.";
+                nextAttemptUtc = EnsureUtc(nowUtc) + RetryInterval;
                 break;
             default:
                 terminalFailure = true;
@@ -158,8 +167,7 @@ public sealed class DadHomeWorldReturnGate
         frozenSourceCharacterKey = participant.ActiveCharacterKey.Value.Trim();
         frozenHomeWorldName = character.WorldName.Trim();
         frozenRelogTargetCharacterKey = relogTarget.Value.Trim();
-        frozenIdentity =
-            $"{frozenSourceCharacterKey}|{character.ContentId}|{character.WorldId}|{frozenHomeWorldName}";
+        frozenIdentity = DadSafeIdleRetryGate.Identity(participant);
         return string.Empty;
     }
 
@@ -176,8 +184,7 @@ public sealed class DadHomeWorldReturnGate
             return "Return-home relog safety requires exact current character, Content ID, and recorded home-world identity.";
         }
 
-        var identity =
-            $"{participant.ActiveCharacterKey.Value.Trim()}|{character.ContentId}|{character.WorldId}|{character.WorldName.Trim()}";
+        var identity = DadSafeIdleRetryGate.Identity(participant);
         if (!string.Equals(frozenIdentity, identity, StringComparison.OrdinalIgnoreCase))
             return "Current character or recorded home-world identity changed during return-home preparation.";
         if (participant.CurrentLocation is not { IsComplete: true })

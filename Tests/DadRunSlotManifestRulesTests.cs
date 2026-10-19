@@ -6,6 +6,57 @@ namespace dad.Tests;
 
 public sealed class DadRunSlotManifestRulesTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ExactAnyJobTemporaryReadinessLossIsStructuredAndFreezesOnlyAfterRecovery(bool stale)
+    {
+        var plan = BuildPremadeDutyPlan();
+        Assert.True(DadRunSlotManifestRules.TryCreate(plan, out var manifest, out _));
+        var w = Participant(WAccount, WCharacter, WContentId, "worker-w", worldReadyStable: stale);
+        if (stale) w.Character.Freshness = DadSnapshotFreshness.Stale;
+        var x = Participant(XAccount, XCharacter, XContentId, "worker-x");
+        Assert.False(DadRunSlotManifestRules.TryBindWorkerSessions(manifest, [w, x], out _, out var reason, out var pending));
+        Assert.True(pending);
+        Assert.Contains("world-ready live snapshot", reason);
+        Assert.All(manifest.Slots, slot => Assert.Null(slot.RequiredJobId));
+        w.WorldReadyStable = true;
+        w.Character.Freshness = DadSnapshotFreshness.Live;
+        Assert.True(DadRunSlotManifestRules.TryBindWorkerSessions(manifest, [w, x], out var bound, out reason, out pending), reason);
+        Assert.False(pending);
+        Assert.All(bound.Slots, slot => Assert.Equal((uint?)19, slot.RequiredJobId));
+        Assert.All(manifest.Slots, slot => Assert.Null(slot.RequiredJobId));
+    }
+
+    [Theory]
+    [InlineData(0)] // wrong character
+    [InlineData(1)] // Content ID contradiction
+    [InlineData(2)] // no current job
+    [InlineData(3)] // noncombat job
+    [InlineData(4)] // missing account route
+    [InlineData(5)] // ambiguous account routes
+    [InlineData(6)] // duplicated worker session
+    public void HardBindingFailureOverridesEarlierAnyJobReadinessWait(int conflict)
+    {
+        Assert.True(DadRunSlotManifestRules.TryCreate(BuildPremadeDutyPlan(), out var manifest, out _));
+        var w = Participant(WAccount, WCharacter, WContentId, "worker-w", worldReadyStable: false);
+        var x = Participant(XAccount, XCharacter, XContentId, "worker-x");
+        var rows = new List<DadParticipantSnapshot> { w, x };
+        switch (conflict)
+        {
+            case 0: x.ActiveCharacterKey = new("Other@Alpha"); break;
+            case 1: x.Character.ContentId++; break;
+            case 2: x.Character.CurrentJobId = null; break;
+            case 3: x.Character.CurrentJobId = 8; break;
+            case 4: rows.Remove(x); break;
+            case 5: var duplicate = x.Clone(); duplicate.WorkerSessionId = new("other-worker"); rows.Add(duplicate); break;
+            case 6: x.WorkerSessionId = w.WorkerSessionId; break;
+        }
+        Assert.False(DadRunSlotManifestRules.TryBindWorkerSessions(manifest, rows, out _, out var reason, out var pending));
+        Assert.False(pending);
+        Assert.DoesNotContain("world-ready live snapshot", reason);
+    }
+
     [Fact]
     public void GatheringPayloadBindsExactWorkersWithoutFreezingACombatJob()
     {

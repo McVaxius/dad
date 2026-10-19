@@ -189,6 +189,11 @@ public sealed class DadScheduleRunState
     public long ScheduleRevisionAtStart { get; set; }
     public string RetriedFromRunId { get; set; } = string.Empty;
 
+    // One additional attempt per entry/repeat; persist before any new job is queued.
+    public int DutyExitRetryCount { get; set; }
+    public DateTime? DutyExitRetryPendingSinceUtc { get; set; }
+    public DadRunResult? DutyExitRetrySource { get; set; }
+
     public bool IsActive =>
         Status == DadScheduleRunStatus.Running &&
         Phase is DadScheduleRunPhase.StartingEntry
@@ -225,6 +230,9 @@ public sealed class DadScheduleRunState
             FailureKind = FailureKind,
             ScheduleRevisionAtStart = ScheduleRevisionAtStart,
             RetriedFromRunId = RetriedFromRunId,
+            DutyExitRetryCount = DutyExitRetryCount,
+            DutyExitRetryPendingSinceUtc = DutyExitRetryPendingSinceUtc,
+            DutyExitRetrySource = DutyExitRetrySource?.Clone(),
         };
 
     public DadScheduleRunResult ToResult(bool success)
@@ -248,6 +256,7 @@ public sealed class DadScheduleRunState
             FailureKind = FailureKind,
             ScheduleRevisionAtStart = ScheduleRevisionAtStart,
             RetriedFromRunId = RetriedFromRunId,
+            DutyExitRetryCount = DutyExitRetryCount,
             CurrentEntryId = CurrentEntryId,
             CurrentGroupId = CurrentGroupId,
             CurrentPresetName = CurrentPresetName,
@@ -276,6 +285,7 @@ public sealed class DadScheduleRunResult
     public DadScheduleFailureKind FailureKind { get; set; }
     public long ScheduleRevisionAtStart { get; set; }
     public string RetriedFromRunId { get; set; } = string.Empty;
+    public int DutyExitRetryCount { get; set; }
     public string CurrentEntryId { get; set; } = string.Empty;
     public string CurrentGroupId { get; set; } = string.Empty;
     public string CurrentPresetName { get; set; } = string.Empty;
@@ -303,6 +313,7 @@ public sealed class DadScheduleRunResult
             FailureKind = FailureKind,
             ScheduleRevisionAtStart = ScheduleRevisionAtStart,
             RetriedFromRunId = RetriedFromRunId,
+            DutyExitRetryCount = DutyExitRetryCount,
             CurrentEntryId = CurrentEntryId,
             CurrentGroupId = CurrentGroupId,
             CurrentPresetName = CurrentPresetName,
@@ -637,6 +648,9 @@ public static class DadScheduleRules
         state.ActiveSchedulerJobId = string.Empty;
         state.ActivePlannerRequestId = string.Empty;
         state.UpdatedAtUtc = nowUtc;
+        state.DutyExitRetryCount = 0;
+        state.DutyExitRetryPendingSinceUtc = null;
+        state.DutyExitRetrySource = null;
 
         if (currentIndex >= normalizedEntries.Count)
         {
@@ -805,6 +819,8 @@ public static class DadScheduleRules
             FailureKind = DadScheduleFailureKind.None,
             ScheduleRevisionAtStart = failed.ScheduleRevisionAtStart,
             RetriedFromRunId = failed.RunId,
+            // Explicit resume is allowed, but cannot silently replenish auto-retries.
+            DutyExitRetryCount = failed.DutyExitRetryCount,
         };
         state.Summary = $"Resuming failed schedule entry {state.CurrentEntryIndex + 1}, repeat {state.RepeatIteration}: {state.CurrentPresetName}.";
         return true;

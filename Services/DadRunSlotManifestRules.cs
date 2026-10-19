@@ -253,9 +253,19 @@ internal static class DadRunSlotManifestRules
         IReadOnlyList<DadParticipantSnapshot> onlineParticipants,
         out DadRunSlotManifest bound,
         out string blocker)
+        => TryBindWorkerSessions(source, onlineParticipants, out bound, out blocker, out _);
+
+    public static bool TryBindWorkerSessions(
+        DadRunSlotManifest source,
+        IReadOnlyList<DadParticipantSnapshot> onlineParticipants,
+        out DadRunSlotManifest bound,
+        out string blocker,
+        out bool readinessPending)
     {
         bound = source.Clone();
         blocker = string.Empty;
+        readinessPending = false;
+        var readinessBlocker = string.Empty;
         var assignedSessions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var slot in bound.Slots)
@@ -297,13 +307,22 @@ internal static class DadRunSlotManifestRules
 
             slot.WorkerSessionId = session;
             if (!slot.RequiredJobId.HasValue &&
-                !TryFreezeLiveAnyJob(slot, selected, out blocker,
+                !TryFreezeLiveAnyJob(slot, selected, out blocker, out var slotReadinessPending,
                     freezeCombatJob: !source.Modules.Any(module => module.ModuleId == DadModuleId.GatherParty)))
             {
-                return false;
+                if (!slotReadinessPending)
+                    return false;
+                // Validate the remaining bindings too: a hard identity contradiction
+                // must not be hidden behind another slot's temporary readiness loss.
+                if (string.IsNullOrWhiteSpace(readinessBlocker))
+                    readinessBlocker = blocker;
             }
         }
 
+        blocker = readinessBlocker;
+        readinessPending = !string.IsNullOrWhiteSpace(readinessBlocker);
+        if (readinessPending)
+            return false;
         return true;
     }
 
@@ -311,9 +330,11 @@ internal static class DadRunSlotManifestRules
         DadFrozenRunSlot slot,
         DadParticipantSnapshot participant,
         out string blocker,
+        out bool readinessPending,
         bool freezeCombatJob = true)
     {
         blocker = string.Empty;
+        readinessPending = false;
         if (!Same(participant.ManagedAccountKey.Value, slot.AccountKey.Value) ||
             !Same(participant.ActiveCharacterKey.Value, slot.CharacterKey.Value) ||
             !Same(participant.Character.CharacterKey, slot.CharacterKey.Value))
@@ -332,6 +353,7 @@ internal static class DadRunSlotManifestRules
 
         if (!participant.Character.IsLiveConnected || !participant.WorldReadyStable)
         {
+            readinessPending = true;
             return Fail(
                 $"{slot.SlotId} Any job requires one current world-ready live snapshot for '{slot.CharacterKey}'.",
                 out blocker);
