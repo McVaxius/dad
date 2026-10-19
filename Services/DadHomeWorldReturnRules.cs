@@ -18,6 +18,10 @@ public readonly record struct DadHomeWorldReturnDecision(
 
 public sealed class DadHomeWorldReturnGate
 {
+    // Return-home preparation has its own policy; changing coordinator-directed
+    // DC recovery must not silently change this relog preparation lane.
+    private const int MaxChangeWorldAttempts = 3;
+    private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(10);
     private string frozenIdentity = string.Empty;
     private string frozenSourceCharacterKey = string.Empty;
     private string frozenHomeWorldName = string.Empty;
@@ -97,14 +101,14 @@ public sealed class DadHomeWorldReturnGate
             return Wait(BuildBeforeAcceptanceSummary(
                 $"waiting until {nextAttemptUtc:O} after an explicit-false ChangeWorld result."));
         }
-        if (invocationCount >= DadClientTravelGate.MaxChangeWorldAttempts)
+        if (invocationCount >= MaxChangeWorldAttempts)
             return Fail("Return-home Lifestream.ChangeWorld exhausted three explicit-false attempts.");
 
         invocationPending = true;
         return new DadHomeWorldReturnDecision(
             DadHomeWorldReturnAction.InvokeLifestream,
             BuildBeforeAcceptanceSummary(
-                $"invoking Lifestream.ChangeWorld('{frozenHomeWorldName}') attempt {invocationCount + 1}/{DadClientTravelGate.MaxChangeWorldAttempts}."),
+                $"invoking Lifestream.ChangeWorld('{frozenHomeWorldName}') attempt {invocationCount + 1}/{MaxChangeWorldAttempts}."),
             frozenHomeWorldName,
             invocationCount + 1);
     }
@@ -122,8 +126,8 @@ public sealed class DadHomeWorldReturnGate
                 acceptedInvocation = true;
                 break;
             case DadLifestreamChangeWorldOutcome.ExplicitFalse
-                when invocationCount < DadClientTravelGate.MaxChangeWorldAttempts:
-                nextAttemptUtc = EnsureUtc(nowUtc) + DadClientTravelGate.RetryInterval;
+                when invocationCount < MaxChangeWorldAttempts:
+                nextAttemptUtc = EnsureUtc(nowUtc) + RetryInterval;
                 break;
             case DadLifestreamChangeWorldOutcome.ExplicitFalse:
                 terminalFailure = true;

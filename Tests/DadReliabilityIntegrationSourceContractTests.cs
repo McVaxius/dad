@@ -5,6 +5,28 @@ namespace dad.Tests;
 public sealed class DadReliabilityIntegrationSourceContractTests
 {
     [Fact]
+    public void TravelRecoveryUsesFreshProductionSafetyAndNeverCancelsLifestreamToMakeRoomForRetry()
+    {
+        var presence = ReadRepositorySource("Services", "DadPresenceService.cs");
+        Assert.Contains("AdvanceCoordinatorTravel(localCharacter, vermaxionStatus, autoRetainerStatus, nowUtc);", presence);
+        Assert.Contains("LifestreamAvailable = lifestreamStatus.Available", presence);
+        Assert.Contains("LifestreamBusy = lifestreamStatus.IsBusy", presence);
+        Assert.Contains("(ConditionFlag.Casting, \"casting\")", presence);
+        var gate = ReadRepositorySource("Services", "DadCoordinatorTravelRules.cs");
+        Assert.Contains("WaitWithoutIdleProof(\"Waiting for Lifestream to be available and idle", gate);
+        Assert.Contains("now - safeIdleSinceUtc.Value < AcceptedIdleRetryDelay", gate);
+        Assert.DoesNotContain("MaxChangeWorldAttempts", gate);
+        Assert.DoesNotContain("AcceptedRecoveryTimeout", gate);
+        var returnHome = ReadRepositorySource("Services", "DadHomeWorldReturnRules.cs");
+        Assert.DoesNotContain("DadClientTravelGate.RetryInterval", returnHome);
+        Assert.DoesNotContain("DadClientTravelGate.MaxChangeWorldAttempts", returnHome);
+        Assert.Contains("currentTravelAssignment = null;", presence);
+        Assert.Contains("if (assignment == null || target == null)", presence);
+        Assert.DoesNotContain("lifestream.Cancel", gate);
+        Assert.DoesNotContain("Lifestream.Abort", gate);
+    }
+
+    [Fact]
     public void ScheduledDutyExitRetryUsesStructuredEvidenceAndNormalAdmissionAndSkipPipeline()
     {
         var executor = ReadRepositorySource("Services", "DadPremadeDutyExecutor.cs");

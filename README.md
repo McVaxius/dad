@@ -801,6 +801,13 @@ ID to distinguish the running DLL from an older build. Review reports for person
   unnecessary AR commands; that account still needs relog GO and final readiness. Account pipelines remain independent,
   and the actual run still waits for every required slot. Logical wake orders do not expire. The five-second coordinator cadence
   and mini-window snapshots affect status freshness only, not local ownership timing.
+- Guarded Client Dad data-center travel distinguishes accepted requests from confirmed arrival. Accepted travel that
+  ends back on the wrong DC retries after five seconds of continuously fresh exact world-ready/automation-idle proof;
+  explicit-false calls also retry every five seconds with fresh safety checks. There is no travel-specific attempt cap
+  or total timeout while the assignment remains active. Busy travel, logout/login/loading/casting, stale observations or
+  interrupted identity cannot trigger a duplicate journey. Recovery stops at arrival/cancellation; immutable identity
+  contradictions and uncertain IPC still fail closed. DAD never cancels Lifestream to force a retry. See the travel
+  integration notes in [DAD_AETHERTEK.md](DAD_AETHERTEK.md).
 - A connected Client Dad that is logged out can enter one separate title-idle login path only from a fresh exclusive
   ready `_TitleMenu`; Character Select is never eligible. The exact account route and requested catalog character must
   match, all condition flags must be clear, and title movies, connection/navigation, dialogs, multiple, unknown, or

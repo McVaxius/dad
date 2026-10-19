@@ -1514,7 +1514,7 @@ public sealed class DadPresenceService
         if (decision.Action == DadClientTravelAction.InvokeLifestream)
         {
             log.Information(
-                "[dad] Guarded Client Dad travel invoking Lifestream.ChangeWorld request={RequestId} slot={SlotId} account={AccountKey} character={CharacterKey} contentId={ContentId} targetWorld={WorldName} targetDc={DataCenterName} targetRegion={RegionName} attempt={Attempt}/{MaxAttempts}.",
+                "[dad] Guarded Client Dad travel invoking Lifestream.ChangeWorld request={RequestId} slot={SlotId} account={AccountKey} character={CharacterKey} contentId={ContentId} targetWorld={WorldName} targetDc={DataCenterName} targetRegion={RegionName} attempt={Attempt} (no attempt limit).",
                 assignment.RunId,
                 assignment.AssignedSlotId,
                 assignment.RequiredAccountKey,
@@ -1523,8 +1523,7 @@ public sealed class DadPresenceService
                 decision.DestinationWorldName,
                 target.DataCenterName,
                 target.RegionName,
-                decision.AttemptNumber,
-                DadClientTravelGate.MaxChangeWorldAttempts);
+                decision.AttemptNumber);
             var result = lifestream.ChangeWorld(decision.DestinationWorldName);
             clientTravelGate.RecordInvocationResult(result, nowUtc);
             decision = new DadClientTravelDecision
