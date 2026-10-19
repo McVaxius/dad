@@ -207,7 +207,7 @@ public sealed partial class Plugin : IDalamudPlugin
     private IReadOnlyList<DadLevelingJobDescriptor>? levelingJobCatalog;
     private bool standaloneCrewDisbandActive;
     private string standaloneCrewDisbandSummary = "No standalone disband is active.";
-    private const string LocalNpcProjectionBuildMarker = "lp-party-exit-barrier-20261018-03";
+    private const string LocalNpcProjectionBuildMarker = "lp-duty-exit-retry-20261019-01";
     private readonly DateTime pluginLoadedAtUtc = DateTime.UtcNow;
 
     private sealed class DebouncedUiWrite

@@ -5,6 +5,32 @@ namespace dad.Tests;
 public sealed class DadReliabilityIntegrationSourceContractTests
 {
     [Fact]
+    public void ScheduledDutyExitRetryUsesStructuredEvidenceAndNormalAdmissionAndSkipPipeline()
+    {
+        var executor = ReadRepositorySource("Services", "DadPremadeDutyExecutor.cs");
+        var exit = executor.IndexOf("exitDecision.Disposition == DadDutyExitDisposition.Abandoned", StringComparison.Ordinal);
+        var evidence = executor.IndexOf("status.DutyExitedWithoutCompletion = true;", exit, StringComparison.Ordinal);
+        Assert.True(exit >= 0 && evidence > exit);
+        var coordinator = ReadRepositorySource("Services", "DadCoordinatorService.cs");
+        Assert.Contains("workerStatus.StepResult.ExecutorStatus.DutyExitedWithoutCompletion", coordinator);
+        Assert.Contains("uncompletedDutyExitFailures == failures.Count", coordinator);
+        Assert.Contains("result.ExecutorStatus.DutyExitedWithoutCompletion = dutyExitedWithoutCompletion;", coordinator);
+        var scheduler = ReadRepositorySource("Services", "DadSchedulerService.cs");
+        Assert.Contains("DadScheduleDutyExitRetryRules.Reserve(state, run, now)", scheduler);
+        Assert.Contains("GetAdmissionBlocker(localDutySupport: false)", scheduler);
+        Assert.Contains("characterIntelligenceService.RequestPeerSnapshots();", scheduler);
+        var pending = scheduler.IndexOf("if (state.DutyExitRetryPendingSinceUtc.HasValue &&", StringComparison.Ordinal);
+        var next = scheduler.IndexOf("var run = ResolveScheduleDadRunResult", pending, StringComparison.Ordinal);
+        Assert.Contains("MaterializeScheduleEntryJob(schedule, state, now);", scheduler[pending..next]);
+        var selection = scheduler.IndexOf("DadScheduleDutyExitRetryRules.SameSelection", StringComparison.Ordinal);
+        var start = scheduler.IndexOf("() => StartPreset(group, preview, nextJob.DryRun, nextJob)", selection, StringComparison.Ordinal);
+        Assert.True(selection >= 0 && start > selection);
+        Assert.Contains("var levelSeek = EvaluateLevelSeek(group, plannerRequestPreview);", scheduler);
+        Assert.Contains("TryBeginDailyRewardPreflight(frozenLevelSeekGroup)", scheduler);
+        Assert.Contains("scheduler.HasPendingDutyExitRetry", ReadRepositorySource("Services", "DadRuntimeHandlers.cs"));
+    }
+
+    [Fact]
     public void SuccessfulRunCompletionRequiresFreshPerRunPartyBoundaryProof()
     {
         var source = ReadRepositorySource("Services", "DadCoordinatorService.cs");

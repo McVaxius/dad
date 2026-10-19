@@ -620,6 +620,8 @@ public sealed class DadModuleExecutionStatusDto
     public bool Deferred { get; set; }
     public int RetryAttempt { get; set; }
     public int MaxRetryAttempts { get; set; }
+    // Structured evidence, not a timeout guess or a failure-message substring.
+    public bool DutyExitedWithoutCompletion { get; set; }
     public DateTime? StartedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAtUtc { get; set; }
@@ -642,6 +644,7 @@ public sealed class DadModuleExecutionStatusDto
         Deferred = Deferred,
         RetryAttempt = RetryAttempt,
         MaxRetryAttempts = MaxRetryAttempts,
+        DutyExitedWithoutCompletion = DutyExitedWithoutCompletion,
         StartedAtUtc = StartedAtUtc,
         UpdatedAtUtc = UpdatedAtUtc,
         CompletedAtUtc = CompletedAtUtc,

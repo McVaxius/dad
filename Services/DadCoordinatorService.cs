@@ -2621,6 +2621,7 @@ public sealed class DadCoordinatorService
             module,
             activeParticipants);
         var failures = new List<string>();
+        var uncompletedDutyExitFailures = 0;
         var dispatchedParticipants = activeParticipants
             .Where(participant => workerStatuses.ContainsKey(participant.WorkerSessionId.Value))
             .ToList();
@@ -2734,6 +2735,10 @@ public sealed class DadCoordinatorService
             participant.StatusText = workerStatus.Summary;
             if (workerStatus.IsTerminal && !workerStatus.Success)
             {
+                if (exactCommand.Role == DadWorkerExecutionRole.QueueLeader &&
+                    workerStatus.State == DadWorkerExecutionState.Failed &&
+                    workerStatus.StepResult.ExecutorStatus.DutyExitedWithoutCompletion)
+                    uncompletedDutyExitFailures++;
                 failures.Add(DadWorkerPrequeueBarrierRules.AttributeFailure(
                     participant,
                     string.IsNullOrWhiteSpace(workerStatus.FailureReason)
@@ -2744,6 +2749,10 @@ public sealed class DadCoordinatorService
 
         if (failures.Count > 0)
         {
+            // Preserve only exact, exclusively duty-exit failures. Contradictory,
+            // missing, canceled or unrelated failed workers must never auto-retry.
+            var dutyExitFailure = uncompletedDutyExitFailures == failures.Count &&
+                                  CurrentResult.ScheduleFailureKind == DadScheduleFailureKind.None;
             if (barrierRequired)
             {
                 ScopeFinalizationToAcknowledgedWorkers(true);
@@ -2769,7 +2778,7 @@ public sealed class DadCoordinatorService
             }
             ApplyModuleRoutingResult(
                 module,
-                BuildWorkerFailureResult(module, string.Join(" | ", failures.Distinct(StringComparer.OrdinalIgnoreCase))),
+                BuildWorkerFailureResult(module, string.Join(" | ", failures.Distinct(StringComparer.OrdinalIgnoreCase)), dutyExitFailure),
                 replaceExisting: true);
             return;
         }
@@ -3121,7 +3130,8 @@ public sealed class DadCoordinatorService
         return true;
     }
 
-    private DadRunStepResultDto BuildWorkerFailureResult(DadPlannedModuleExecution module, string reason)
+    private DadRunStepResultDto BuildWorkerFailureResult(DadPlannedModuleExecution module, string reason,
+        bool dutyExitedWithoutCompletion = false)
     {
         var result = BuildWorkerProgressResult(module, reason);
         result.Success = false;
@@ -3134,6 +3144,7 @@ public sealed class DadCoordinatorService
         result.ExecutorStatus.FailureReason = reason;
         result.ExecutorStatus.BlockedReason = reason;
         result.ExecutorStatus.CompletedAtUtc = DadClock.UtcNow;
+        result.ExecutorStatus.DutyExitedWithoutCompletion = dutyExitedWithoutCompletion;
         return result;
     }
 

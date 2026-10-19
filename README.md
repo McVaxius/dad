@@ -675,8 +675,17 @@ ID to distinguish the running DLL from an older build. Review reports for person
   definition cannot supply a total, DAD omits that denominator instead of guessing.
 - A blocked Schedule entry caused by an ordinary entry failure or coordinator/plugin reload can be resumed only
   through the operator's **Resume from failed entry** action. DAD creates a new run at the exact persisted cursor,
-  retains prior history, requires all clients and DAD/scheduler work to be idle, and never replays automatically.
+  retains prior history, and requires all clients and DAD/scheduler work to be idle. Reload abandonment never replays automatically.
   Cancelled runs remain terminal and cannot be resumed.
+- Before blocking, a scheduled premade duty or daily roulette may make **one additional attempt per entry/repeat**
+  when the exact queue leader proves an exit without matching `DutyCompleted` after the ten-second grace period.
+  This is not a generic timeout retry. The failed attempt remains failed and does not increment completed entries.
+  DAD persists the consumed retry budget, waits for acknowledged cleanup and fresh safe readiness of every original
+  worker/account/character/Content ID, then uses a fresh ordinary scheduler request. Level-target and enabled daily-reward
+  skip checks run again, and normal party assembly runs if still needed. Recovery readiness is bounded to five minutes
+  after reservation. Changed identities/duty/authority, Cancel, unrelated failures and already-partially-completed run loops
+  do not auto-retry; another failure stops. Explicit resume does not replenish the entry's automatic budget. See
+  [the schedule recovery guide](DAD_AETHERTEK.md) for the exact scope and exclusions.
 - Scheduled worker commands with `TimeoutSeconds <= 0` have no outer command deadline and remain active until explicit
   cancellation or an executor/queue-pulse result completes them. Positive values begin at worker execution start and
   clamp to 30–7,200 seconds through preparation and queueing. After `Duty`, `Msq`, `DutySupport`, `Trust`, `PremadeDuty`,
