@@ -83,6 +83,7 @@
     <Compile Include="..\Services\DadRoulettePresetConflictRules.cs" Link="DadRoulettePresetConflictRules.cs" />
     <Compile Include="..\Services\DadCoordinatorTravelRules.cs" Link="DadCoordinatorTravelRules.cs" />
     <Compile Include="..\Services\DadHomeWorldReturnRules.cs" Link="DadHomeWorldReturnRules.cs" />
+    <Compile Include="..\Services\DadSafeIdleRetryGate.cs" Link="DadSafeIdleRetryGate.cs" />
     <Compile Include="..\Services\DadDutyFinderLiveEntryMapping.cs" Link="DadDutyFinderLiveEntryMapping.cs" />
     <Compile Include="..\Services\DadRouletteQueueRuntimeRules.cs" Link="DadRouletteQueueRuntimeRules.cs" />
     <Compile Include="..\Services\DadFullPartyExecutionRules.cs" Link="DadFullPartyExecutionRules.cs" />

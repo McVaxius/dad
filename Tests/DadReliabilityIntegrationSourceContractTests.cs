@@ -5,6 +5,32 @@ namespace dad.Tests;
 public sealed class DadReliabilityIntegrationSourceContractTests
 {
     [Fact]
+    public void RelogRecoveryReusesForcedSafetyAndDoesNotCancelOrReplayTitleLogin()
+    {
+        var wake = ReadRepositorySource("Services", "DadWakeTakeoverService.cs");
+        Assert.Contains("ExecuteRelog(operation, retry: true)", wake);
+        Assert.Contains("!operation.TitleIdleRelogCommandAttempted", wake);
+        Assert.Contains("!operation.CoordinatorAvailable || !snapshot.SuppressionReadable", wake);
+        Assert.Contains("operation.RelogRetryGate.Reset();", wake);
+        Assert.Contains("operation.HomeWorldReturnGate.ResetIdleProof();", wake);
+        var start = wake.IndexOf("private void ExecuteRelog(", StringComparison.Ordinal);
+        var end = wake.IndexOf("private bool CanRetryRelog(", start, StringComparison.Ordinal);
+        var relog = wake[start..end];
+        Assert.Equal(2, relog.Split("Capture(operation, forceExternalRefresh: true)", StringSplitOptions.None).Length - 1);
+        Assert.Equal(2, relog.Split("retry && !CanRetryRelog(operation, snapshot)", StringSplitOptions.None).Length - 1);
+        Assert.DoesNotContain("ConnectAndLogin", relog);
+        Assert.DoesNotContain("Cancel", relog);
+        var home = ReadRepositorySource("Services", "DadHomeWorldReturnRules.cs");
+        Assert.DoesNotContain("MaxChangeWorldAttempts", home);
+        Assert.Contains("safeIdleRetry.Observe(participant, nowUtc)", home);
+        Assert.Contains("DadLifestreamChangeWorldOutcome.ExplicitFalse", home);
+        var target = ReadRepositorySource("Services", "DadWakeTakeoverTarget.cs");
+        Assert.Contains("presenceService.BuildLiveSafetySnapshot()", target);
+        Assert.Contains("AutoRetainerBusy = ar.IsBusy", target);
+        Assert.Contains("LifestreamBusy = lifestreamState.IsBusy", target);
+    }
+
+    [Fact]
     public void TravelRecoveryUsesFreshProductionSafetyAndNeverCancelsLifestreamToMakeRoomForRetry()
     {
         var presence = ReadRepositorySource("Services", "DadPresenceService.cs");

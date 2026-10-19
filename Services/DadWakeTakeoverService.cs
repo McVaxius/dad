@@ -323,6 +323,8 @@ public sealed class DadWakeTakeoverService : IDisposable
             }
 
             operation.CoordinatorAvailable = false;
+            operation.RelogRetryGate.Reset();
+            operation.HomeWorldReturnGate.ResetIdleProof();
 
             if (operation.Phase >= DadWakeTakeoverPhase.ResetCommitted)
             {
@@ -1010,7 +1012,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         return true;
     }
 
-    private void ExecuteRelog(OperationState operation)
+    private void ExecuteRelog(OperationState operation, bool retry = false)
     {
         var snapshot = Capture(operation, forceExternalRefresh: true);
         var blocker = ValidateCoreTarget(snapshot, operation.ActiveRequest);
@@ -1030,12 +1032,17 @@ public sealed class DadWakeTakeoverService : IDisposable
         }
         if (!CanExecuteRelogNow(operation, snapshot))
         {
+            operation.RelogRetryGate.Reset();
+            operation.HomeWorldReturnGate.ResetIdleProof();
             operation.Summary = $"Committed relog is waiting without timeout: {BuildReadinessWaitSummary(snapshot)}";
             operation.UpdatedAtUtc = utcNow();
             return;
         }
 
-        if (operation.RelogCommandAttempted)
+        if (operation.RelogCommandAttempted && !retry)
+            return;
+
+        if (retry && !CanRetryRelog(operation, snapshot))
             return;
 
         if (!HasCompleteLiveIdentity(snapshot.Participant))
@@ -1067,6 +1074,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         }
         if (!CanExecuteRelogNow(operation, snapshot))
         {
+            operation.RelogRetryGate.Reset();
+            operation.HomeWorldReturnGate.ResetIdleProof();
             operation.Summary = $"Committed relog is waiting without timeout: {BuildReadinessWaitSummary(snapshot)}";
             operation.UpdatedAtUtc = utcNow();
             return;
@@ -1077,33 +1086,69 @@ public sealed class DadWakeTakeoverService : IDisposable
             operation.UpdatedAtUtc = utcNow();
             return;
         }
+        if (retry && !CanRetryRelog(operation, snapshot))
+            return;
         if (!PrepareHomeWorldBeforeRelog(operation, snapshot))
             return;
 
         operation.RelogSourceCharacterKey = snapshot.Participant.ActiveCharacterKey;
+        operation.RelogSourceIdentity = DadSafeIdleRetryGate.Identity(snapshot.Participant);
         operation.RelogIdentityTransitionObserved = false;
         operation.RelogCommandAttempted = true;
+        operation.RelogRetryGate.Reset();
+        operation.RelogAttemptCount++;
         operation.AnyTakeoverMutation = true;
         var relog = Invoke(
             () => target.ExecuteCommand(DadWakeTakeoverCommand.RelogCharacter, operation.ActiveRequest),
             $"send /ays relog {operation.ActiveRequest.CharacterKey}");
         if (!relog.Success)
         {
-            Block(operation, $"{relog.Error} The one-shot relog command will not replay.", cleanup: true);
+            Block(operation, $"{relog.Error} Relog dispatch failed or is uncertain; no automatic replay is permitted.", cleanup: true);
             return;
         }
         operation.RelogIssuedUtc = utcNow();
 
         operation.Phase = DadWakeTakeoverPhase.WaitingForCharacter;
         operation.Acknowledgement = DadWakeAcknowledgementState.Executed;
-        operation.Summary = $"Relog issued for {operation.ActiveRequest.CharacterKey}; retaining DAD suppression through login.";
+        operation.Summary = $"Relog attempt {operation.RelogAttemptCount} issued for {operation.ActiveRequest.CharacterKey}; retaining DAD suppression through login.";
         operation.UpdatedAtUtc = utcNow();
+    }
+
+    private bool CanRetryRelog(OperationState operation, DadWakeTakeoverTargetSnapshot snapshot)
+    {
+        if (!string.Equals(operation.RelogSourceIdentity, DadSafeIdleRetryGate.Identity(snapshot.Participant), StringComparison.OrdinalIgnoreCase))
+        {
+            Block(operation, "The frozen relog source identity changed; no automatic replay is permitted.", cleanup: true);
+            return false;
+        }
+        if (!operation.CoordinatorAvailable || !snapshot.SuppressionReadable ||
+            !CanExecuteRelogNow(operation, snapshot))
+        {
+            operation.RelogRetryGate.Reset();
+            operation.Summary = "Relog retry is waiting for connected coordinator, safe automation and verified DAD suppression ownership.";
+            operation.UpdatedAtUtc = utcNow();
+            return false;
+        }
+        if (!operation.RelogRetryGate.Observe(snapshot.Participant, utcNow()))
+        {
+            operation.Summary = $"Relog source character {operation.RelogSourceCharacterKey} is still loaded; waiting for five continuously fresh safe idle seconds before retrying.";
+            operation.UpdatedAtUtc = utcNow();
+            return false;
+        }
+        return true;
     }
 
     private bool PrepareHomeWorldBeforeRelog(
         OperationState operation,
         DadWakeTakeoverTargetSnapshot snapshot)
     {
+        if (operation.HomeWorldReturnGate.InvocationCount > 0 && !operation.CoordinatorAvailable)
+        {
+            operation.HomeWorldReturnGate.ResetIdleProof();
+            operation.Summary = "Return-home retry is waiting for the coordinator to reconnect.";
+            operation.UpdatedAtUtc = utcNow();
+            return false;
+        }
         var decision = operation.HomeWorldReturnGate.Evaluate(
             snapshot.Participant,
             snapshot.LifestreamAvailable,
@@ -1130,12 +1175,8 @@ public sealed class DadWakeTakeoverService : IDisposable
                         cleanup: true);
                     return false;
                 }
-                operation.Summary = operation.HomeWorldReturnGate.Evaluate(
-                    snapshot.Participant,
-                    snapshot.LifestreamAvailable,
-                    snapshot.LifestreamBusy,
-                    operation.ActiveRequest.CharacterKey,
-                    utcNow()).Summary;
+                // Do not advance the gate again using the pre-command snapshot.
+                operation.Summary = $"Return-home attempt {operation.HomeWorldReturnGate.InvocationCount}: {result.Summary} Waiting for a fresh live observation.";
                 operation.UpdatedAtUtc = utcNow();
                 return false;
             case DadHomeWorldReturnAction.Wait:
@@ -1161,6 +1202,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         var participant = snapshot.Participant;
         if (!HasCompleteLiveIdentity(participant))
         {
+            operation.RelogRetryGate.Reset();
             if (operation.RelogCommandAttempted)
             {
                 operation.RelogIdentityTransitionObserved = true;
@@ -1175,6 +1217,7 @@ public sealed class DadWakeTakeoverService : IDisposable
         }
         if (!participant.WorldReadyStable)
         {
+            operation.RelogRetryGate.Reset();
             if (operation.RelogCommandAttempted &&
                 !operation.RelogSourceCharacterKey.IsEmpty &&
                 !string.Equals(
@@ -1200,10 +1243,10 @@ public sealed class DadWakeTakeoverService : IDisposable
                                         participant.ActiveCharacterKey.Value,
                                         operation.RelogSourceCharacterKey.Value,
                                         StringComparison.OrdinalIgnoreCase);
-            if (sourceStillLoaded && !operation.RelogIdentityTransitionObserved)
+            if (sourceStillLoaded && operation.RelogCommandAttempted && !operation.TitleIdleRelogCommandAttempted)
             {
-                operation.Summary = $"Relog was accepted once, but source character {operation.RelogSourceCharacterKey} is still loaded; waiting without timeout for actual identity-transition evidence.";
-                operation.UpdatedAtUtc = utcNow();
+                if (CanRetryRelog(operation, snapshot))
+                    ExecuteRelog(operation, retry: true);
                 return;
             }
 
@@ -1636,6 +1679,9 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.ResetIssuedUtc = null;
         operation.RelogIssuedUtc = null;
         operation.RelogSourceCharacterKey = new DadCharacterKey(string.Empty);
+        operation.RelogSourceIdentity = string.Empty;
+        operation.RelogRetryGate.Reset();
+        operation.RelogAttemptCount = 0;
         operation.RelogIdentityTransitionObserved = false;
         operation.HomeWorldReturnGate = new DadHomeWorldReturnGate();
         operation.HomeWorldReturnStarted = false;
@@ -1717,6 +1763,7 @@ public sealed class DadWakeTakeoverService : IDisposable
     private static bool CanExecuteRelogNow(OperationState operation, DadWakeTakeoverTargetSnapshot snapshot)
         => IsWorldMutationSafe(snapshot) &&
            !snapshot.MultiModeEnabled &&
+           snapshot.SuppressionReadable &&
            snapshot.DadOwnsSuppression &&
            snapshot.AutoRetainerSuppressed;
 
@@ -2134,6 +2181,9 @@ public sealed class DadWakeTakeoverService : IDisposable
         public bool ResetCommandAttempted { get; set; }
         public bool RelogCommandAttempted { get; set; }
         public DadCharacterKey RelogSourceCharacterKey { get; set; } = new(string.Empty);
+        public string RelogSourceIdentity { get; set; } = string.Empty;
+        public DadSafeIdleRetryGate RelogRetryGate { get; } = new();
+        public int RelogAttemptCount { get; set; }
         public bool RelogIdentityTransitionObserved { get; set; }
         public int Epoch { get; set; } = 1;
         public DateTime EpochStartedAtUtc { get; set; }

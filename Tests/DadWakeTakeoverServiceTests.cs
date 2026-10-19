@@ -414,9 +414,8 @@ public sealed class DadWakeTakeoverServiceTests
         Assert.DoesNotContain("RelogCharacter", target.Actions);
         Assert.True(target.Snapshot.DadOwnsSuppression);
         Assert.Equal(DadWakeTakeoverStage.WaitingForHomeWorld, service.GetActiveStatus()!.Stage);
-        Assert.Equal(
-            "Other Character@World is Data Center traveling back to home world World before DAD relogs to Target Character@World; waiting for fresh home-world proof.",
-            service.GetActiveStatus()!.Summary);
+        Assert.Contains("Return-home attempt 1", service.GetActiveStatus()!.Summary, StringComparison.Ordinal);
+        Assert.Contains("fresh live observation", service.GetActiveStatus()!.Summary, StringComparison.Ordinal);
 
         target.Snapshot.Participant.CurrentLocation = new DadWorldLocationObservation
         {
@@ -466,7 +465,272 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void StableSourceWaitsIndefinitelyWithoutRelogReplay()
+    public void AcceptedButAbortedRelogRetriesAfterFiveFreshSafeIdleSeconds()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        target.Snapshot.LifestreamBusy = true;
+        clock.Advance(TimeSpan.FromMinutes(1));
+        service.Update();
+        target.Snapshot.LifestreamBusy = false;
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(4));
+        service.Update();
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        service.Update();
+        Assert.Equal(2, target.Actions.Count(static action => action == "RelogCharacter"));
+        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.Handle(StatusRequest()).Phase);
+        Assert.DoesNotContain("ReleaseSuppression", target.Actions);
+    }
+
+    [Fact]
+    public void RepeatedAcceptedRelogAbortsHaveNoAttemptLimitAndKeepExactOwnership()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        var resetCount = target.Actions.Count(static action => action == "ResetAutoRetainer");
+        for (var attempt = 1; attempt <= 200; attempt++)
+        {
+            service.Update();
+            clock.Advance(TimeSpan.FromSeconds(5));
+            service.Update();
+            Assert.Equal(attempt + 1, target.Actions.Count(static action => action == "RelogCharacter"));
+            Assert.True(target.Snapshot.DadOwnsSuppression);
+            Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.GetActiveStatus()!.Phase);
+        }
+        Assert.Equal(resetCount, target.Actions.Count(static action => action == "ResetAutoRetainer"));
+        Assert.DoesNotContain("ReleaseSuppression", target.Actions);
+        Assert.All(target.Actions.Where(static action => action.StartsWith("RelogTarget:", StringComparison.Ordinal)),
+            static action => Assert.Equal("RelogTarget:Target Character@World", action));
+        ActivateTargetCharacter(target);
+        service.Update();
+        Assert.Equal(DadWakeTakeoverPhase.Ready, service.GetActiveStatus()!.Phase);
+        Assert.Contains("ReleaseSuppression", target.Actions);
+    }
+
+    [Theory]
+    [InlineData(0)] // AutoRetainer busy
+    [InlineData(1)] // Lifestream busy
+    [InlineData(2)] // AutoRetainer unavailable
+    [InlineData(3)] // Lifestream unavailable
+    [InlineData(4)] // casting/loading/world unsafe
+    [InlineData(5)] // suppression unreadable
+    [InlineData(6)] // suppression no longer owned
+    [InlineData(7)] // suppression no longer active
+    [InlineData(8)] // Multi Mode re-enabled
+    [InlineData(9)] // external automation
+    [InlineData(10)] // account mismatch
+    [InlineData(11)] // target no longer catalogued
+    [InlineData(12)] // disconnected route
+    public void UnsafeObservationRestartsRelogRetryWindowEvenAfterOneDay(int unsafeKind)
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(4));
+        SetUnsafeRelogObservation(target.Snapshot, unsafeKind, true);
+        service.Update();
+        clock.Advance(TimeSpan.FromDays(1));
+        service.Update();
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        SetUnsafeRelogObservation(target.Snapshot, unsafeKind, false);
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(4));
+        service.Update();
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        service.Update();
+        Assert.Equal(2, target.Actions.Count(static action => action == "RelogCharacter"));
+    }
+
+    [Theory]
+    [InlineData(0)] // Content ID
+    [InlineData(1)] // worker session
+    [InlineData(2)] // managed account
+    [InlineData(3)] // recorded home world
+    public void ChangedSourceIdentityBlocksRelogRetry(int identityKind)
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(5));
+        switch (identityKind)
+        {
+            case 0: target.Snapshot.Participant.Character.ContentId++; break;
+            case 1: target.Snapshot.Participant.WorkerSessionId = new DadWorkerSessionId("replacement"); break;
+            case 2: target.Snapshot.Participant.ManagedAccountKey = new DadAccountKey("replacement"); break;
+            case 3: target.Snapshot.Participant.Character.WorldId++; break;
+        }
+        service.Update();
+        var blocked = service.Handle(StatusRequest());
+        Assert.Equal(DadWakeTakeoverStatus.Blocked, blocked.Status);
+        Assert.Contains("source identity changed", blocked.BlockedReason, StringComparison.Ordinal);
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+    }
+
+    [Theory]
+    [InlineData(0)] // busy on final capture
+    [InlineData(1)] // target arrived on final capture
+    [InlineData(2)] // different source Content ID on final capture
+    [InlineData(3)] // location changed on final capture
+    public void RelogRetryRechecksLiveTruthImmediatelyBeforeDispatch(int changeKind)
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(5));
+        var captures = 0;
+        target.OnCapture = _ =>
+        {
+            if (++captures != 3)
+                return;
+            switch (changeKind)
+            {
+                case 0: target.Snapshot.LifestreamBusy = true; break;
+                case 1: ActivateTargetCharacter(target); break;
+                case 2: target.Snapshot.Participant.Character.ContentId++; break;
+                case 3: target.Snapshot.Participant.CurrentLocation!.WorldId++; break;
+            }
+        };
+        service.Update();
+        Assert.True(captures >= 3);
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        if (changeKind == 1)
+            Assert.Equal(DadWakeTakeoverPhase.Ready, service.GetActiveStatus()!.Phase);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RejectedOrUncertainRetryDispatchNeverReplays(bool throws)
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        service.Update();
+        target.RelogDispatchFailure = throws ? 2 : 1;
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+        var blocked = service.Handle(StatusRequest());
+        Assert.Equal(DadWakeTakeoverStatus.Blocked, blocked.Status);
+        Assert.Contains("no automatic replay", blocked.BlockedReason, StringComparison.Ordinal);
+        clock.Advance(TimeSpan.FromDays(1));
+        service.Update();
+        Assert.Equal(2, target.Actions.Count(static action => action == "RelogCharacter"));
+    }
+
+    [Fact]
+    public void CancelledRelogCannotRetryAfterIdleWindow()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        service.Update();
+        var cancel = StatusRequest();
+        cancel.MessageKind = DadWakeTakeoverMessageKind.Cancel;
+        Assert.Equal(DadWakeTakeoverPhase.Cancelled, service.Handle(cancel).Phase);
+        clock.Advance(TimeSpan.FromDays(1));
+        service.Update();
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+    }
+
+    [Fact]
+    public void CoordinatorDisconnectPausesRetriesAndReconnectRequiresNewIdleProof()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        service.Update();
+        service.OnCoordinatorDisconnected();
+        clock.Advance(TimeSpan.FromDays(1));
+        service.Update();
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        service.Handle(StatusRequest()); // same exact authorized operation reconnects
+        clock.Advance(TimeSpan.FromSeconds(4));
+        service.Update();
+        Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        service.Update();
+        Assert.Equal(2, target.Actions.Count(static action => action == "RelogCharacter"));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(6)]
+    [InlineData(7)]
+    [InlineData(8)]
+    [InlineData(9)]
+    [InlineData(10)]
+    [InlineData(11)]
+    [InlineData(12)]
+    public void ReturnHomeRetryAlsoRestartsProofAfterUnsafeAutomationOrOwnership(int unsafeKind)
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.UtcNow = clock.UtcNow;
+        target.Snapshot.Participant.CurrentLocation!.WorldId = 2;
+        target.Snapshot.Participant.CurrentLocation.WorldName = "Visitor World";
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        Prepare(service, target);
+        ExecuteGo(service, clock, DadWakeCommitKind.Reset);
+        ExecuteGo(service, clock, DadWakeCommitKind.Relog);
+        Assert.Single(target.Actions, static action => action == "ChangeWorld:World");
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(4));
+        SetUnsafeRelogObservation(target.Snapshot, unsafeKind, true);
+        service.Update();
+        clock.Advance(TimeSpan.FromDays(1));
+        service.Update();
+        SetUnsafeRelogObservation(target.Snapshot, unsafeKind, false);
+        service.Update();
+        Assert.Single(target.Actions, static action => action == "ChangeWorld:World");
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+        Assert.Equal(2, target.Actions.Count(static action => action == "ChangeWorld:World"));
+        Assert.DoesNotContain("RelogCharacter", target.Actions);
+    }
+
+    private static void SetUnsafeRelogObservation(DadWakeTakeoverTargetSnapshot snapshot, int kind, bool unsafeValue)
+    {
+        switch (kind)
+        {
+            case 0: snapshot.AutoRetainerBusy = unsafeValue; break;
+            case 1: snapshot.LifestreamBusy = unsafeValue; break;
+            case 2: snapshot.AutoRetainerAvailable = !unsafeValue; break;
+            case 3: snapshot.LifestreamAvailable = !unsafeValue; break;
+            case 4: snapshot.Participant.WorldReadyStable = !unsafeValue; break;
+            case 5: snapshot.SuppressionReadable = !unsafeValue; break;
+            case 6: snapshot.DadOwnsSuppression = !unsafeValue; break;
+            case 7: snapshot.AutoRetainerSuppressed = !unsafeValue; break;
+            case 8: snapshot.MultiModeEnabled = unsafeValue; break;
+            case 9: snapshot.ExternalAutomationHeld = unsafeValue; break;
+            case 10: snapshot.AccountMatches = !unsafeValue; break;
+            case 11: snapshot.CharacterKnownToAccount = !unsafeValue; break;
+            case 12: snapshot.ClientRouteConnected = !unsafeValue; break;
+        }
+    }
+
+    [Fact]
+    public void LongObservationGapDoesNotAuthorizeImmediateRelogReplay()
     {
         var clock = new TestClock();
         var target = FakeTarget.Valid(wrongCharacter: true);
@@ -532,7 +796,7 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void SourceReturningAfterIdentityTransitionFailsWithoutRelogReplay()
+    public void ExactSourceReturningAfterAbortedIdentityTransitionCanRetryWhenSafe()
     {
         var clock = new TestClock();
         var target = FakeTarget.Valid(wrongCharacter: true);
@@ -546,10 +810,12 @@ public sealed class DadWakeTakeoverServiceTests
         target.Snapshot.Participant.WorldReadyStable = true;
         service.Update();
 
-        var failed = service.Handle(StatusRequest());
-        Assert.Equal(DadWakeTakeoverStatus.Blocked, failed.Status);
-        Assert.Contains("returned after live identity-transition proof", failed.BlockedReason, StringComparison.OrdinalIgnoreCase);
+        var waiting = service.Handle(StatusRequest());
+        Assert.Equal(DadWakeTakeoverStatus.RelogIssued, waiting.Status);
         Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+        Assert.Equal(2, target.Actions.Count(static action => action == "RelogCharacter"));
     }
 
     [Fact]
@@ -2143,6 +2409,7 @@ public sealed class DadWakeTakeoverServiceTests
         public Func<DateTime>? UtcNow { get; set; }
         public bool DismissTitleMovieAccepted { get; set; } = true;
         public bool ThrowOnTitleLogin { get; set; }
+        public int RelogDispatchFailure { get; set; }
         public bool ResolveCorrectCharacterFromRequest { get; set; }
 
         public static FakeTarget Valid(bool wrongCharacter)
@@ -2345,7 +2612,13 @@ public sealed class DadWakeTakeoverServiceTests
         {
             Actions.Add(command.ToString());
             if (command == DadWakeTakeoverCommand.RelogCharacter)
+            {
                 Actions.Add($"RelogTarget:{request.CharacterKey.Value}");
+                if (RelogDispatchFailure == 2)
+                    throw new InvalidOperationException("Simulated uncertain relog dispatch.");
+                if (RelogDispatchFailure == 1)
+                    return DadWakeTakeoverActionResult.Rejected("Simulated rejected relog dispatch.");
+            }
             OnCommandExecuted?.Invoke(command);
             return DadWakeTakeoverActionResult.Accepted();
         }
