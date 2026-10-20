@@ -104,6 +104,7 @@ internal static class DadRuntimeHandlers
             command => roster.RefreshLocalRosterCharacter(command, presence.BuildSnapshotCopy()));
         transport.ConfigureProfileHandlers(profiles.BuildLocalCatalog, configManager.ApplyProfileUpdate);
         ConfigureWorkers(transport, worker, statusObserved, assignmentObserved);
+        DadCompletionActionRunner.ConfigureMembers(transport.RuntimeConfiguration, presence, transport, worker);
     }
 
     public static void ConfigureWorkers(

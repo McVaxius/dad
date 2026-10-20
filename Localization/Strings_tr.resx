@@ -8787,4 +8787,20 @@
   <data name="gather_119" xml:space="preserve"><value>Toplama emirleri eksik veya sınırlı emir sayısı aşıldı.</value></data>
   <data name="gather_120" xml:space="preserve"><value>Toplama için tam toplama modülü ve istemci atamaları gerekir.</value></data>
   <data name="gather_121" xml:space="preserve"><value>GBR toplama grubu</value></data>
+  <data name="member_000" xml:space="preserve"><value>ÜYE ALIŞVERİŞİ VE SON KOMUTLAR</value></data>
+  <data name="member_001" xml:space="preserve"><value>Son komutlar tüm turun ve alışverişin başarıyla bitmesini, tüm program girdilerini ve tekrarlarını bekler.</value></data>
+  <data name="member_002" xml:space="preserve"><value>Son ön ayar komutu uygulanır; boş olmayan program komutu onun yerine geçer.</value></data>
+  <data name="member_003" xml:space="preserve"><value>Tümüne uygula, seçimleri görünen üyelere kopyalar. Uzak istemcilerde uzak komut izni gerekir.</value></data>
+  <data name="member_004" xml:space="preserve"><value>Onay, kayıtlı gönderimi doğrular. Komutun etkisi doğrulanmış değildir.</value></data>
+  <data name="member_005" xml:space="preserve"><value>Üye kullanılamıyor</value></data>
+  <data name="member_006" xml:space="preserve"><value>Bu sabitlenen üye artık uygun satırla tam eşleşmiyor. Değiştirmeden önce eski atamayı kaldırın.</value></data>
+  <data name="member_007" xml:space="preserve"><value>Üye atamasını kaldır</value></data>
+  <data name="member_008" xml:space="preserve"><value>Bu sahip için tam eşleşen uygun üye yok.</value></data>
+  <data name="member_009" xml:space="preserve"><value>Üye atamalarını kaydet</value></data>
+  <data name="member_010" xml:space="preserve"><value>Değişiklikleri at</value></data>
+  <data name="member_011" xml:space="preserve"><value>Son eğik çizgi komutu</value></data>
+  <data name="member_012" xml:space="preserve"><value>Tamamlanınca AutoRetainer teslimatı</value></data>
+  <data name="member_013" xml:space="preserve"><value>Bu satırı tüm üyelere uygula</value></data>
+  <data name="member_014" xml:space="preserve"><value>Her üye için isteğe bağlı ADS listesi ve son komut. Boş seçimler kapalıdır.</value></data>
+  <data name="member_015" xml:space="preserve"><value>Üye atamaları kaydedildi.</value></data>
 </root>

@@ -8787,4 +8787,20 @@
   <data name="gather_119" xml:space="preserve"><value>As ordens de coleta faltam ou excedem o limite.</value></data>
   <data name="gather_120" xml:space="preserve"><value>A coleta exige o módulo e as atribuições exatos.</value></data>
   <data name="gather_121" xml:space="preserve"><value>Grupo de coleta GBR</value></data>
+  <data name="member_000" xml:space="preserve"><value>COMPRAS E COMANDOS FINAIS POR MEMBRO</value></data>
+  <data name="member_001" xml:space="preserve"><value>Os comandos finais aguardam o sucesso da rodada inteira e das compras, incluindo todas as entradas e repetições da agenda.</value></data>
+  <data name="member_002" xml:space="preserve"><value>O último comando da predefinição se aplica; um comando não vazio da agenda o substitui.</value></data>
+  <data name="member_003" xml:space="preserve"><value>Aplicar a todos copia as opções aos membros exibidos. Clientes remotos precisam de permissão para comandos remotos.</value></data>
+  <data name="member_004" xml:space="preserve"><value>A confirmação comprova o envio registrado. O efeito do comando permanece não verificado.</value></data>
+  <data name="member_005" xml:space="preserve"><value>Membro indisponível</value></data>
+  <data name="member_006" xml:space="preserve"><value>Este membro fixado não corresponde mais a uma linha válida exata. Remova a atribuição antiga antes de substituí-lo.</value></data>
+  <data name="member_007" xml:space="preserve"><value>Remover atribuição do membro</value></data>
+  <data name="member_008" xml:space="preserve"><value>Não há membros válidos exatos para este proprietário.</value></data>
+  <data name="member_009" xml:space="preserve"><value>Salvar atribuições</value></data>
+  <data name="member_010" xml:space="preserve"><value>Descartar alterações</value></data>
+  <data name="member_011" xml:space="preserve"><value>Comando final com barra</value></data>
+  <data name="member_012" xml:space="preserve"><value>Entrega AutoRetainer após conclusão</value></data>
+  <data name="member_013" xml:space="preserve"><value>Aplicar esta linha a todos os membros</value></data>
+  <data name="member_014" xml:space="preserve"><value>Lista ADS e comando final opcionais por membro. Campos vazios ficam desativados.</value></data>
+  <data name="member_015" xml:space="preserve"><value>Atribuições salvas.</value></data>
 </root>

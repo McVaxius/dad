@@ -8832,4 +8832,20 @@ Bloqueador(es) de lista</value>
   <data name="gather_119" xml:space="preserve"><value>Faltan pedidos de recolección o superan el límite.</value></data>
   <data name="gather_120" xml:space="preserve"><value>La recolección requiere su módulo y asignaciones exactos.</value></data>
   <data name="gather_121" xml:space="preserve"><value>Grupo de recolección GBR</value></data>
+  <data name="member_000" xml:space="preserve"><value>COMPRAS Y COMANDOS FINALES POR MIEMBRO</value></data>
+  <data name="member_001" xml:space="preserve"><value>Los comandos finales esperan a que toda la ronda y las compras terminen correctamente, incluidas todas las entradas y repeticiones.</value></data>
+  <data name="member_002" xml:space="preserve"><value>Se aplica el último comando del preajuste; un comando de la programación no vacío lo sustituye.</value></data>
+  <data name="member_003" xml:space="preserve"><value>Aplicar a todos copia las opciones a los miembros mostrados. Los clientes remotos deben permitir comandos remotos.</value></data>
+  <data name="member_004" xml:space="preserve"><value>La confirmación acredita el envío registrado. El efecto del comando sigue sin verificar.</value></data>
+  <data name="member_005" xml:space="preserve"><value>Miembro no disponible</value></data>
+  <data name="member_006" xml:space="preserve"><value>Este miembro fijado ya no coincide con una fila válida exacta. Elimina la asignación anterior antes de sustituirlo.</value></data>
+  <data name="member_007" xml:space="preserve"><value>Eliminar asignación del miembro</value></data>
+  <data name="member_008" xml:space="preserve"><value>No hay miembros válidos exactos para este propietario.</value></data>
+  <data name="member_009" xml:space="preserve"><value>Guardar asignaciones</value></data>
+  <data name="member_010" xml:space="preserve"><value>Descartar cambios</value></data>
+  <data name="member_011" xml:space="preserve"><value>Comando final con barra</value></data>
+  <data name="member_012" xml:space="preserve"><value>Entrega AutoRetainer tras completar</value></data>
+  <data name="member_013" xml:space="preserve"><value>Aplicar esta fila a todos los miembros</value></data>
+  <data name="member_014" xml:space="preserve"><value>Lista ADS y comando final opcionales por miembro. Los campos vacíos se desactivan.</value></data>
+  <data name="member_015" xml:space="preserve"><value>Asignaciones guardadas.</value></data>
 </root>

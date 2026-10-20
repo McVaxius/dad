@@ -8790,4 +8790,20 @@ Nur</value>
   <data name="gather_119" xml:space="preserve"><value>Sammelaufträge fehlen oder überschreiten das Auftragslimit.</value></data>
   <data name="gather_120" xml:space="preserve"><value>Sammlung erfordert das exakte Sammelmodul und Clientzuweisungen.</value></data>
   <data name="gather_121" xml:space="preserve"><value>GBR-Sammelgruppe</value></data>
+  <data name="member_000" xml:space="preserve"><value>EINKÄUFE &amp; ABSCHLUSSBEFEHLE PRO MITGLIED</value></data>
+  <data name="member_001" xml:space="preserve"><value>Abschlussbefehle warten auf die gesamte erfolgreiche Runde samt Einkäufen, allen Zeitplaneinträgen und Wiederholungen.</value></data>
+  <data name="member_002" xml:space="preserve"><value>Der letzte Vorgabenbefehl gilt; ein ausgefüllter Zeitplanbefehl hat Vorrang.</value></data>
+  <data name="member_003" xml:space="preserve"><value>Auf alle anwenden kopiert die Auswahl auf angezeigte Mitglieder. Entfernte Clients benötigen die Berechtigung für Fernbefehle.</value></data>
+  <data name="member_004" xml:space="preserve"><value>Die Bestätigung belegt die registrierte Übermittlung. Die Befehlswirkung bleibt ungeprüft.</value></data>
+  <data name="member_005" xml:space="preserve"><value>Mitglied nicht verfügbar</value></data>
+  <data name="member_006" xml:space="preserve"><value>Dieses gespeicherte Mitglied entspricht keiner zulässigen Zeile mehr. Vor einem Ersatz die alte Zuordnung entfernen.</value></data>
+  <data name="member_007" xml:space="preserve"><value>Mitgliedszuordnung entfernen</value></data>
+  <data name="member_008" xml:space="preserve"><value>Für diesen Besitzer sind keine exakt passenden Mitglieder verfügbar.</value></data>
+  <data name="member_009" xml:space="preserve"><value>Mitgliedszuordnungen speichern</value></data>
+  <data name="member_010" xml:space="preserve"><value>Änderungen verwerfen</value></data>
+  <data name="member_011" xml:space="preserve"><value>Abschließender Slash-Befehl</value></data>
+  <data name="member_012" xml:space="preserve"><value>AutoRetainer-Lieferung nach Erfüllung</value></data>
+  <data name="member_013" xml:space="preserve"><value>Diese Zeile auf alle Mitglieder anwenden</value></data>
+  <data name="member_014" xml:space="preserve"><value>Optionale ADS-Liste und Abschlussbefehl je Mitglied. Leere Angaben sind aus.</value></data>
+  <data name="member_015" xml:space="preserve"><value>Mitgliedszuordnungen gespeichert.</value></data>
 </root>

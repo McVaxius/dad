@@ -3,6 +3,12 @@
 DAD is a duty planner and multibox coordinator for FFXIV. Build reusable crews, ready the right characters,
 assemble and verify parties, queue supported duties and roulettes, and chain proven presets into schedules.
 
+Saved presets and schedules have **Member shopping & final commands** rows. Each exact member can have an optional ADS list, an independent final slash command, or both. Empty choices are off. **Apply this row to all members** copies the choices to the displayed rows; each row retains its own identity and shopping credits. The shopping wizard also updates one member without replacing the others.
+
+Final commands wait for the entire successful round and applicable shopping. A schedule waits for every preset entry and repeat. For a member appearing in several presets, the last nonblank preset command applies; a nonblank schedule command takes priority. Earlier members retain their captured client identity even if they are absent from the last preset. Global/preset completion actions also wait for that round boundary, with duplicate commands removed. Existing AutoRetainer delivery still follows verified shopping fulfillment.
+
+Member choices and exact account/character/CID/session routing are frozen for the round. Existing single-shopper data, fulfillment credits and completed non-repeatable rows remain readable and migrate when member choices are saved. Sharing uses schema 5 and includes every member command in the existing import confirmation. Worker schema 5 is required for independent shoppers or final commands, so older workers reject the contract before running a legacy post-shopping command early. Remote clients require their existing remote-command permission. Acknowledgement confirms registered command submission; the external command's effect is not independently verified. Missing recipients, incomplete shopping, cancellation and uncertain delivery remain visible, and uncertain submissions are never blindly replayed after reload.
+
 [Read the player-friendly Aethertek guide](DAD_AETHERTEK.md) for supported activities, setup, safety,
 integrations, and everyday commands.
 
@@ -22,6 +28,8 @@ Questionable requests another while below its quest target. Its stop request sen
 **Leaving duty** visible until exit and loading finish. A rejected leave stays visible as a blocker for manual exit.
 In **Plans**, **Built-in leveling preset** creates an editable one-run preset for the current character and equipped job.
 The standard route is automatic; Porta Decumana's cutscene route is available for manual selection only.
+
+DAD marks duty-running FrenRider remote profile requests as duty-only. A compatible FrenRider receiver prepares an exported copy with Duty only selected while retaining saved profiles; formation-only requests retain the stored activation choice. The existing exact-duty enable endpoint also selects Duty only, and temporary overlays restore local mode/Run intent on release. This requires a FrenRider build supporting activation modes; it uses the existing profile transport and acceptance rules.
 
 With the Questionable bridge enabled and **Use FrenRider** selected, entering a solo duty that exactly matches
 Questionable's current quest step applies the temporary ADS settings and enables FrenRider once. This also works

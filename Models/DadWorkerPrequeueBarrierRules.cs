@@ -8,10 +8,10 @@ internal static class DadWorkerPrequeueBarrierRules
         IReadOnlyCollection<DadParticipantSnapshot> participants)
         => participants.Count > 1 &&
            (DadParticipantQueueFollowThroughRules.IsObserveAcceptOnlyLane(plan, module) ||
-            plan.Request.ShoppingAssociations?.Any() == true &&
+            plan.Request.ShoppingAssociations?.Any(static association => association.PresetId.Length > 0) == true &&
             (module.ModuleId == DadModuleId.Mogtome ||
              plan.Request.ShoppingAssociations.Any(association => participants.Any(participant =>
-                 DadShoppingAssociationRules.MatchesLocalShopper(association, participant) &&
+                 association.PresetId.Length > 0 && DadShoppingAssociationRules.MatchesLocalShopper(association, participant) &&
                  !IsLeader(plan, participant)))));
 
     public static bool TryResolveDispatchTargets(
@@ -34,16 +34,13 @@ internal static class DadWorkerPrequeueBarrierRules
             return true;
         }
 
-        if (module.ModuleId == DadModuleId.Mogtome && plan.Request.ShoppingAssociations?.Any() == true)
+        if (module.ModuleId == DadModuleId.Mogtome && plan.Request.ShoppingAssociations?.Any(static value => value.PresetId.Length > 0) == true)
         {
-            if (!TryResolveShoppingShopper(plan, participants, out var shopper, out blocker))
+            if (!TryResolveShoppingShoppers(plan, participants, out var shoppers, out blocker))
                 return false;
-            if (!acknowledgedStatuses.TryGetValue(shopper.WorkerSessionId.Value, out var shopperStatus))
-            {
-                targets = [shopper];
-                return true;
-            }
-            if (!IsMogtomeShoppingGateReady(plan, shopperStatus))
+            targets = shoppers.Where(shopper => !acknowledgedStatuses.ContainsKey(shopper.WorkerSessionId.Value)).ToList();
+            if (targets.Count > 0) return true;
+            if (shoppers.Any(shopper => !IsMogtomeShoppingGateReady(plan, acknowledgedStatuses[shopper.WorkerSessionId.Value])))
                 return true;
 
             targets = participants
@@ -129,10 +126,8 @@ internal static class DadWorkerPrequeueBarrierRules
         out DadParticipantSnapshot shopper,
         out string blocker)
     {
-        var associations = plan.Request.ShoppingAssociations ?? [];
-        var matches = participants.Where(participant => associations.Any(association =>
-                DadShoppingAssociationRules.MatchesLocalShopper(association, participant)))
-            .ToList();
+        if (!TryResolveShoppingShoppers(plan, participants, out var matches, out blocker))
+        { shopper = new DadParticipantSnapshot(); return false; }
         if (matches.Count == 1)
         {
             shopper = matches[0];
@@ -143,6 +138,21 @@ internal static class DadWorkerPrequeueBarrierRules
         shopper = new DadParticipantSnapshot();
         blocker = $"Shopping prequeue gate requires one exact LAN shopper; found {matches.Count}.";
         return false;
+    }
+
+    public static bool TryResolveShoppingShoppers(DadRunPlan plan,
+        IReadOnlyCollection<DadParticipantSnapshot> participants,
+        out List<DadParticipantSnapshot> shoppers, out string blocker)
+    {
+        var associations = (plan.Request.ShoppingAssociations ?? []).Where(static value => value.PresetId.Length > 0).ToList();
+        var matches = participants.Where(participant => associations.Any(association =>
+            DadShoppingAssociationRules.MatchesLocalShopper(association, participant))).ToList();
+        shoppers = matches;
+        blocker = string.Empty;
+        if (associations.Count == 0 || associations.Any(association => matches.Count(participant =>
+                DadShoppingAssociationRules.MatchesLocalShopper(association, participant)) != 1))
+        { blocker = "Shopping prequeue gate requires an exact LAN recipient for every assigned list."; return false; }
+        return true;
     }
 
     public static bool IsMogtomeShoppingGateReady(

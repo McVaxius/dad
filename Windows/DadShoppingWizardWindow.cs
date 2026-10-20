@@ -56,8 +56,8 @@ public sealed class DadShoppingWizardWindow : Window
     private void SelectDestination(DadShoppingAssociationOwnerKind destinationKind, string id)
     {
         var association = destinationKind == DadShoppingAssociationOwnerKind.Plan
-            ? plugin.Configuration.PlannerGroups.FirstOrDefault(value => value.GroupId == id)?.ShoppingAssociation
-            : plugin.Configuration.Schedules.FirstOrDefault(value => value.ScheduleId == id)?.ShoppingAssociation;
+            ? DadShoppingAssociationRules.PlanAssignments(plugin.Configuration.PlannerGroups.FirstOrDefault(value => value.GroupId == id)).FirstOrDefault()
+            : DadShoppingAssociationRules.ScheduleAssignments(plugin.Configuration.Schedules.FirstOrDefault(value => value.ScheduleId == id)).FirstOrDefault();
         state.SelectDestination(destinationKind, id, association);
         status = string.Empty;
     }
@@ -208,9 +208,9 @@ public sealed class DadShoppingWizardWindow : Window
             if (UiGui.Checkbox("Run AutoRetainer delivery", ref delivery))
                 draft.RunAutoRetainerDelivery = delivery;
             var command = draft.CustomCommand;
-            if (UiGui.InputText("Post-command", ref command, 500))
+            if (UiGui.InputText("Final slash command", ref command, 500))
                 draft.CustomCommand = command;
-            UiGui.TextWrapped("For finite orders, these actions wait until every target is fulfilled.");
+            UiGui.TextWrapped("Final commands wait for the successful full round and shopping, including every schedule entry and repeat.");
         }
     }
 

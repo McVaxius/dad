@@ -201,30 +201,58 @@ public static class DadShoppingAssociationRules
 
     public const int MaximumFailureRecords = 50;
 
+    public static DadShoppingAssociation CopyChoicesToMember(DadShoppingAssociation source,
+        DadPlannerGroupSlot slot, DadShoppingAssociation? previous)
+    {
+        var result = previous?.Clone() ?? new DadShoppingAssociation();
+        result.PresetId = source.PresetId;
+        result.PresetName = source.PresetName;
+        result.CustomCommand = source.CustomCommand;
+        result.RunAutoRetainerDelivery = source.RunAutoRetainerDelivery;
+        result.ShopperSlotId = slot.SlotId;
+        result.ShopperAccountKey = slot.RequiredAccountKey;
+        result.ShopperCharacterKey = slot.RequiredCharacterKey;
+        ResetCompletionIfProvenanceChanged(previous, result);
+        return result;
+    }
+
     public static string NormalizeAdsGuid(string? value)
         => Guid.TryParse(value?.Trim(), out var parsed) && parsed != Guid.Empty
             ? parsed.ToString("D")
             : string.Empty;
 
     public static DadShoppingRunAssociation? FreezePlan(DadPlannerGroup? plan)
-        => plan?.ShoppingAssociation == null
-            ? null
-            : Freeze(
+        => FreezePlanAll(plan).FirstOrDefault();
+
+    public static IReadOnlyList<DadShoppingAssociation> PlanAssignments(DadPlannerGroup? plan)
+        => Assignments(plan?.ShoppingAssociation, plan?.ShoppingAssociations);
+
+    public static IReadOnlyList<DadShoppingAssociation> ScheduleAssignments(DadScheduleDefinition? schedule)
+        => Assignments(schedule?.ShoppingAssociation, schedule?.ShoppingAssociations);
+
+    private static IReadOnlyList<DadShoppingAssociation> Assignments(DadShoppingAssociation? legacy,
+        IEnumerable<DadShoppingAssociation>? members)
+        => (legacy == null ? Enumerable.Empty<DadShoppingAssociation>() : new[] { legacy })
+            .Concat(members ?? []).Where(static value => value != null).ToList();
+
+    public static List<DadShoppingRunAssociation> FreezePlanAll(DadPlannerGroup? plan)
+        => plan == null ? [] : PlanAssignments(plan).Select(source => Freeze(
                 DadShoppingAssociationOwnerKind.Plan,
                 plan.GroupId,
                 plan.DisplayName,
                 Math.Max(0, plan.UpdatedAtUtc.Ticks),
-                plan.ShoppingAssociation);
+                source)).ToList();
 
     public static DadShoppingRunAssociation? FreezeSchedule(DadScheduleDefinition? schedule)
-        => schedule?.ShoppingAssociation == null
-            ? null
-            : Freeze(
+        => FreezeScheduleAll(schedule).FirstOrDefault();
+
+    public static List<DadShoppingRunAssociation> FreezeScheduleAll(DadScheduleDefinition? schedule)
+        => schedule == null ? [] : ScheduleAssignments(schedule).Select(source => Freeze(
                 DadShoppingAssociationOwnerKind.Schedule,
                 schedule.ScheduleId,
                 schedule.DisplayName,
                 schedule.Revision,
-                schedule.ShoppingAssociation);
+                source)).ToList();
 
     public static List<DadShoppingRunAssociation> NormalizeRunAssociations(
         IEnumerable<DadShoppingRunAssociation>? associations)
@@ -235,7 +263,7 @@ public static class DadShoppingAssociationRules
                 !string.IsNullOrWhiteSpace(association.OwnerId) &&
                 Guid.TryParseExact(association.AssociationId, "N", out var associationId) &&
                 associationId != Guid.Empty &&
-                !string.IsNullOrWhiteSpace(association.PresetId))
+                (!string.IsNullOrWhiteSpace(association.PresetId) || !string.IsNullOrWhiteSpace(association.CustomCommand)))
             .GroupBy(static association =>
                 $"{(int)association.OwnerKind}|{association.OwnerId}|{association.AssociationId}",
                 StringComparer.OrdinalIgnoreCase)
@@ -264,8 +292,11 @@ public static class DadShoppingAssociationRules
         {
             return Fail("Shopping association has no canonical AssociationId GUID.", out blocker);
         }
-        if (string.IsNullOrWhiteSpace(NormalizeAdsGuid(association.PresetId)))
-            return Fail("Shopping association has no valid stable ADS PresetId GUID.", out blocker);
+        if (association.PresetId.Length > 0 && string.IsNullOrWhiteSpace(NormalizeAdsGuid(association.PresetId)) ||
+            association.PresetId.Length == 0 && string.IsNullOrWhiteSpace(association.CustomCommand))
+            return Fail("A member assignment requires a valid ADS list or a final slash command.", out blocker);
+        if (association.PresetId.Length == 0 && association.RunAutoRetainerDelivery)
+            return Fail("AutoRetainer delivery requires a shopping list.", out blocker);
         if (!DadPlannerSlotRules.TryParseStrictSlotNumber(association.ShopperSlotId, out _))
             return Fail("Shopping association has no exact shopper slot.", out blocker);
         if (association.ShopperAccountKey.IsEmpty || association.ShopperCharacterKey.IsEmpty)
@@ -330,18 +361,17 @@ public static class DadShoppingAssociationRules
         IEnumerable<DadShoppingRunAssociation>? associations,
         out string blocker)
     {
-        var normalized = NormalizeRunAssociations(associations);
+        // Retain the existing entry point for older callers. Independent exact
+        // shoppers are now supported; one owner cannot assign a member twice.
+        var raw = (associations ?? []).ToList();
+        var normalized = NormalizeRunAssociations(raw);
         blocker = string.Empty;
-        if (normalized.Count <= 1)
-            return true;
-
-        var first = normalized[0];
-        if (normalized.Skip(1).All(association => SameShopper(first, association)))
-            return true;
-
-        return Fail(
-            "Due Plan and Schedule shopping associations must use the same exact LAN shopper so Plan runs before Schedule without concurrent purchases.",
-            out blocker);
+        if (raw.Count != normalized.Count)
+            return Fail("Member assignments contain duplicate or malformed provenance.", out blocker);
+        if (normalized.GroupBy(value => $"{(int)value.OwnerKind}|{value.OwnerId}|{value.ShopperSlotId}",
+                StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
+            return Fail("Each Plan or Schedule member can have only one shopping/command assignment.", out blocker);
+        return true;
     }
 
     public static bool SameShopper(DadShoppingRunAssociation left, DadShoppingRunAssociation right)
@@ -358,33 +388,20 @@ public static class DadShoppingAssociationRules
         out string blocker)
     {
         blocker = string.Empty;
-        var association = FreezeSchedule(schedule);
-        if (association == null)
+        var associations = FreezeScheduleAll(schedule);
+        if (associations.Count == 0)
             return true;
-        if (association.OwnerKind != DadShoppingAssociationOwnerKind.Schedule ||
-            !string.Equals(association.OwnerId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase))
-        {
-            return Fail("Schedule shopping association owner does not match the selected Schedule.", out blocker);
-        }
+        if (!TryValidateSingleShopper(associations, out blocker)) return false;
 
         var referenced = ResolveReferencedSchedulePlans(schedule, plans, out blocker);
         if (referenced.Count == 0)
             return false;
         foreach (var plan in referenced)
         {
-            if (!TryValidateForPlan(association, plan, out var planBlocker))
+            foreach (var association in associations)
             {
-                return Fail(
-                    $"Schedule shopper is not one exact common LAN row in Plan '{plan.DisplayName}': {planBlocker}",
-                    out blocker);
-            }
-
-            var planAssociation = FreezePlan(plan);
-            if (planAssociation != null && !SameShopper(planAssociation, association))
-            {
-                return Fail(
-                    $"Plan '{plan.DisplayName}' and Schedule '{schedule.DisplayName}' must use the same exact shopper so Plan shopping completes before Schedule shopping.",
-                    out blocker);
+                if (!TryValidateForPlan(association, plan, out var planBlocker))
+                    return Fail($"Schedule member is not one exact common LAN row in Plan '{plan.DisplayName}': {planBlocker}", out blocker);
             }
         }
         return true;
@@ -781,6 +798,7 @@ public sealed class DadShoppingRunResult
     public Dictionary<string, long>? CreditedQuantities { get; set; }
     public List<string> CompletedNonRepeatableRowIds { get; set; } = [];
     public List<DadAdsShopListRowStatus> Rows { get; set; } = [];
+    public List<string> AcknowledgedPostCommands { get; set; } = [];
     public string FailureCode { get; set; } = string.Empty;
     public string Summary { get; set; } = string.Empty;
     public string FailureMessage { get; set; } = string.Empty;
@@ -798,6 +816,7 @@ public sealed class DadShoppingRunResult
             CreditedQuantities = CreditedQuantities == null ? null : new(CreditedQuantities),
             CompletedNonRepeatableRowIds = [..CompletedNonRepeatableRowIds],
             Rows = Rows.Select(static row => row.Clone()).ToList(),
+            AcknowledgedPostCommands = [..AcknowledgedPostCommands],
             FailureCode = FailureCode,
             Summary = Summary,
             FailureMessage = FailureMessage,

@@ -555,6 +555,12 @@ public sealed class DadSchedulerRoutingRulesTests
         strict.RequestedBy = "fresh-preview";
 
         Assert.True(DadSchedulerRoutingRules.MatchesFrozenRequestContract(frozen, strict, out var exactReason), exactReason);
+        frozen.CompletionRoundId = "frozen-round";
+        frozen.DeferCompletionToRound = true;
+        frozen.CompletionActions = new() { RunCommands = true, Commands = ["/frozen"] };
+        strict.CompletionActions = new() { RunCommands = true, Commands = ["/edited"] };
+        Assert.True(DadSchedulerRoutingRules.MatchesFrozenRequestContract(frozen, strict, out exactReason), exactReason);
+        Assert.Equal("/frozen", Assert.Single(frozen.CompletionActions.Commands));
         strict.Orchestration.QueueAuthority = DadQueueAuthority.LocalOnly;
         Assert.False(DadSchedulerRoutingRules.MatchesFrozenRequestContract(frozen, strict, out var mismatch));
         Assert.Contains("changed", mismatch, StringComparison.OrdinalIgnoreCase);

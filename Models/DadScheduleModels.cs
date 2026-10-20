@@ -114,6 +114,7 @@ public sealed class DadScheduleDefinition
     public string DisplayName { get; set; } = "Dad Schedule";
     public DadScheduleCadence Cadence { get; set; } = DadScheduleCadence.Manual;
     public DadShoppingAssociation? ShoppingAssociation { get; set; }
+    public List<DadShoppingAssociation> ShoppingAssociations { get; set; } = [];
     public List<DadScheduleEntry> Entries { get; set; } = [];
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -130,6 +131,9 @@ public sealed class DadScheduleDefinition
         ScheduleId = string.IsNullOrWhiteSpace(ScheduleId) ? Guid.NewGuid().ToString("N") : ScheduleId.Trim();
         DisplayName = string.IsNullOrWhiteSpace(DisplayName) ? "Dad Schedule" : DisplayName.Trim();
         ShoppingAssociation?.Normalize();
+        ShoppingAssociations ??= [];
+        ShoppingAssociations = ShoppingAssociations.Where(static value => value != null)
+            .Select(static value => value.Normalize()).ToList();
         Entries ??= [];
         Entries = Entries
             .Where(static entry => entry != null)
@@ -148,6 +152,7 @@ public sealed class DadScheduleDefinition
             DisplayName = DisplayName,
             Cadence = Cadence,
             ShoppingAssociation = ShoppingAssociation?.Clone(),
+            ShoppingAssociations = ShoppingAssociations.Select(static value => value.Clone()).ToList(),
             Entries = Entries?.Select(static entry => entry.Clone()).ToList() ?? [],
             CreatedAtUtc = CreatedAtUtc,
             UpdatedAtUtc = UpdatedAtUtc,
@@ -193,6 +198,9 @@ public sealed class DadScheduleRunState
     public int DutyExitRetryCount { get; set; }
     public DateTime? DutyExitRetryPendingSinceUtc { get; set; }
     public DadRunResult? DutyExitRetrySource { get; set; }
+    public bool HasFrozenMemberSettings { get; set; }
+    public List<DadShoppingRunAssociation> FrozenMemberAssignments { get; set; } = [];
+    public Dictionary<string, DadCompletionActions> FrozenCompletionActions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public bool IsActive =>
         Status == DadScheduleRunStatus.Running &&
@@ -233,6 +241,9 @@ public sealed class DadScheduleRunState
             DutyExitRetryCount = DutyExitRetryCount,
             DutyExitRetryPendingSinceUtc = DutyExitRetryPendingSinceUtc,
             DutyExitRetrySource = DutyExitRetrySource?.Clone(),
+            HasFrozenMemberSettings = HasFrozenMemberSettings,
+            FrozenMemberAssignments = FrozenMemberAssignments.Select(static value => value.Clone()).ToList(),
+            FrozenCompletionActions = FrozenCompletionActions.ToDictionary(pair => pair.Key, pair => pair.Value.Clone(), StringComparer.OrdinalIgnoreCase),
         };
 
     public DadScheduleRunResult ToResult(bool success)

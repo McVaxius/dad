@@ -108,6 +108,23 @@ public sealed class DadWorkerCommandValidationRulesTests
     }
 
     [Fact]
+    public void FinalRoundCommandsRequireSchemaFiveBeforeWorkerMutation()
+    {
+        var command = BuildCommand();
+        command.SchemaVersion = 3;
+        command.Plan.Request.ShoppingAssociations = [new()
+        {
+            OwnerId = "fixture-plan", OwnerKind = DadShoppingAssociationOwnerKind.Plan,
+            AssociationId = "11111111111111111111111111111111", PresetId = "22222222-2222-2222-2222-222222222222",
+            ShopperSlotId = "Slot2", ShopperAccountKey = new(XAccount), ShopperCharacterKey = new(XCharacter), CustomCommand = "/fixture",
+        }];
+        AssertRejected(command, RuntimeForX(), "schema 5");
+        Assert.Equal(5, DadWorkerCommandSchemaRules.ResolveEmissionSchema(null, command.Plan.Request.ShoppingAssociations));
+        command.Plan.Request.ShoppingAssociations[0].CustomCommand = string.Empty;
+        Assert.Equal(3, DadWorkerCommandSchemaRules.ResolveEmissionSchema(null, command.Plan.Request.ShoppingAssociations));
+    }
+
+    [Fact]
     public void WorkerExecutionStateValuesRemainCompatibleAndAppendPreparationStates()
     {
         Assert.Equal(0, (int)DadWorkerExecutionState.Idle);

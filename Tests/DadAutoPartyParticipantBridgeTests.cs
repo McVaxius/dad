@@ -9,6 +9,30 @@ namespace dad.Tests;
 
 public sealed class DadAutoPartyParticipantBridgeTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RemoteProfilePreparationSelectsDutyModeOnlyForDutyRuns(bool formationOnly)
+    {
+        var configuration = ActiveConfiguration();
+        configuration.RemoteBindings.Add(Binding(RemoteCharacter, ownsQueueAuthority: true));
+        DadAutoPartyRemoteProfileRequest? observed = null;
+        var bridge = new DadAutoPartyParticipantBridge(configuration,
+            useFrenRiderProvider: static () => true,
+            remoteProfileProvider: request =>
+            {
+                observed = request;
+                return new(true, FrenRiderProfileCodec.Encode("{\"enabled\":true}"), "ok");
+            });
+        var (plan, manifest, _) = Runtime(new RemoteSlot("Slot1", RemoteCharacter, IsLeader: true));
+        plan.Orchestration.AutoPartyFormationOnly = formationOnly;
+        Assert.True(bridge.TryBindRun(plan, manifest, DateTimeOffset.UtcNow, out var blocker), blocker);
+        Assert.NotNull(observed);
+        Assert.Equal(!formationOnly, observed.DutyRun);
+        Assert.Equal(RemoteOwner, observed.OwnerId);
+        Assert.Equal(RemoteCharacter, observed.OpaqueCharacterId);
+    }
+
     private const string LocalIsland = "island-local";
     private const string RemoteIsland = "island-remote";
     private const string RemoteOwner = "owner-remote";

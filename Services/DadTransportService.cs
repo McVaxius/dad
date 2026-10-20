@@ -39,6 +39,7 @@ public sealed class DadTransportService : IDisposable
     private const string MessageWorkerExecutionCommand = "worker-execution-command";
     private const string MessageWorkerExecutionStatus = "worker-execution-status";
     private const string MessageWorkerExecutionCancel = "worker-execution-cancel";
+    private const string MessageMemberCompletion = "member-round-completion";
     private const string MessageStopAll = "stop-all";
 
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(5);
@@ -125,6 +126,7 @@ public sealed class DadTransportService : IDisposable
     private Func<DadGatherStockQuery, DadGatherStockReply>? gatherStockHandler;
     private Func<DadWorkerExecutionStatus>? workerStatusProvider;
     private Func<DadWorkerExecutionCancel, DadWorkerExecutionAck>? workerCancelHandler;
+    private Func<DadMemberCompletionCommand, DadMemberCompletionCommand>? memberCompletionHandler;
     private Func<DadStopAllRequest, DadStopAllWorkerResult>? stopAllHandler;
     private Func<DadAllianceRecruitmentInstructionDto, DadAllianceRecruitmentResultDto>? allianceRecruitmentHandler;
     private Func<DadAllianceRecruitmentCancellationDto, DadAllianceRecruitmentResultDto>? allianceCancellationHandler;
@@ -319,6 +321,10 @@ public sealed class DadTransportService : IDisposable
         this.workerStatusProvider = workerStatusProvider;
         this.workerCancelHandler = workerCancelHandler;
     }
+
+    internal Configuration RuntimeConfiguration => configuration;
+    internal void ConfigureMemberCompletionHandler(Func<DadMemberCompletionCommand, DadMemberCompletionCommand> handler)
+        => memberCompletionHandler = handler;
 
     public void ConfigureStopAllHandler(Func<DadStopAllRequest, DadStopAllWorkerResult> stopAllHandler)
         => this.stopAllHandler = stopAllHandler;
@@ -999,6 +1005,25 @@ public sealed class DadTransportService : IDisposable
             MessageWorkerExecutionCancel,
             command,
             $"worker-cancel:{participant.WorkerSessionId.Value}:{command.RunId}");
+
+    internal DadMemberCompletionCommand? SendMemberCompletion(DadMemberCompletionCommand command, bool start, out bool finished)
+    {
+        var operation = $"member-completion:{command.Recipient.WorkerSessionId.Value}:{command.OperationId}";
+        var canPoll = operations.ContainsKey(operation) || completedOperations.ContainsKey(operation);
+        if (!start && !canPoll)
+        { finished = true; return Uncertain(); }
+        var reply = TryRequest<DadMemberCompletionCommand, DadMemberCompletionCommand>(
+            command.Recipient.WorkerSessionId, MessageMemberCompletion, command, operation);
+        finished = reply != null || !operations.ContainsKey(operation);
+        return reply ?? (finished ? Uncertain() : null);
+
+        DadMemberCompletionCommand Uncertain()
+        {
+            var result = command.Clone(); result.State = DadMemberCompletionState.Uncertain;
+            result.Summary = "No exact recipient acknowledgement is available; no submission replay is permitted.";
+            return result;
+        }
+    }
 
     public List<DadCancelAckDto> BroadcastCancel(
         DadCancelCommandDto command,
@@ -1824,6 +1849,7 @@ public sealed class DadTransportService : IDisposable
             MessageWorkerExecutionCommand => DadIpcJson.Serialize(HandleWorkerExecutionCommand(context, payloadJson)),
             MessageWorkerExecutionStatus => DadIpcJson.Serialize(HandleWorkerExecutionStatus()),
             MessageWorkerExecutionCancel => DadIpcJson.Serialize(HandleWorkerExecutionCancel(context, payloadJson)),
+            MessageMemberCompletion => DadIpcJson.Serialize(HandleMemberCompletion(context, payloadJson)),
             MessageStopAll => DadIpcJson.Serialize(HandleStopAllRequest(context, payloadJson)),
             _ => throw new InvalidOperationException($"Unsupported Dad hub message type '{messageType}'."),
         };
@@ -2504,6 +2530,22 @@ public sealed class DadTransportService : IDisposable
             WorkerSessionId = presenceService.WorkerSessionId,
             Summary = "Dad worker execution handler unavailable.",
         };
+    }
+
+    private DadMemberCompletionCommand HandleMemberCompletion(DadInboundRequestContext context, string payloadJson)
+    {
+        if (!DadIpcJson.TryDeserialize(payloadJson, out DadMemberCompletionCommand? command, out _) || command == null)
+            return new DadMemberCompletionCommand { State = DadMemberCompletionState.Rejected, Summary = "Malformed member completion request." };
+        if (!IsAuthenticatedCoordinator(context) || !remoteMutationsAllowed || !configuration.AllowRemoteCommandExecution)
+        {
+            command.State = DadMemberCompletionState.Rejected;
+            command.Summary = "Authenticated coordinator, enabled recipient and remote-command permission are required.";
+            return command;
+        }
+        if (memberCompletionHandler != null) return memberCompletionHandler(command);
+        command.State = DadMemberCompletionState.Rejected;
+        command.Summary = "Member completion receiver is unavailable.";
+        return command;
     }
 
     private DadWorkerExecutionStatus HandleWorkerExecutionStatus()

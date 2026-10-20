@@ -323,6 +323,7 @@ public sealed class DadCoordinatorService
             return DadRunResult.Rejected(request, shoppingAdmissionBlocker);
 
         ApplyConfigurationDefaults(request);
+        request.CompletionActions ??= configuration.CompletionActions.Clone();
         if (request.ShoppingAssociations.Count != rawShoppingAssociationCount)
         {
             return DadRunResult.Rejected(
@@ -2120,22 +2121,23 @@ public sealed class DadCoordinatorService
             return true;
         }
 
-        if (module.ModuleId == DadModuleId.Mogtome && activePlan.Request.ShoppingAssociations.Count > 0)
+        if (module.ModuleId == DadModuleId.Mogtome && activePlan.Request.ShoppingAssociations.Any(static value => value.PresetId.Length > 0))
         {
-            if (!DadWorkerPrequeueBarrierRules.TryResolveShoppingShopper(
+            if (!DadWorkerPrequeueBarrierRules.TryResolveShoppingShoppers(
                     activePlan,
                     lanParticipants,
-                    out var shopper,
+                    out var shoppers,
                     out blocker))
             {
                 return false;
             }
-            if (!workerStatuses.TryGetValue(shopper.WorkerSessionId.Value, out var shopperStatus))
+            var unacknowledged = shoppers.Where(shopper => !workerStatuses.ContainsKey(shopper.WorkerSessionId.Value)).ToList();
+            if (unacknowledged.Count > 0)
             {
-                dispatchTargets = [shopper];
+                dispatchTargets = unacknowledged;
                 return true;
             }
-            if (!DadWorkerPrequeueBarrierRules.IsMogtomeShoppingGateReady(activePlan, shopperStatus))
+            if (shoppers.Any(shopper => !DadWorkerPrequeueBarrierRules.IsMogtomeShoppingGateReady(activePlan, workerStatuses[shopper.WorkerSessionId.Value])))
             {
                 pending.Add("Shopping prequeue gate is waiting for the exact shopper to finish repair and shopping before other MOGTOME workers start.");
                 return true;
@@ -3030,14 +3032,16 @@ public sealed class DadCoordinatorService
                     plan.GroupId,
                     association.OwnerId,
                     StringComparison.OrdinalIgnoreCase))
-                .Select(static plan => plan.ShoppingAssociation)
+                .SelectMany(static plan => DadShoppingAssociationRules.PlanAssignments(plan))
+                .Where(value => value.AssociationId == association.AssociationId)
                 .ToList(),
             DadShoppingAssociationOwnerKind.Schedule => configuration.Schedules
                 .Where(schedule => string.Equals(
                     schedule.ScheduleId,
                     association.OwnerId,
                     StringComparison.OrdinalIgnoreCase))
-                .Select(static schedule => schedule.ShoppingAssociation)
+                .SelectMany(static schedule => DadShoppingAssociationRules.ScheduleAssignments(schedule))
+                .Where(value => value.AssociationId == association.AssociationId)
                 .ToList(),
             _ => [],
         };
@@ -4868,6 +4872,22 @@ public sealed class DadCoordinatorService
         if (!autoPartyCleanupComplete && TryBeginAutoPartyFinalization(status, summary, failureReason))
             return CurrentResult.Clone();
 
+        if (activePlan != null)
+        {
+            var roundId = DadMemberCompletionRules.RoundId(activePlan.Request);
+            if (status == DadRunStatus.Completed)
+            {
+                var shopping = workerStatuses.Values.SelectMany(value => value.ShoppingResults).ToList();
+                if (!DadCompletionActionRunner.CaptureRound(configuration, activePlan.Request, activeParticipants, shopping))
+                {
+                    DadCompletionActionRunner.CancelRound(configuration, roundId);
+                    status = DadRunStatus.PartialFailure; failureReason = summary = "Round completion snapshot could not be persisted; no final actions dispatched.";
+                }
+                else if (!activePlan.Request.DeferCompletionToRound)
+                    DadCompletionActionRunner.FinalizeRound(configuration, roundId);
+            }
+            else DadCompletionActionRunner.CancelRound(configuration, roundId);
+        }
         CurrentResult.Status = status;
         if (status == DadRunStatus.Cancelled)
             CurrentResult.ScheduleFailureKind = DadScheduleFailureKind.Cancellation;
@@ -4899,10 +4919,6 @@ public sealed class DadCoordinatorService
             CurrentResult.CancellationState = DadRunCancellationState.Cancelling;
             CurrentResult.ActiveTaskStatus = "Cancellation cleanup is awaiting exact acknowledgement.";
         }
-
-        // Feature batch A: run operator-chosen completion actions (sound / commands / legacy kill settings).
-        if (status == DadRunStatus.Completed)
-            DadCompletionActionRunner.Enqueue(configuration, log, activePlan?.Request);
 
         LogCoordinatorPhaseTransition();
 

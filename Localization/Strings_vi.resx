@@ -8787,4 +8787,20 @@
   <data name="gather_119" xml:space="preserve"><value>Thiếu lệnh thu thập hoặc vượt giới hạn lệnh.</value></data>
   <data name="gather_120" xml:space="preserve"><value>Thu thập cần đúng mô-đun và phân công máy khách.</value></data>
   <data name="gather_121" xml:space="preserve"><value>Nhóm thu thập GBR</value></data>
+  <data name="member_000" xml:space="preserve"><value>MUA SẮM VÀ LỆNH CUỐI CHO THÀNH VIÊN</value></data>
+  <data name="member_001" xml:space="preserve"><value>Lệnh cuối chờ toàn bộ lượt và mua sắm thành công, gồm mọi mục lịch và lần lặp.</value></data>
+  <data name="member_002" xml:space="preserve"><value>Áp dụng lệnh bộ thiết lập cuối; lệnh lịch không trống sẽ ghi đè.</value></data>
+  <data name="member_003" xml:space="preserve"><value>Áp dụng cho tất cả sao chép lựa chọn tới thành viên đang hiển thị. Máy khách từ xa cần quyền lệnh từ xa.</value></data>
+  <data name="member_004" xml:space="preserve"><value>Xác nhận chứng minh đã gửi lệnh đăng ký. Hiệu quả lệnh chưa được xác minh.</value></data>
+  <data name="member_005" xml:space="preserve"><value>Thành viên không khả dụng</value></data>
+  <data name="member_006" xml:space="preserve"><value>Thành viên đã cố định này không còn khớp dòng hợp lệ. Xóa chỉ định cũ trước khi thay thế.</value></data>
+  <data name="member_007" xml:space="preserve"><value>Xóa chỉ định thành viên</value></data>
+  <data name="member_008" xml:space="preserve"><value>Không có thành viên hợp lệ khớp chính xác cho chủ sở hữu này.</value></data>
+  <data name="member_009" xml:space="preserve"><value>Lưu chỉ định thành viên</value></data>
+  <data name="member_010" xml:space="preserve"><value>Bỏ thay đổi</value></data>
+  <data name="member_011" xml:space="preserve"><value>Lệnh dấu gạch chéo cuối</value></data>
+  <data name="member_012" xml:space="preserve"><value>Giao hàng AutoRetainer sau khi hoàn tất</value></data>
+  <data name="member_013" xml:space="preserve"><value>Áp dụng dòng này cho mọi thành viên</value></data>
+  <data name="member_014" xml:space="preserve"><value>Danh sách ADS và lệnh cuối tùy chọn cho từng thành viên. Lựa chọn trống được tắt.</value></data>
+  <data name="member_015" xml:space="preserve"><value>Đã lưu chỉ định thành viên.</value></data>
 </root>

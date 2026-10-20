@@ -305,6 +305,9 @@ public sealed class DadQueueExecutionService
             PreDutyRepairPolicy = (plan.Request.PreDutyRepairPolicy ?? new DadPreDutyRepairPolicy()).Clone(),
             RefreshRecommendedGear = plan.Request.RefreshRecommendedGear,
             CompletionActions = plan.Request.CompletionActions?.Clone(),
+            CompletionRoundId = plan.Request.CompletionRoundId,
+            DeferCompletionToRound = plan.Request.DeferCompletionToRound,
+            ShoppingAssociations = plan.Request.ShoppingAssociations.Select(static value => value.Clone()).ToList(),
             Orchestration = plan.Request.Orchestration,
         };
         if (useTrust)

@@ -869,18 +869,21 @@ public sealed class DadPresetProviderService
             Orchestration = BuildPlannerOrchestration(options, plannerPreview, selectedCharacters, previewOnly, effectiveSelectedGroup, lane, requestedPartySize),
         };
         var shoppingBlocker = string.Empty;
-        var frozenPlanShopping = DadShoppingAssociationRules.FreezePlan(selectedGroup);
-        if (frozenPlanShopping != null)
+        var frozenPlanShopping = DadShoppingAssociationRules.FreezePlanAll(selectedGroup);
+        foreach (var association in frozenPlanShopping)
         {
-            request.ShoppingAssociations.Add(frozenPlanShopping);
+            request.ShoppingAssociations.Add(association);
             if (!DadShoppingAssociationRules.TryValidateForPlan(
-                    frozenPlanShopping,
+                    association,
                     selectedGroup!,
                     out shoppingBlocker))
             {
                 shoppingBlocker = $"Plan shopping association is invalid: {shoppingBlocker}";
+                break;
             }
         }
+        if (shoppingBlocker.Length == 0 && !DadShoppingAssociationRules.TryValidateSingleShopper(request.ShoppingAssociations, out shoppingBlocker))
+            shoppingBlocker = $"Plan member assignments are invalid: {shoppingBlocker}";
 
         PopulatePlannerRequestTask(
             request,

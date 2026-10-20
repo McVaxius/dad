@@ -8787,4 +8787,20 @@
   <data name="gather_119" xml:space="preserve"><value>Pesanan pengumpulan tidak ada atau melebihi batas.</value></data>
   <data name="gather_120" xml:space="preserve"><value>Pengumpulan memerlukan modul dan penugasan klien yang tepat.</value></data>
   <data name="gather_121" xml:space="preserve"><value>Grup pengumpulan GBR</value></data>
+  <data name="member_000" xml:space="preserve"><value>BELANJA DAN PERINTAH AKHIR ANGGOTA</value></data>
+  <data name="member_001" xml:space="preserve"><value>Perintah akhir menunggu seluruh putaran dan belanja berhasil, termasuk semua entri jadwal dan pengulangan.</value></data>
+  <data name="member_002" xml:space="preserve"><value>Perintah preset terakhir berlaku; perintah jadwal yang tidak kosong menggantikannya.</value></data>
+  <data name="member_003" xml:space="preserve"><value>Terapkan ke semua menyalin pilihan ke anggota yang ditampilkan. Klien jarak jauh memerlukan izin perintah jarak jauh.</value></data>
+  <data name="member_004" xml:space="preserve"><value>Konfirmasi membuktikan pengiriman terdaftar. Efek perintah belum diverifikasi.</value></data>
+  <data name="member_005" xml:space="preserve"><value>Anggota tidak tersedia</value></data>
+  <data name="member_006" xml:space="preserve"><value>Anggota tersimpan ini tidak lagi cocok dengan baris yang memenuhi syarat. Hapus penetapan lama sebelum mengganti.</value></data>
+  <data name="member_007" xml:space="preserve"><value>Hapus penetapan anggota</value></data>
+  <data name="member_008" xml:space="preserve"><value>Tidak ada anggota yang cocok tepat dan memenuhi syarat untuk pemilik ini.</value></data>
+  <data name="member_009" xml:space="preserve"><value>Simpan penetapan anggota</value></data>
+  <data name="member_010" xml:space="preserve"><value>Buang perubahan</value></data>
+  <data name="member_011" xml:space="preserve"><value>Perintah garis miring akhir</value></data>
+  <data name="member_012" xml:space="preserve"><value>Pengiriman AutoRetainer setelah terpenuhi</value></data>
+  <data name="member_013" xml:space="preserve"><value>Terapkan baris ini ke semua anggota</value></data>
+  <data name="member_014" xml:space="preserve"><value>Daftar ADS dan perintah akhir opsional per anggota. Pilihan kosong dinonaktifkan.</value></data>
+  <data name="member_015" xml:space="preserve"><value>Penetapan anggota disimpan.</value></data>
 </root>

@@ -8829,4 +8829,20 @@ Les lignes</value>
   <data name="gather_119" xml:space="preserve"><value>Les ordres de récolte sont absents ou dépassent la limite.</value></data>
   <data name="gather_120" xml:space="preserve"><value>La récolte exige son module et ses affectations exacts.</value></data>
   <data name="gather_121" xml:space="preserve"><value>Groupe de récolte GBR</value></data>
+  <data name="member_000" xml:space="preserve"><value>ACHATS ET COMMANDES FINALES PAR MEMBRE</value></data>
+  <data name="member_001" xml:space="preserve"><value>Les commandes finales attendent la réussite du cycle complet et des achats, avec toutes les entrées et répétitions du planning.</value></data>
+  <data name="member_002" xml:space="preserve"><value>La dernière commande de préréglage s'applique ; une commande de planning renseignée la remplace.</value></data>
+  <data name="member_003" xml:space="preserve"><value>Appliquer à tous copie les choix aux membres affichés. Les clients distants doivent autoriser les commandes distantes.</value></data>
+  <data name="member_004" xml:space="preserve"><value>L'accusé confirme la soumission enregistrée. L'effet de la commande reste non vérifié.</value></data>
+  <data name="member_005" xml:space="preserve"><value>Membre indisponible</value></data>
+  <data name="member_006" xml:space="preserve"><value>Ce membre figé ne correspond plus à une ligne admissible exacte. Supprimez l'ancienne affectation avant son remplacement.</value></data>
+  <data name="member_007" xml:space="preserve"><value>Supprimer l'affectation du membre</value></data>
+  <data name="member_008" xml:space="preserve"><value>Aucun membre admissible exact n'est disponible pour ce propriétaire.</value></data>
+  <data name="member_009" xml:space="preserve"><value>Enregistrer les affectations</value></data>
+  <data name="member_010" xml:space="preserve"><value>Abandonner les modifications</value></data>
+  <data name="member_011" xml:space="preserve"><value>Commande finale avec barre oblique</value></data>
+  <data name="member_012" xml:space="preserve"><value>Livraison AutoRetainer après satisfaction</value></data>
+  <data name="member_013" xml:space="preserve"><value>Appliquer cette ligne à tous les membres</value></data>
+  <data name="member_014" xml:space="preserve"><value>Liste ADS et commande finale facultatives par membre. Les champs vides sont désactivés.</value></data>
+  <data name="member_015" xml:space="preserve"><value>Affectations enregistrées.</value></data>
 </root>

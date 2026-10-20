@@ -8788,4 +8788,20 @@
   <data name="gather_119" xml:space="preserve"><value>採集オーダーがないか、有限オーダー数の上限を超えています。</value></data>
   <data name="gather_120" xml:space="preserve"><value>採集には正確な採集モジュールとクライアント割当が必要です。</value></data>
   <data name="gather_121" xml:space="preserve"><value>GBR採集グループ</value></data>
+  <data name="member_000" xml:space="preserve"><value>メンバー別の買い物と最終コマンド</value></data>
+  <data name="member_001" xml:space="preserve"><value>最終コマンドは、全ラウンドと買い物の成功後に実行します。スケジュールの全項目・繰り返しの完了を待ちます。</value></data>
+  <data name="member_002" xml:space="preserve"><value>最後のプリセットコマンドが適用され、空欄でないスケジュールコマンドが優先されます。</value></data>
+  <data name="member_003" xml:space="preserve"><value>全員に適用すると表示中のメンバーに設定をコピーします。リモート側にはリモートコマンドの許可が必要です。</value></data>
+  <data name="member_004" xml:space="preserve"><value>応答確認は登録コマンドの送信を示します。コマンドの効果は未確認です。</value></data>
+  <data name="member_005" xml:space="preserve"><value>メンバーを利用できません</value></data>
+  <data name="member_006" xml:space="preserve"><value>保存済みメンバーが適格な行と一致しなくなりました。置き換える前に古い割り当てを削除してください。</value></data>
+  <data name="member_007" xml:space="preserve"><value>メンバーの割り当てを削除</value></data>
+  <data name="member_008" xml:space="preserve"><value>この所有者に完全一致する適格なメンバーがいません。</value></data>
+  <data name="member_009" xml:space="preserve"><value>メンバーの割り当てを保存</value></data>
+  <data name="member_010" xml:space="preserve"><value>編集を破棄</value></data>
+  <data name="member_011" xml:space="preserve"><value>最終スラッシュコマンド</value></data>
+  <data name="member_012" xml:space="preserve"><value>完了後にAutoRetainerで配送</value></data>
+  <data name="member_013" xml:space="preserve"><value>この行の設定を全メンバーに適用</value></data>
+  <data name="member_014" xml:space="preserve"><value>メンバーごとに任意のADSリストと最終コマンドを設定します。空欄は無効です。</value></data>
+  <data name="member_015" xml:space="preserve"><value>メンバーの割り当てを保存しました。</value></data>
 </root>

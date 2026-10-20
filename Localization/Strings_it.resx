@@ -8825,4 +8825,20 @@ Tempo di recupero di</value>
   <data name="gather_119" xml:space="preserve"><value>Gli ordini di raccolta mancano o superano il limite.</value></data>
   <data name="gather_120" xml:space="preserve"><value>La raccolta richiede il modulo e le assegnazioni esatti.</value></data>
   <data name="gather_121" xml:space="preserve"><value>Gruppo di raccolta GBR</value></data>
+  <data name="member_000" xml:space="preserve"><value>ACQUISTI E COMANDI FINALI PER MEMBRO</value></data>
+  <data name="member_001" xml:space="preserve"><value>I comandi finali attendono il successo dell'intero ciclo e degli acquisti, comprese tutte le voci e ripetizioni pianificate.</value></data>
+  <data name="member_002" xml:space="preserve"><value>Si applica l'ultimo comando del preset; un comando del programma non vuoto lo sostituisce.</value></data>
+  <data name="member_003" xml:space="preserve"><value>Applica a tutti copia le scelte ai membri mostrati. I client remoti richiedono il permesso per i comandi remoti.</value></data>
+  <data name="member_004" xml:space="preserve"><value>La conferma attesta l'invio registrato. L'effetto del comando resta da verificare.</value></data>
+  <data name="member_005" xml:space="preserve"><value>Membro non disponibile</value></data>
+  <data name="member_006" xml:space="preserve"><value>Questo membro fissato non corrisponde più a una riga idonea esatta. Rimuovi la vecchia assegnazione prima di sostituirlo.</value></data>
+  <data name="member_007" xml:space="preserve"><value>Rimuovi assegnazione del membro</value></data>
+  <data name="member_008" xml:space="preserve"><value>Nessun membro idoneo esatto disponibile per questo proprietario.</value></data>
+  <data name="member_009" xml:space="preserve"><value>Salva assegnazioni</value></data>
+  <data name="member_010" xml:space="preserve"><value>Scarta modifiche</value></data>
+  <data name="member_011" xml:space="preserve"><value>Comando slash finale</value></data>
+  <data name="member_012" xml:space="preserve"><value>Consegna AutoRetainer dopo il completamento</value></data>
+  <data name="member_013" xml:space="preserve"><value>Applica questa riga a tutti i membri</value></data>
+  <data name="member_014" xml:space="preserve"><value>Lista ADS e comando finale facoltativi per membro. Le scelte vuote sono disattivate.</value></data>
+  <data name="member_015" xml:space="preserve"><value>Assegnazioni salvate.</value></data>
 </root>

@@ -8795,4 +8795,20 @@
   <data name="gather_119" xml:space="preserve"><value>采集客户端指令缺失或超过有限指令上限。</value></data>
   <data name="gather_120" xml:space="preserve"><value>采集需要对应的精确采集模块和客户端分配。</value></data>
   <data name="gather_121" xml:space="preserve"><value>GBR采集小队</value></data>
+  <data name="member_000" xml:space="preserve"><value>成员购物与最终指令</value></data>
+  <data name="member_001" xml:space="preserve"><value>最终指令等待整轮和购物成功完成，包括日程中的每个条目和重复次数。</value></data>
+  <data name="member_002" xml:space="preserve"><value>使用最后一个预设指令；非空的日程指令优先。</value></data>
+  <data name="member_003" xml:space="preserve"><value>全部应用会将选择复制给显示的成员。远程客户端需要远程指令权限。</value></data>
+  <data name="member_004" xml:space="preserve"><value>确认表示已提交注册指令。指令效果尚未验证。</value></data>
+  <data name="member_005" xml:space="preserve"><value>成员不可用</value></data>
+  <data name="member_006" xml:space="preserve"><value>此固定成员已不再准确匹配有效行。保存替换项前请移除旧分配。</value></data>
+  <data name="member_007" xml:space="preserve"><value>移除成员分配</value></data>
+  <data name="member_008" xml:space="preserve"><value>此所有者没有准确匹配的有效成员。</value></data>
+  <data name="member_009" xml:space="preserve"><value>保存成员分配</value></data>
+  <data name="member_010" xml:space="preserve"><value>放弃编辑</value></data>
+  <data name="member_011" xml:space="preserve"><value>最终斜杠指令</value></data>
+  <data name="member_012" xml:space="preserve"><value>完成后由AutoRetainer配送</value></data>
+  <data name="member_013" xml:space="preserve"><value>将此行应用于所有成员</value></data>
+  <data name="member_014" xml:space="preserve"><value>每位成员可选ADS列表和最终斜杠指令。空白选项为关闭。</value></data>
+  <data name="member_015" xml:space="preserve"><value>成员分配已保存。</value></data>
 </root>

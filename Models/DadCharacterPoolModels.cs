@@ -435,6 +435,8 @@ public sealed class DadPlannerGroup
     public bool AutoPartyFormationOnly { get; set; }
     public DadCompletionActions? CompletionActions { get; set; }
     public DadShoppingAssociation? ShoppingAssociation { get; set; }
+    // Legacy single-shopper data is retained until an explicit member edit migrates it.
+    public List<DadShoppingAssociation> ShoppingAssociations { get; set; } = [];
     public List<DadPlannerGroupSlot> Slots { get; set; } = [];
     // Feature batch B (dadfeatures20260620b line 56): a template is a reusable group whose slots are NOT
     // bound to specific characters; it is instantiated against the live roster by role on demand.

@@ -11,7 +11,7 @@ public static class DadLocalDutySupportRules
         if (group == null || string.IsNullOrWhiteSpace(localAccountId) ||
             group.ActivityMode != DadPlannerActivityMode.DutySupport ||
             group.RunFamily != DadPlannerRunFamily.LevelingNpc || group.TransportOwner != DadTransportOwner.DadDirect ||
-            group.AutoPartyFormationOnly || group.IsTemplate || group.ShoppingAssociation != null ||
+            group.AutoPartyFormationOnly || group.IsTemplate || DadShoppingAssociationRules.PlanAssignments(group).Count > 0 ||
             group.DutyExpectedPartySize != 1 || group.Slots is not { Count: > 0 })
             return false;
 
@@ -30,7 +30,7 @@ public static class DadLocalDutySupportRules
         IEnumerable<DadPlannerGroup> groups,
         string? localAccountId)
     {
-        if (schedule?.Entries is not { Count: > 0 } || schedule.ShoppingAssociation != null)
+        if (schedule?.Entries is not { Count: > 0 } || DadShoppingAssociationRules.ScheduleAssignments(schedule).Count > 0)
             return false;
         var candidates = groups.ToList();
         return schedule.Entries.All(entry =>

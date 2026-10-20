@@ -13,6 +13,9 @@ public sealed class DadLocalDutySupportRulesTests
         var schedule = Schedule(first, second);
         Assert.True(DadLocalDutySupportRules.CanRunPreset(first, "own-account"));
         Assert.True(DadLocalDutySupportRules.CanRunSchedule(schedule, [first, second], "own-account"));
+        second.ShoppingAssociations.Add(new() { CustomCommand = "/fixture" });
+        Assert.False(DadLocalDutySupportRules.CanRunPreset(second, "own-account"));
+        Assert.False(DadLocalDutySupportRules.CanRunSchedule(schedule, [first, second], "own-account"));
     }
 
     [Theory]

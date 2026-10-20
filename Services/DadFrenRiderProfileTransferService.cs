@@ -44,6 +44,7 @@ internal sealed class DadFrenRiderProfileTransferService
                 CharacterId = request.OpaqueCharacterId,
                 ProposalId = request.ProposalId.ToString("D"),
                 DisplayLabel = request.DisplayLabel ?? string.Empty,
+                DutyRun = request.DutyRun,
             }));
             var response = ReadResponse(responseJson);
             if (response is not { Version: ContractVersion, Code: "ok", Outcome: "exported" } ||
@@ -192,6 +193,8 @@ internal sealed class DadFrenRiderProfileTransferService
     private sealed class ResolveProfileRequest : ProfileRequestBase
     {
         public string DisplayLabel { get; set; } = string.Empty;
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+        public bool DutyRun { get; set; }
     }
 
     private sealed class ApplyProfileRequest : ProfileRequestBase

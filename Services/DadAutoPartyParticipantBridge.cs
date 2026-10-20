@@ -39,7 +39,8 @@ internal sealed record DadAutoPartyRemoteProfileRequest(
     string IslandId,
     string OpaqueCharacterId,
     Guid ProposalId,
-    string DisplayLabel);
+    string DisplayLabel,
+    bool DutyRun = true);
 
 internal sealed record DadAutoPartyRemoteProfileResult(
     bool Success,
@@ -283,7 +284,8 @@ internal sealed class DadAutoPartyParticipantBridge
                             proposalId,
                             string.IsNullOrWhiteSpace(slot.CharacterKey.Value)
                                 ? slot.SlotId
-                                : slot.CharacterKey.Value));
+                                : slot.CharacterKey.Value,
+                            DutyRun: !plan.Orchestration.AutoPartyFormationOnly));
                     }
                     catch
                     {

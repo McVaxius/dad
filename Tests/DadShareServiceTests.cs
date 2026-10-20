@@ -19,6 +19,35 @@ public sealed class DadShareServiceTests
     private const string EntryC = "dddddddddddddddddddddddddddddddd";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    [Fact]
+    public void PerMemberSharingRetainsOptionalListsAndAllCommandConfirmationBoundaries()
+    {
+        var service = CreateService();
+        var source = BuildPlan(PlanA, "Member settings");
+        source.CompletionActions = null;
+        source.ShoppingAssociations = source.Slots.Take(2).Select((slot, index) => new DadShoppingAssociation
+        {
+            ShopperSlotId = slot.SlotId, ShopperAccountKey = slot.RequiredAccountKey, ShopperCharacterKey = slot.RequiredCharacterKey,
+            PresetId = index == 0 ? "11111111-1111-1111-1111-111111111111" : "", CustomCommand = $"/member-{index}",
+        }).ToList();
+        Assert.True(service.TryExportPlan(source, KnownIdentities(), out var encoded, out var error), error);
+        Assert.True(service.TryDecode(encoded, DadShareConstants.PlanKind, out var envelope, out error), error);
+        Assert.Equal(5, envelope!.Schema);
+        Assert.Equal(2, envelope.Plan!.ShoppingAssociations.Count);
+        Assert.Empty(envelope.Plan.ShoppingAssociations[1].PresetId);
+        var preview = service.BuildImportPreview(envelope, [], []);
+        Assert.Equal(new[] { "/member-0", "/member-1" }, preview.Commands.Select(value => value.Command));
+        Assert.False(service.Apply(envelope, [], []).Success);
+        var applied = service.Apply(envelope, [], [], commandValuesConfirmed: true);
+        Assert.True(applied.Success, applied.Summary);
+        Assert.Equal(2, Assert.Single(applied.PlannerGroups).ShoppingAssociations.Count);
+        Assert.All(applied.PlannerGroups[0].ShoppingAssociations, value => Assert.True(value.ShopperCharacterKey.IsEmpty));
+        envelope.Schema = 4;
+        var oldReaderPayload = Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(envelope, JsonOptions)));
+        Assert.False(service.TryDecode(oldReaderPayload, DadShareConstants.PlanKind, out _, out error));
+        Assert.Contains("schema 5", error, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData(true, true)]
     [InlineData(true, false)]
@@ -151,7 +180,7 @@ public sealed class DadShareServiceTests
         var source = BuildPlan(PlanA, "Plan");
         Assert.True(service.TryExportPlan(source, KnownIdentities(), out var encoded, out var error), error);
         Assert.True(service.TryDecode(encoded, DadShareConstants.PlanKind, out var current, out error), error);
-        Assert.Equal(4, current!.Schema);
+        Assert.Equal(5, current!.Schema);
         Assert.True(current.Plan!.Slots[0].SkipIfDailyRouletteRewardReceived);
         Assert.Equal(DadAllianceAssignment.A, current.Plan.Slots[0].AllianceAssignment);
         Assert.Equal(DadAllianceAssignment.B, current.Plan.Slots[1].AllianceAssignment);

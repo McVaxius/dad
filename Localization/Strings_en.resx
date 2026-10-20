@@ -8787,4 +8787,20 @@
   <data name="gather_119" xml:space="preserve"><value>Gathering worker orders are missing or exceed the finite order limit.</value></data>
   <data name="gather_120" xml:space="preserve"><value>Gathering requires its exact gathering module and worker assignments.</value></data>
   <data name="gather_121" xml:space="preserve"><value>GatherParty</value></data>
+  <data name="member_000" xml:space="preserve"><value>MEMBER SHOPPING &amp; FINAL COMMANDS</value></data>
+  <data name="member_001" xml:space="preserve"><value>Final commands wait for the successful full round and shopping, including every schedule entry and repeat.</value></data>
+  <data name="member_002" xml:space="preserve"><value>The last preset command applies; a nonblank schedule command overrides it.</value></data>
+  <data name="member_003" xml:space="preserve"><value>Apply to all copies choices to displayed members. Remote clients require remote-command permission.</value></data>
+  <data name="member_004" xml:space="preserve"><value>Acknowledgement confirms registered submission. Command effects remain unverified.</value></data>
+  <data name="member_005" xml:space="preserve"><value>Unavailable member</value></data>
+  <data name="member_006" xml:space="preserve"><value>This frozen member is no longer an exact eligible row. Remove the old assignment before saving a replacement.</value></data>
+  <data name="member_007" xml:space="preserve"><value>Remove member assignment</value></data>
+  <data name="member_008" xml:space="preserve"><value>No exact eligible members are available for this owner.</value></data>
+  <data name="member_009" xml:space="preserve"><value>Save member assignments</value></data>
+  <data name="member_010" xml:space="preserve"><value>Discard edits</value></data>
+  <data name="member_011" xml:space="preserve"><value>Final slash command</value></data>
+  <data name="member_012" xml:space="preserve"><value>AutoRetainer delivery after fulfillment</value></data>
+  <data name="member_013" xml:space="preserve"><value>Apply this row to all members</value></data>
+  <data name="member_014" xml:space="preserve"><value>Optional ADS list and final slash command per member. Blank choices are off.</value></data>
+  <data name="member_015" xml:space="preserve"><value>Member assignments saved.</value></data>
 </root>

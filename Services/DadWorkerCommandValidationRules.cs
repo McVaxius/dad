@@ -69,6 +69,9 @@ internal static class DadWorkerCommandValidationRules
                 $"Worker command schema {command.SchemaVersion} cannot carry shopping associations; schema {DadWorkerCommandSchemaRules.ShoppingSchema} is required.",
                 out blocker);
         }
+        if (command.SchemaVersion < DadWorkerCommandSchemaRules.MemberRoundSchema &&
+            DadWorkerCommandSchemaRules.RequiresMemberRoundSchema(command.Plan.Request.ShoppingAssociations))
+            return Fail("Worker command schema 5 is required for per-member shopping and final round commands.", out blocker);
         if (command.Plan.Request.ShoppingAssociations.Count > 0 &&
             !string.IsNullOrWhiteSpace(localRuntime.RegisteredIslandId))
         {

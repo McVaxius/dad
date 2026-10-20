@@ -106,6 +106,7 @@ internal sealed class RuntimeNode : IDisposable
     private readonly DadAlliancePartyFinderService? allianceService;
     private readonly VirtualAllianceUi? allianceUi;
     private object? controlResult;
+    private DadMemberCompletionCommand? memberCompletionProbe;
     private readonly string? verifierFault;
     private bool safe = true;
     private bool holdAfterAdmission;
@@ -146,6 +147,8 @@ internal sealed class RuntimeNode : IDisposable
         };
         if (input.TryGetProperty("repairEnabled", out var repairEnabled))
             configuration.PreDutyRepairPolicy.Enabled = repairEnabled.GetBoolean();
+        if (input.TryGetProperty("allowRemoteCommands", out var allowRemoteCommands))
+            configuration.AllowRemoteCommandExecution = allowRemoteCommands.GetBoolean();
         if (input.TryGetProperty("combatMode", out var combatMode))
             configuration.CombatRotationMode = (DadCombatRotationMode)combatMode.GetInt32();
         if (input.TryGetProperty("resume", out var resume) && resume.GetBoolean())
@@ -350,6 +353,7 @@ internal sealed class RuntimeNode : IDisposable
             ["TransportHeartbeat"] = () => transport.UpdateHeartbeat(presence.BuildSnapshotCopy(), true, false),
             ["WorkerExecution"] = worker.Update,
             ["Coordinator"] = coordinator.Update,
+            ["CompletionActions"] = () => DadCompletionActionRunner.Update(configuration, log),
             ["ConfigurationPersistence"] = () => persistence.Update(),
         };
         if (autoParty != null)
@@ -568,6 +572,18 @@ internal sealed class RuntimeNode : IDisposable
                 SeedRouting(DadIpcJson.Deserialize<List<DadParticipantSnapshot>>(command.GetProperty("participants").GetRawText())!);
                 break;
             case "snapshot": break;
+            case "replay-member-completion":
+                memberCompletionProbe = configuration.RoundCompletions.SelectMany(value => value.Members)
+                    .Single(value => value.OperationId == command.GetProperty("operationId").GetString()).Clone();
+                if (command.TryGetProperty("newOperation", out var freshCompletionOperation) && freshCompletionOperation.GetBoolean())
+                    memberCompletionProbe.OperationId = Guid.NewGuid().ToString("N");
+                if (command.TryGetProperty("wrongCharacter", out var wrongCompletionCharacter) && wrongCompletionCharacter.GetBoolean())
+                    memberCompletionProbe.Recipient.ActiveCharacterKey = new("wrong-fixture-character");
+                controlResult = transport.SendMemberCompletion(memberCompletionProbe, true, out _);
+                break;
+            case "poll-member-completion":
+                controlResult = transport.SendMemberCompletion(memberCompletionProbe ?? throw new InvalidOperationException("No completion probe."), false, out _);
+                break;
             case "autoparty": controlResult = (autoParty ?? throw new InvalidOperationException("AutoParty is not configured.")).Execute(command); break;
             case "cancel": coordinator.CancelActiveRun(); dutyIpc.Cancel("Synthetic Cancel Run"); break;
             case "local-stop-all": controlResult = cleanup.RunLocalLifecycleCleanup(new DadStopAllRequest
@@ -626,6 +642,8 @@ internal sealed class RuntimeNode : IDisposable
         now = clock.Now, transport = transport.CurrentTransport.Availability,
         unexecutedSteps = lifecycle.UnboundSteps,
         persistedActiveRun = configuration.PersistedActiveRun, historyCount = configuration.RunHistory.Count,
+        roundCompletions = configuration.RoundCompletions, memberCompletionPermissions = configuration.MemberCompletionPermissions,
+        memberCompletionReceipts = configuration.MemberCompletionReceipts,
         controlResult, autoParty = autoParty?.Snapshot(), helperRunning = helpers.IsRunning,
         gathering = gathering.Snapshot(),
         cancellationCleanupPending = coordinator.HasPendingCancellationCleanup,

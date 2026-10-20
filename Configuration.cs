@@ -103,6 +103,9 @@ public sealed class Configuration : IPluginConfiguration
     public DadScheduleRunState ActiveScheduleRun { get; set; } = new();
     public List<DadScheduleRunResult> ScheduleHistory { get; set; } = [];
     public List<DadShoppingFailureRecord> ShoppingFailures { get; set; } = [];
+    public List<DadRoundCompletionSnapshot> RoundCompletions { get; set; } = [];
+    public List<DadMemberCompletionCommand> MemberCompletionPermissions { get; set; } = [];
+    public List<DadMemberCompletionCommand> MemberCompletionReceipts { get; set; } = [];
     public DadAutoPartyConfiguration AutoParty { get; set; } = new();
     public DadAutoPartyFleetConfiguration AutoPartyFleet { get; set; } = new();
 
@@ -359,6 +362,15 @@ public sealed class Configuration : IPluginConfiguration
 
     public void Save()
         => persistenceCoordinator?.MarkDirty();
+
+    internal bool TryPersistNow()
+    {
+        if (persistenceCoordinator == null) return false;
+        persistenceCoordinator.MarkDirty();
+        _ = persistenceCoordinator.ForceFlush();
+        var state = persistenceCoordinator.GetState();
+        return !state.IsDirty && !state.HasFault;
+    }
 }
 
 internal static class DadAutoPartyConfigurationMigration

@@ -621,10 +621,10 @@ public sealed class DadSchedulerService
         var duplicate = source.Clone();
         duplicate.ScheduleId = Guid.NewGuid().ToString("N");
         duplicate.Revision = 1;
-        if (duplicate.ShoppingAssociation != null)
+        foreach (var association in DadShoppingAssociationRules.ScheduleAssignments(duplicate))
         {
-            duplicate.ShoppingAssociation.AssociationId = Guid.NewGuid().ToString("N");
-            duplicate.ShoppingAssociation.ResetCompletionState();
+            association.AssociationId = Guid.NewGuid().ToString("N");
+            association.ResetCompletionState();
         }
         duplicate.DisplayName = string.IsNullOrWhiteSpace(displayName)
             ? $"{source.DisplayName} Copy"
@@ -1340,13 +1340,33 @@ public sealed class DadSchedulerService
         var scheduleShoppingBlocker = string.Empty;
         if (frozenPlannerRequest != null && !string.IsNullOrWhiteSpace(activeJob.ScheduleId))
         {
+            frozenPlannerRequest.CompletionRoundId = activeJob.ScheduleRunId;
+            frozenPlannerRequest.DeferCompletionToRound = true;
             var schedule = FindSchedule(activeJob.ScheduleId);
-            var scheduleAssociation = DadShoppingAssociationRules.FreezeSchedule(schedule);
+            var round = configuration.ActiveScheduleRun;
+            var frozenMembers = round.FrozenMemberAssignments.Where(value =>
+                value.OwnerKind == DadShoppingAssociationOwnerKind.Schedule || string.Equals(value.OwnerId, group.GroupId, StringComparison.OrdinalIgnoreCase)).Select(static value => value.Clone()).ToList();
+            foreach (var assignment in frozenMembers)
+            {
+                var current = assignment.OwnerKind == DadShoppingAssociationOwnerKind.Schedule
+                    ? DadShoppingAssociationRules.ScheduleAssignments(schedule)
+                    : DadShoppingAssociationRules.PlanAssignments(group);
+                var progress = current.SingleOrDefault(value => DadShoppingAssociationRules.SameProvenance(assignment, value));
+                if (progress == null) continue;
+                assignment.CreditedQuantities = progress.CreditedQuantities == null ? null : new(progress.CreditedQuantities);
+                assignment.CompletedNonRepeatableRowIds = [..progress.CompletedNonRepeatableRowIds];
+                assignment.NonRepeatableRowsFulfilled = progress.NonRepeatableRowsFulfilled;
+            }
+            frozenPlannerRequest.ShoppingAssociations = frozenMembers.Where(value => value.OwnerKind == DadShoppingAssociationOwnerKind.Plan).ToList();
+            frozenPlannerRequest.CompletionActions = round.FrozenCompletionActions.GetValueOrDefault(group.GroupId)?.Clone();
+            var scheduleAssociations = frozenMembers.Where(value => value.OwnerKind == DadShoppingAssociationOwnerKind.Schedule).ToList();
             if (schedule == null)
             {
                 scheduleShoppingBlocker = $"Schedule '{activeJob.ScheduleId}' disappeared before its shopping association could be frozen.";
             }
-            else if (scheduleAssociation != null)
+            else if (round.RunId != activeJob.ScheduleRunId || !round.HasFrozenMemberSettings)
+                scheduleShoppingBlocker = "The schedule has no matching frozen completion settings; restart the schedule before new admission.";
+            else if (scheduleAssociations.Count > 0)
             {
                 if (!DadShoppingAssociationRules.TryValidateForSchedule(
                         schedule,
@@ -1357,7 +1377,7 @@ public sealed class DadSchedulerService
                 }
                 else
                 {
-                    frozenPlannerRequest.ShoppingAssociations.Add(scheduleAssociation);
+                    frozenPlannerRequest.ShoppingAssociations.AddRange(scheduleAssociations);
                     frozenPlannerRequest.ShoppingAssociations = DadShoppingAssociationRules.NormalizeRunAssociations(
                         frozenPlannerRequest.ShoppingAssociations);
                     if (!DadShoppingAssociationRules.TryValidateSingleShopper(
@@ -5752,6 +5772,12 @@ public sealed class DadSchedulerService
         DateTime now)
     {
         var state = DadScheduleRules.StartRun(schedule, dryRun, manualRun, requestedBy, now);
+        state.HasFrozenMemberSettings = true;
+        var groups = configuration.PlannerGroups.Where(group => schedule.Entries.Any(entry => string.Equals(entry.GroupId, group.GroupId, StringComparison.OrdinalIgnoreCase))).ToList();
+        state.FrozenMemberAssignments = groups.SelectMany(DadShoppingAssociationRules.FreezePlanAll).ToList();
+        state.FrozenMemberAssignments.AddRange(DadShoppingAssociationRules.FreezeScheduleAll(schedule));
+        state.FrozenCompletionActions = groups.ToDictionary(group => group.GroupId,
+            group => DadCompletionActionSnapshots.Resolve(group.CompletionActions, configuration.CompletionActions), StringComparer.OrdinalIgnoreCase);
         schedule.LastRunStartedAtUtc = now;
         schedule.LastRunStatus = state.Status;
         schedule.LastSummary = state.Summary;
@@ -5798,6 +5824,10 @@ public sealed class DadSchedulerService
 
     private void FinalizeScheduleRun(DadScheduleRunState state)
     {
+        if (!state.DryRun && state.Status == DadScheduleRunStatus.Completed)
+            DadCompletionActionRunner.FinalizeRound(configuration, state.RunId);
+        else if (state.Status is DadScheduleRunStatus.Cancelled or DadScheduleRunStatus.Blocked)
+            DadCompletionActionRunner.CancelRound(configuration, state.RunId);
         var schedule = FindSchedule(state.ScheduleId);
         if (schedule != null)
         {

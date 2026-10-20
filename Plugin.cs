@@ -1553,70 +1553,8 @@ public sealed partial class Plugin : IDalamudPlugin
             standaloneCrewDisbandActive,
             Configuration.ActiveScheduleRun?.IsActive == true);
 
-    public bool TrySavePlanShoppingAssociation(
-        string groupId,
-        DadShoppingAssociation draft,
-        out string error)
-    {
-        error = GetShareMutationBlocker();
-        if (!string.IsNullOrWhiteSpace(error))
-            return false;
-        var matches = Configuration.PlannerGroups.Where(group => string.Equals(
-            group.GroupId,
-            groupId,
-            StringComparison.OrdinalIgnoreCase)).ToList();
-        if (matches.Count != 1)
-        {
-            error = matches.Count == 0 ? "Plan was not found." : "Plan ID is duplicated.";
-            return false;
-        }
-        var group = matches[0];
-        if (group.IsTemplate)
-        {
-            error = "Character-agnostic templates cannot own shopping associations.";
-            return false;
-        }
-        if (!TryPrepareShoppingAssociation(draft, group.ShoppingAssociation, out var candidate, out error))
-            return false;
-        if (!ValidateShoppingCatalog(candidate, out error))
-            return false;
-        DadShoppingAssociationRules.ResetCompletionIfProvenanceChanged(group.ShoppingAssociation, candidate);
-        var frozen = new DadShoppingRunAssociation
-        {
-            OwnerKind = DadShoppingAssociationOwnerKind.Plan,
-            OwnerId = group.GroupId,
-            OwnerName = group.DisplayName,
-            AssociationId = candidate.AssociationId,
-            PresetId = candidate.PresetId,
-            PresetName = candidate.PresetName,
-            ShopperSlotId = candidate.ShopperSlotId,
-            ShopperAccountKey = candidate.ShopperAccountKey,
-            ShopperCharacterKey = candidate.ShopperCharacterKey,
-            CompletedNonRepeatableRowIds = [..candidate.CompletedNonRepeatableRowIds],
-            CreditedQuantities = candidate.CreditedQuantities == null ? null : new(candidate.CreditedQuantities),
-            NonRepeatableRowsFulfilled = candidate.NonRepeatableRowsFulfilled,
-            RunAutoRetainerDelivery = candidate.RunAutoRetainerDelivery,
-            CustomCommand = candidate.CustomCommand,
-        }.Normalize();
-        if (!DadShoppingAssociationRules.TryValidateForPlan(frozen, group, out error))
-            return false;
-
-        candidate.UpdatedAtUtc = DateTime.UtcNow;
-        var previousAssociation = group.ShoppingAssociation;
-        var previousUpdatedAt = group.UpdatedAtUtc;
-        group.ShoppingAssociation = candidate;
-        group.UpdatedAtUtc = candidate.UpdatedAtUtc;
-        if (!PersistConfigurationNow())
-        {
-            group.ShoppingAssociation = previousAssociation;
-            group.UpdatedAtUtc = previousUpdatedAt;
-            error = $"Shopping list could not be persisted: {configurationPersistence.GetState().FailureSummary}";
-            return false;
-        }
-        InvalidatePlannerPreviewCache("Plan shopping association updated");
-        error = string.Empty;
-        return true;
-    }
+    public bool TrySavePlanShoppingAssociation(string groupId, DadShoppingAssociation draft, out string error)
+        => SaveOneMemberAssignment(DadShoppingAssociationOwnerKind.Plan, groupId, draft, out error);
 
     public bool RemovePlanShoppingAssociation(string groupId, out string error)
     {
@@ -1645,56 +1583,8 @@ public sealed partial class Plugin : IDalamudPlugin
         return true;
     }
 
-    public bool TrySaveScheduleShoppingAssociation(
-        string scheduleId,
-        DadShoppingAssociation draft,
-        out string error)
-    {
-        error = GetShareMutationBlocker();
-        if (!string.IsNullOrWhiteSpace(error))
-            return false;
-        var matches = Configuration.Schedules.Where(schedule => string.Equals(
-            schedule.ScheduleId,
-            scheduleId,
-            StringComparison.OrdinalIgnoreCase)).ToList();
-        if (matches.Count != 1)
-        {
-            error = matches.Count == 0 ? "Schedule was not found." : "Schedule ID is duplicated.";
-            return false;
-        }
-        var schedule = matches[0];
-        if (!TryPrepareShoppingAssociation(draft, schedule.ShoppingAssociation, out var candidate, out error))
-            return false;
-        if (!ValidateShoppingCatalog(candidate, out error))
-            return false;
-
-        DadShoppingAssociationRules.ResetCompletionIfProvenanceChanged(schedule.ShoppingAssociation, candidate);
-        candidate.UpdatedAtUtc = DateTime.UtcNow;
-        var updated = schedule.Clone();
-        updated.ShoppingAssociation = candidate;
-        if (!DadShoppingAssociationRules.TryValidateForSchedule(
-                updated,
-                Configuration.PlannerGroups,
-                out error))
-        {
-            return false;
-        }
-        if (SchedulerService.UpdateSchedule(updated) == null)
-        {
-            error = "Schedule changed before its shopping association could be saved.";
-            return false;
-        }
-        if (!PersistConfigurationNow())
-        {
-            var index = Configuration.Schedules.FindIndex(value => value.ScheduleId == schedule.ScheduleId);
-            if (index >= 0)
-                Configuration.Schedules[index] = schedule;
-            error = $"Shopping list could not be persisted: {configurationPersistence.GetState().FailureSummary}";
-            return false;
-        }
-        error = string.Empty;
-        return true;
-    }
+    public bool TrySaveScheduleShoppingAssociation(string scheduleId, DadShoppingAssociation draft, out string error)
+        => SaveOneMemberAssignment(DadShoppingAssociationOwnerKind.Schedule, scheduleId, draft, out error);
 
     private bool ValidateShoppingCatalog(DadShoppingAssociation candidate, out string error)
     {
@@ -1783,6 +1673,8 @@ public sealed partial class Plugin : IDalamudPlugin
         out string error)
     {
         candidate = draft?.Clone().Normalize() ?? new DadShoppingAssociation().Normalize();
+        if (!string.IsNullOrWhiteSpace(draft?.PresetId) && string.IsNullOrWhiteSpace(DadShoppingAssociationRules.NormalizeAdsGuid(draft.PresetId)))
+        { error = "The ADS preset ID is invalid."; return false; }
         error = string.Empty;
         if (existing != null && string.Equals(candidate.AssociationId, existing.AssociationId, StringComparison.Ordinal))
         {
@@ -1806,7 +1698,7 @@ public sealed partial class Plugin : IDalamudPlugin
         }
         candidate.AssociationId = associationId.ToString("N");
         candidate.PresetId = DadShoppingAssociationRules.NormalizeAdsGuid(candidate.PresetId);
-        if (string.IsNullOrWhiteSpace(candidate.PresetId))
+        if (string.IsNullOrWhiteSpace(candidate.PresetId) && string.IsNullOrWhiteSpace(candidate.CustomCommand))
         {
             error = "Select a stable ADS shopping preset.";
             return false;
@@ -2642,10 +2534,10 @@ public sealed partial class Plugin : IDalamudPlugin
 
         var duplicate = ClonePlannerGroup(selected);
         duplicate.GroupId = Guid.NewGuid().ToString("N");
-        if (duplicate.ShoppingAssociation != null)
+        foreach (var association in DadShoppingAssociationRules.PlanAssignments(duplicate))
         {
-            duplicate.ShoppingAssociation.AssociationId = Guid.NewGuid().ToString("N");
-            duplicate.ShoppingAssociation.ResetCompletionState();
+            association.AssociationId = Guid.NewGuid().ToString("N");
+            association.ResetCompletionState();
         }
         duplicate.DisplayName = string.IsNullOrWhiteSpace(displayName)
             ? $"{selected.DisplayName} Copy"
@@ -4015,6 +3907,7 @@ public sealed partial class Plugin : IDalamudPlugin
             SharedStopTargetIdentityToken = source.SharedStopTargetIdentityToken,
             CompletionActions = source.CompletionActions?.Clone(),
             ShoppingAssociation = source.ShoppingAssociation?.Clone(),
+            ShoppingAssociations = (source.ShoppingAssociations ?? []).Select(static value => value.Clone()).ToList(),
             Slots = source.Slots.Select(static slot => new DadPlannerGroupSlot
             {
                 SlotId = slot.SlotId,
@@ -4083,6 +3976,8 @@ public sealed partial class Plugin : IDalamudPlugin
         group.LevelingMode.Normalize();
         group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
         group.ShoppingAssociation?.Normalize();
+        group.ShoppingAssociations = (group.ShoppingAssociations ?? []).Where(static value => value != null)
+            .Select(static value => value.Normalize()).ToList();
     }
 
     private static DadAccountKey ResolvePlannerAccountKey(DadAcquiredCharacter character)

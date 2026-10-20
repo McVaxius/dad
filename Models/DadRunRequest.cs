@@ -38,6 +38,8 @@ public sealed class DadRunRequest
     public DadPreDutyRepairPolicy PreDutyRepairPolicy { get; set; } = new();
     public bool RefreshRecommendedGear { get; set; }
     public DadCompletionActions? CompletionActions { get; set; }
+    public string CompletionRoundId { get; set; } = string.Empty;
+    public bool DeferCompletionToRound { get; set; }
     public List<DadShoppingRunAssociation> ShoppingAssociations { get; set; } = [];
     public DadOrchestrationIntent Orchestration { get; set; } = new();
     public DadDungeonTask? Dungeon { get; set; }

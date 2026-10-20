@@ -1,4 +1,5 @@
 using dad.Models;
+using dad.Services;
 using Xunit;
 
 namespace dad.Tests;
@@ -6,6 +7,47 @@ namespace dad.Tests;
 public sealed class DadShoppingOrderTests
 {
     private const string Row = "22222222-2222-2222-2222-222222222222";
+
+    [Fact]
+    public void IndependentMembersPreserveLegacyCreditsAndCommandOnlyAssignments()
+    {
+        var legacy = Association();
+        var plan = Plan(legacy);
+        var second = new DadPlannerGroupSlot { SlotId = "Slot2", RequiredAccountKey = new("fixture-account-b"), RequiredCharacterKey = new("fixture-b") };
+        plan.Slots.Add(second);
+        var command = DadShoppingAssociationRules.CopyChoicesToMember(new() { CustomCommand = "/fixture-b" }, second, null);
+        plan.ShoppingAssociations.Add(command);
+        var frozen = DadShoppingAssociationRules.FreezePlanAll(plan);
+        Assert.Equal(2, frozen.Count);
+        Assert.True(DadShoppingAssociationRules.TryValidateSingleShopper(frozen, out _));
+        foreach (var value in frozen) Assert.True(DadShoppingAssociationRules.TryValidateForPlan(value, plan, out _));
+        Assert.Equal(20, frozen[0].CreditedQuantities![Row]);
+        Assert.Empty(frozen[1].PresetId);
+        Assert.Equal("/fixture-b", frozen[1].CustomCommand);
+        Assert.Equal(5, DadWorkerCommandSchemaRules.ResolveEmissionSchema(null, frozen));
+        Assert.Equal(3, DadWorkerCommandSchemaRules.ResolveEmissionSchema(null, [frozen[0]]));
+        frozen[0].CreditedQuantities![Row] = 50;
+        Assert.Equal(20, legacy.CreditedQuantities![Row]);
+        var duplicate = command.Clone(); duplicate.AssociationId = Guid.NewGuid().ToString("N");
+        plan.ShoppingAssociations.Add(duplicate);
+        Assert.False(DadShoppingAssociationRules.TryValidateSingleShopper(DadShoppingAssociationRules.FreezePlanAll(plan), out _));
+    }
+
+    [Fact]
+    public void ApplyToAllRetainsEachExactMemberAndOwnProgress()
+    {
+        var source = Association(); source.CustomCommand = "/fixture";
+        var own = Association(); own.ShopperSlotId = "Slot2"; own.ShopperAccountKey = new("fixture-account-b"); own.ShopperCharacterKey = new("fixture-b");
+        own.CreditedQuantities![Row] = 30;
+        var slot = new DadPlannerGroupSlot { SlotId = own.ShopperSlotId, RequiredAccountKey = own.ShopperAccountKey, RequiredCharacterKey = own.ShopperCharacterKey };
+        var result = DadShoppingAssociationRules.CopyChoicesToMember(source, slot, own);
+        Assert.Equal(own.AssociationId, result.AssociationId);
+        Assert.Equal(own.ShopperCharacterKey, result.ShopperCharacterKey);
+        Assert.Equal(30, result.CreditedQuantities![Row]);
+        Assert.Equal("/fixture", result.CustomCommand);
+        source.PresetId = Guid.NewGuid().ToString("D");
+        Assert.Null(DadShoppingAssociationRules.CopyChoicesToMember(source, slot, own).CreditedQuantities);
+    }
 
     [Fact]
     public void AbsoluteProgressIsIdempotentAndInvalidatesOnlyChangedRows()

@@ -8787,4 +8787,20 @@
   <data name="gather_119" xml:space="preserve"><value>संग्रह आदेश गायब हैं या निश्चित आदेश सीमा से अधिक हैं।</value></data>
   <data name="gather_120" xml:space="preserve"><value>संग्रह के लिए सटीक संग्रह मॉड्यूल और क्लाइंट आवंटन चाहिए।</value></data>
   <data name="gather_121" xml:space="preserve"><value>GBR संग्रह समूह</value></data>
+  <data name="member_000" xml:space="preserve"><value>सदस्य खरीदारी और अंतिम कमांड</value></data>
+  <data name="member_001" xml:space="preserve"><value>अंतिम कमांड पूरी सफल बारी और खरीदारी का इंतज़ार करते हैं, जिसमें शेड्यूल की हर प्रविष्टि और दोहराव शामिल है।</value></data>
+  <data name="member_002" xml:space="preserve"><value>अंतिम प्रीसेट कमांड लागू होता है; गैर-खाली शेड्यूल कमांड को प्राथमिकता मिलती है।</value></data>
+  <data name="member_003" xml:space="preserve"><value>सभी पर लागू करें दिख रहे सदस्यों में विकल्प कॉपी करता है। दूरस्थ क्लाइंट पर दूरस्थ कमांड की अनुमति चाहिए।</value></data>
+  <data name="member_004" xml:space="preserve"><value>पुष्टि पंजीकृत भेजने को प्रमाणित करती है। कमांड के प्रभाव अभी सत्यापित नहीं हैं।</value></data>
+  <data name="member_005" xml:space="preserve"><value>सदस्य उपलब्ध नहीं</value></data>
+  <data name="member_006" xml:space="preserve"><value>यह सहेजा सदस्य अब पात्र पंक्ति से ठीक मेल नहीं खाता। बदलने से पहले पुराना आवंटन हटाएँ।</value></data>
+  <data name="member_007" xml:space="preserve"><value>सदस्य का आवंटन हटाएँ</value></data>
+  <data name="member_008" xml:space="preserve"><value>इस स्वामी के लिए ठीक मेल खाने वाले पात्र सदस्य उपलब्ध नहीं हैं।</value></data>
+  <data name="member_009" xml:space="preserve"><value>सदस्य आवंटन सहेजें</value></data>
+  <data name="member_010" xml:space="preserve"><value>बदलाव छोड़ें</value></data>
+  <data name="member_011" xml:space="preserve"><value>अंतिम स्लैश कमांड</value></data>
+  <data name="member_012" xml:space="preserve"><value>पूरा होने पर AutoRetainer डिलीवरी</value></data>
+  <data name="member_013" xml:space="preserve"><value>यह पंक्ति सभी सदस्यों पर लागू करें</value></data>
+  <data name="member_014" xml:space="preserve"><value>हर सदस्य के लिए वैकल्पिक ADS सूची और अंतिम कमांड। खाली विकल्प बंद हैं।</value></data>
+  <data name="member_015" xml:space="preserve"><value>सदस्य आवंटन सहेजे गए।</value></data>
 </root>

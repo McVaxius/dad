@@ -47,6 +47,7 @@ public static class DadSchedulerGroupCloneRules
             AutoPartyFormationOnly = source.AutoPartyFormationOnly,
             CompletionActions = source.CompletionActions?.Clone(),
             ShoppingAssociation = source.ShoppingAssociation?.Clone(),
+            ShoppingAssociations = (source.ShoppingAssociations ?? []).Select(static value => value.Clone()).ToList(),
             Slots = slots.Select(CloneSlot).ToList(),
             IsTemplate = source.IsTemplate,
             ScheduleEnabled = source.ScheduleEnabled,

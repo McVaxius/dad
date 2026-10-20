@@ -4,7 +4,7 @@ public static class DadShareConstants
 {
     public const string Format = "dad-share";
     public const int MinimumSupportedSchema = 1;
-    public const int Schema = 4;
+    public const int Schema = 5;
     public const string PlanKind = "plan";
     public const string ScheduleKind = "schedule";
     public const int MaxEncodedCharacters = 1_048_576;
@@ -89,6 +89,7 @@ public sealed class DadSharePlanDto
     public DadShareLevelingModeDto LevelingMode { get; set; } = new();
     public DadShareCompletionActionsDto? CompletionActions { get; set; }
     public DadShareShoppingAssociationDto? ShoppingAssociation { get; set; }
+    public List<DadShareShoppingAssociationDto> ShoppingAssociations { get; set; } = [];
     public List<DadSharePlanSlotDto> Slots { get; set; } = [];
     public bool IsTemplate { get; set; }
     public string MapRunTemplate { get; set; } = string.Empty;
@@ -185,6 +186,7 @@ public sealed class DadShareScheduleDto
     public string DisplayName { get; set; } = string.Empty;
     public DadScheduleCadence Cadence { get; set; } = DadScheduleCadence.Manual;
     public DadShareShoppingAssociationDto? ShoppingAssociation { get; set; }
+    public List<DadShareShoppingAssociationDto> ShoppingAssociations { get; set; } = [];
     public List<DadShareScheduleEntryDto> Entries { get; set; } = [];
 }
 

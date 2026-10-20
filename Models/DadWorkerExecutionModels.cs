@@ -28,15 +28,26 @@ internal static class DadWorkerCommandSchemaRules
     public const int RepairPolicySchema = 2;
     public const int ShoppingSchema = 3;
     public const int GatheringSchema = 4;
+    public const int MemberRoundSchema = 5;
 
     public static bool IsSupported(int schemaVersion)
-        => schemaVersion is LegacySchema or RepairPolicySchema or ShoppingSchema or GatheringSchema;
+        => schemaVersion is LegacySchema or RepairPolicySchema or ShoppingSchema or GatheringSchema or MemberRoundSchema;
+
+    public static bool RequiresMemberRoundSchema(IReadOnlyCollection<DadShoppingRunAssociation>? associations)
+    {
+        if (associations is not { Count: > 0 }) return false;
+        var first = associations.First();
+        return associations.Any(value => !string.IsNullOrWhiteSpace(value.CustomCommand) ||
+            !DadShoppingAssociationRules.SameShopper(first, value));
+    }
 
     public static int ResolveEmissionSchema(
         DadPreDutyRepairPolicy? policy,
         IReadOnlyCollection<DadShoppingRunAssociation>? shoppingAssociations = null,
         DadGatherPartyTask? gatherParty = null)
-        => gatherParty != null
+        => RequiresMemberRoundSchema(shoppingAssociations)
+            ? MemberRoundSchema
+            : gatherParty != null
             ? GatheringSchema
             : shoppingAssociations is { Count: > 0 }
             ? ShoppingSchema

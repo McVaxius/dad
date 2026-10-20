@@ -8787,4 +8787,20 @@
   <data name="gather_119" xml:space="preserve"><value>Brak zleceń zbierania lub przekroczono ich limit.</value></data>
   <data name="gather_120" xml:space="preserve"><value>Zbieranie wymaga dokładnego modułu i przydziałów klientów.</value></data>
   <data name="gather_121" xml:space="preserve"><value>Grupa zbierania GBR</value></data>
+  <data name="member_000" xml:space="preserve"><value>ZAKUPY I POLECENIA KOŃCOWE CZŁONKÓW</value></data>
+  <data name="member_001" xml:space="preserve"><value>Polecenia końcowe czekają na pomyślne zakończenie całej rundy i zakupów, w tym wszystkich pozycji i powtórzeń harmonogramu.</value></data>
+  <data name="member_002" xml:space="preserve"><value>Obowiązuje ostatnie polecenie zestawu; niepuste polecenie harmonogramu ma pierwszeństwo.</value></data>
+  <data name="member_003" xml:space="preserve"><value>Zastosuj do wszystkich kopiuje wybory do widocznych członków. Zdalne klienty wymagają zgody na zdalne polecenia.</value></data>
+  <data name="member_004" xml:space="preserve"><value>Potwierdzenie dotyczy zarejestrowanego wysłania. Skutek polecenia pozostaje niezweryfikowany.</value></data>
+  <data name="member_005" xml:space="preserve"><value>Członek niedostępny</value></data>
+  <data name="member_006" xml:space="preserve"><value>Ten zapisany członek nie pasuje już dokładnie do uprawnionego wiersza. Usuń stare przypisanie przed zastąpieniem.</value></data>
+  <data name="member_007" xml:space="preserve"><value>Usuń przypisanie członka</value></data>
+  <data name="member_008" xml:space="preserve"><value>Brak dokładnie pasujących uprawnionych członków dla tego właściciela.</value></data>
+  <data name="member_009" xml:space="preserve"><value>Zapisz przypisania</value></data>
+  <data name="member_010" xml:space="preserve"><value>Odrzuć zmiany</value></data>
+  <data name="member_011" xml:space="preserve"><value>Końcowe polecenie ukośnikowe</value></data>
+  <data name="member_012" xml:space="preserve"><value>Dostawa AutoRetainer po realizacji</value></data>
+  <data name="member_013" xml:space="preserve"><value>Zastosuj ten wiersz do wszystkich członków</value></data>
+  <data name="member_014" xml:space="preserve"><value>Opcjonalna lista ADS i polecenie końcowe dla każdego członka. Puste wybory są wyłączone.</value></data>
+  <data name="member_015" xml:space="preserve"><value>Przypisania zapisane.</value></data>
 </root>

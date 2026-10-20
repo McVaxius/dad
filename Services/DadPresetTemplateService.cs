@@ -30,6 +30,7 @@ internal static class DadPresetTemplateService
         template.StopPolicy.TargetCharacterKey = new DadCharacterKey(string.Empty);
         template.StopPolicy.TargetCharacterLabel = string.Empty;
         template.ShoppingAssociation = null;
+        template.ShoppingAssociations = [];
 
         return template;
     }

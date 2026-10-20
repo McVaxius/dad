@@ -8790,4 +8790,20 @@
   <data name="gather_119" xml:space="preserve"><value>채집 명령이 없거나 유한 명령 제한을 초과합니다.</value></data>
   <data name="gather_120" xml:space="preserve"><value>채집에는 정확한 채집 모듈과 클라이언트 할당이 필요합니다.</value></data>
   <data name="gather_121" xml:space="preserve"><value>GBR 채집 그룹</value></data>
+  <data name="member_000" xml:space="preserve"><value>멤버별 쇼핑 및 최종 명령</value></data>
+  <data name="member_001" xml:space="preserve"><value>최종 명령은 전체 라운드와 쇼핑의 성공을 기다립니다. 일정의 모든 항목과 반복이 완료되어야 합니다.</value></data>
+  <data name="member_002" xml:space="preserve"><value>마지막 프리셋 명령이 적용되며, 비어 있지 않은 일정 명령이 우선합니다.</value></data>
+  <data name="member_003" xml:space="preserve"><value>모두 적용은 표시된 멤버에게 선택을 복사합니다. 원격 클라이언트에는 원격 명령 권한이 필요합니다.</value></data>
+  <data name="member_004" xml:space="preserve"><value>확인은 등록된 명령의 전송을 뜻합니다. 명령의 효과는 검증되지 않았습니다.</value></data>
+  <data name="member_005" xml:space="preserve"><value>멤버를 사용할 수 없음</value></data>
+  <data name="member_006" xml:space="preserve"><value>저장된 멤버가 더 이상 적격 행과 정확히 일치하지 않습니다. 교체 전에 이전 할당을 제거하세요.</value></data>
+  <data name="member_007" xml:space="preserve"><value>멤버 할당 제거</value></data>
+  <data name="member_008" xml:space="preserve"><value>이 소유자에게 정확히 일치하는 적격 멤버가 없습니다.</value></data>
+  <data name="member_009" xml:space="preserve"><value>멤버 할당 저장</value></data>
+  <data name="member_010" xml:space="preserve"><value>편집 취소</value></data>
+  <data name="member_011" xml:space="preserve"><value>최종 슬래시 명령</value></data>
+  <data name="member_012" xml:space="preserve"><value>이행 후 AutoRetainer 배송</value></data>
+  <data name="member_013" xml:space="preserve"><value>이 행을 모든 멤버에게 적용</value></data>
+  <data name="member_014" xml:space="preserve"><value>멤버별 선택적 ADS 목록과 최종 명령입니다. 빈 항목은 꺼집니다.</value></data>
+  <data name="member_015" xml:space="preserve"><value>멤버 할당을 저장했습니다.</value></data>
 </root>

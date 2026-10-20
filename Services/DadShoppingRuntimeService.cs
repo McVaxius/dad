@@ -81,6 +81,7 @@ public sealed class DadShoppingRuntimeService
         attemptToken = Guid.NewGuid().ToString("N");
         moduleIndex = Math.Max(0, activeModuleIndex);
         associations = DadShoppingAssociationRules.NormalizeRunAssociations(request.ShoppingAssociations)
+            .Where(static association => !string.IsNullOrWhiteSpace(association.PresetId))
             .Where(association => DadShoppingAssociationRules.MatchesLocalShopper(association, localAssignment))
             .Select(static association => association.Clone())
             .ToList();
@@ -443,6 +444,7 @@ public sealed class DadShoppingRuntimeService
                 $"Post-fulfillment command failed: {ex.Message}");
         }
 
+        currentResult?.AcknowledgedPostCommands.Add(command);
         postCommandDispatchedAtUtc = DadClock.UtcNow;
         postCommandActivityObservedAtUtc = DateTime.MinValue;
         observedPostCommandUnsafe = false;
@@ -508,8 +510,6 @@ public sealed class DadShoppingRuntimeService
         postCommands.Clear();
         if (association.RunAutoRetainerDelivery)
             postCommands.Enqueue(AutoRetainerDeliveryCommand);
-        if (!string.IsNullOrWhiteSpace(association.CustomCommand))
-            postCommands.Enqueue(association.CustomCommand);
     }
 
     private DadShoppingRuntimeDecision AdvanceAssociation()

@@ -1,3 +1,14 @@
+2026-10-19 - Per-member shopping and final round commands (I610)
+
+- Add independent optional ADS-list and final slash-command choices for each exact preset/schedule member, plus explicit apply-to-all. Keep command-only and list-only members valid; shopping-wizard edits preserve other members.
+- Freeze member settings and identities for the whole round. Defer final commands and global/preset completion actions until all successful scheduled entries/repeats and applicable shopping are complete. Apply the last member preset command, with a nonblank schedule override, and suppress duplicate configured commands.
+- Preserve legacy single-shopper associations, fulfillment credits and completed rows. Extend sharing to schema 5 with per-member import command confirmation, exact recipient checks and existing remote-command permissions.
+- Persist submission intentions and exact acknowledgements before continuation. Cancellation, unavailable recipients and uncertain submissions cannot silently replay commands on reload. Acknowledgement confirms registered dispatch; external command effects and live clients remain unverified. No version/release change.
+
+2026-10-19 - Duty-scoped FrenRider profiles (I606)
+
+- Mark remote FrenRider profile preparation as a duty run unless the plan is formation-only. Compatible FrenRider receivers export a Duty only copy through the existing profile transport, preserving the stored remote/default choices and recipient acceptance policy.
+
 2026-10-18 - 1.1.0.3 - Consecutive Wake/Relog cleanup and party teardown
 
 - Release completed runs' exact wake ownership and early requested-job assignments before admitting another queued preset. Restore captured AutoRetainer Multi Mode state in place without relogging to the previous character; cancelling an unaccepted token leaves any active takeover untouched.

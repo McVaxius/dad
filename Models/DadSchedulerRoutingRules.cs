@@ -142,9 +142,16 @@ public static class DadSchedulerRoutingRules
             return false;
         }
 
+        // Strict preview revalidates the current duty/roster. Member shopping
+        // and final actions retain the values approved for this run/round.
+        var revalidated = strictRequest.Clone();
+        revalidated.CompletionRoundId = frozenRequest.CompletionRoundId;
+        revalidated.DeferCompletionToRound = frozenRequest.DeferCompletionToRound;
+        revalidated.CompletionActions = frozenRequest.CompletionActions?.Clone();
+        revalidated.ShoppingAssociations = frozenRequest.ShoppingAssociations.Select(static value => value.Clone()).ToList();
         if (string.Equals(
                 BuildComparableRequestContract(frozenRequest),
-                BuildComparableRequestContract(strictRequest),
+                BuildComparableRequestContract(revalidated),
                 StringComparison.Ordinal))
         {
             return true;

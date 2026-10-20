@@ -8816,4 +8816,20 @@
   <data name="gather_119" xml:space="preserve"><value>Заказы сбора отсутствуют или превышают лимит.</value></data>
   <data name="gather_120" xml:space="preserve"><value>Сбор требует точного модуля и назначений клиентов.</value></data>
   <data name="gather_121" xml:space="preserve"><value>Группа сбора GBR</value></data>
+  <data name="member_000" xml:space="preserve"><value>ПОКУПКИ И ФИНАЛЬНЫЕ КОМАНДЫ УЧАСТНИКОВ</value></data>
+  <data name="member_001" xml:space="preserve"><value>Финальные команды ждут успешного завершения всего раунда и покупок, включая все записи и повторы расписания.</value></data>
+  <data name="member_002" xml:space="preserve"><value>Действует последняя команда пресета; непустая команда расписания имеет приоритет.</value></data>
+  <data name="member_003" xml:space="preserve"><value>Применить ко всем копирует выбор видимым участникам. Удалённым клиентам требуется разрешение на удалённые команды.</value></data>
+  <data name="member_004" xml:space="preserve"><value>Подтверждение означает зарегистрированную отправку. Эффект команды остаётся непроверенным.</value></data>
+  <data name="member_005" xml:space="preserve"><value>Участник недоступен</value></data>
+  <data name="member_006" xml:space="preserve"><value>Этот сохранённый участник больше не соответствует допустимой строке. Удалите старое назначение перед заменой.</value></data>
+  <data name="member_007" xml:space="preserve"><value>Удалить назначение участника</value></data>
+  <data name="member_008" xml:space="preserve"><value>Нет точно соответствующих допустимых участников для этого владельца.</value></data>
+  <data name="member_009" xml:space="preserve"><value>Сохранить назначения</value></data>
+  <data name="member_010" xml:space="preserve"><value>Отменить изменения</value></data>
+  <data name="member_011" xml:space="preserve"><value>Финальная слеш-команда</value></data>
+  <data name="member_012" xml:space="preserve"><value>Доставка AutoRetainer после выполнения</value></data>
+  <data name="member_013" xml:space="preserve"><value>Применить строку ко всем участникам</value></data>
+  <data name="member_014" xml:space="preserve"><value>Необязательные список ADS и финальная команда для каждого участника. Пустые поля отключены.</value></data>
+  <data name="member_015" xml:space="preserve"><value>Назначения сохранены.</value></data>
 </root>

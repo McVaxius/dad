@@ -16,7 +16,7 @@ internal sealed class VirtualShoppingIpc(Action<string> observe)
                 throw new InvalidOperationException("Unexpected repeated shopping dispatch.");
             request = DadIpcJson.Deserialize<DadAdsShopListPresetRequest>(json)!;
             Stage = "running";
-            if (request.PresetId != "11111111-1111-1111-1111-111111111111" || request.CompletedRowIds.Count != 0)
+            if (request.PresetId is not ("11111111-1111-1111-1111-111111111111" or "44444444-4444-4444-4444-444444444444") || request.CompletedRowIds.Count != 0)
                 throw new InvalidOperationException("Unexpected shopping preset or completion evidence.");
             observe($"ipc:shopping-start:{request.OperationId}:{request.PresetId}");
             if (Fault == "finite")

@@ -38,6 +38,7 @@ public sealed class DadWorkerExecutionService
     private DadWorkerExecutionState pendingCancellationState;
     private string pendingCancellationSummary = string.Empty;
     private string pendingCancellationFailureReason = string.Empty;
+    internal Func<DadWorkerExecutionCommand, DadWorkerExecutionStatus, bool>? RecordSuccessfulRoundAssignment { get; set; }
 
     public DadWorkerExecutionService(
         DadQueueExecutionService queueExecutionService,
@@ -1178,6 +1179,11 @@ public sealed class DadWorkerExecutionService
         status.Summary = summary;
         status.FailureReason = failureReason;
         status.UpdatedAtUtc = DadClock.UtcNow;
+        if (success && completedCommand != null && RecordSuccessfulRoundAssignment?.Invoke(completedCommand, status.Clone()) == false)
+        {
+            status.State = DadWorkerExecutionState.Failed; status.Success = false;
+            status.Summary = status.FailureReason = "The frozen final-command permission could not be persisted.";
+        }
         if (completedCommand != null)
             commandStatuses[completedCommand.CommandId] = status.Clone();
         activeCommand = null;

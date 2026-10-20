@@ -32,6 +32,7 @@ internal sealed class DadLocalLifecycleCleanup(
             DadWakeTakeoverStopAllResult wake;
             if (decision.RunFullCleanup)
             {
+                DadCompletionActionRunner.CancelRound(Configuration);
                 var suppression = TimeSpan.FromSeconds(Math.Max(2, Configuration.CancelAckTimeoutSeconds));
                 CancelStandaloneCrewDisband(reason);
                 var scheduler = SchedulerService.StopAll(reason, suppression);

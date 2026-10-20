@@ -7,6 +7,32 @@ namespace dad.Tests;
 public sealed class DadCompletionActionSnapshotTests
 {
     [Fact]
+    public void MemberReceiptFreezesOnlyExactIdentityAndRejectsRetargeting()
+    {
+        var participant = new DadParticipantSnapshot
+        {
+            WorkerSessionId = new("fixture-session"), ManagedAccountKey = new("fixture-account"),
+            ActiveCharacterKey = new("fixture-character"), AssignedSlotId = "Slot1",
+            Character = new() { ContentId = 123 },
+        };
+        var command = new DadMemberCompletionCommand
+        {
+            RoundId = "round", RunId = "run", Recipient = DadMemberCompletionRecipient.From(participant), Command = "/fixture",
+        };
+        var restored = System.Text.Json.JsonSerializer.Deserialize<DadMemberCompletionCommand>(System.Text.Json.JsonSerializer.Serialize(command))!;
+        Assert.True(DadMemberCompletionRules.SameIntent(command, restored));
+        var json = System.Text.Json.JsonSerializer.Serialize(command.Recipient);
+        Assert.DoesNotContain("Dependencies", json);
+        Assert.DoesNotContain("MachineName", json);
+        restored.Recipient.ContentId++;
+        Assert.False(DadMemberCompletionRules.SameIntent(command, restored));
+        restored = command.Clone(); restored.Recipient.WorkerSessionId = new("other-session");
+        Assert.False(DadMemberCompletionRules.SameIntent(command, restored));
+        restored = command.Clone(); restored.Recipient.ActiveCharacterKey = new("other-character");
+        Assert.False(DadMemberCompletionRules.SameIntent(command, restored));
+        Assert.Equal("fixture-character", command.Recipient.ActiveCharacterKey.Value);
+    }
+    [Fact]
     public void ResolveUsesRequestSnapshotBeforeGlobalDefaults()
     {
         var global = new DadCompletionActions

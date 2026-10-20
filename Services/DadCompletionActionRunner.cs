@@ -11,7 +11,7 @@ public sealed record DadCompletionActionStatus(
 
 // Feature batch A (dadfeatures20260620b): runs operator-chosen actions when a Dad run completes.
 // Invoked from DadCoordinatorService.FinalizeRun on successful completion (framework thread).
-internal static class DadCompletionActionRunner
+internal static partial class DadCompletionActionRunner
 {
     private static readonly IDadGameCommandExecutor NativeCommandExecutor = new DadNativeGameCommandExecutor();
     private static readonly TimeSpan NativeCommandAvailabilityTimeout = TimeSpan.FromSeconds(5);
@@ -44,7 +44,7 @@ internal static class DadCompletionActionRunner
 
     private static readonly Queue<PendingStep> PendingSteps = new();
 
-    public static bool HasPendingWork => PendingSteps.Count > 0;
+    public static bool HasPendingWork => PendingSteps.Count > 0 || HasPendingMemberWork;
     public static DadCompletionActionStatus LastStatus { get; private set; } = new(
         "dad-completion-idle",
         "No completion action has run in this session.",
@@ -117,6 +117,7 @@ internal static class DadCompletionActionRunner
 
     public static void Update(Configuration configuration, IPluginLog log)
     {
+        UpdateMembers(configuration, log);
         if (PendingSteps.Count == 0)
             return;
 
