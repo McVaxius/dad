@@ -8803,4 +8803,37 @@
   <data name="member_013" xml:space="preserve"><value>Apply this row to all members</value></data>
   <data name="member_014" xml:space="preserve"><value>Optional ADS list and final slash command per member. Blank choices are off.</value></data>
   <data name="member_015" xml:space="preserve"><value>Member assignments saved.</value></data>
+  <data name="recovery_001" xml:space="preserve"><value>Recover game connections automatically</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>Keep the game open after lobby errors and reconnect the same local character after a connection loss while DAD is enabled. Hold Shift or use Stop All to stop recovery. Service-account selection stays manual.</value></data>
+  <data name="recovery_003" xml:space="preserve"><value>Connection recovery</value></data>
+  <data name="recovery_004" xml:space="preserve"><value>Waiting for a local session.</value></data>
+  <data name="recovery_005" xml:space="preserve"><value>Connection recovery is off.</value></data>
+  <data name="recovery_006" xml:space="preserve"><value>Connection recovery stopped with Shift.</value></data>
+  <data name="recovery_007" xml:space="preserve"><value>Connection recovered.</value></data>
+  <data name="recovery_008" xml:space="preserve"><value>Local session observed.</value></data>
+  <data name="recovery_009" xml:space="preserve"><value>Connection recovery requires the same local account.</value></data>
+  <data name="recovery_010" xml:space="preserve"><value>Connection recovery yielded to another login owner.</value></data>
+  <data name="recovery_011" xml:space="preserve"><value>Recovering connection after error {0}.</value></data>
+  <data name="recovery_012" xml:space="preserve"><value>Close the visible lobby error to continue connection recovery.</value></data>
+  <data name="recovery_013" xml:space="preserve"><value>Connection recovery is waiting for your service-account selection.</value></data>
+  <data name="recovery_014" xml:space="preserve"><value>Connection recovery switched off.</value></data>
+  <data name="recovery_015" xml:space="preserve"><value>Connection recovery lost its exact action boundary.</value></data>
+  <data name="recovery_016" xml:space="preserve"><value>Connection recovery disposed.</value></data>
+  <data name="recovery_017" xml:space="preserve"><value>Connection recovery stopped after an unreadable native action.</value></data>
+  <data name="recovery_018" xml:space="preserve"><value>Logged out normally.</value></data>
+  <data name="recovery_019" xml:space="preserve"><value>Lobby protection is unavailable; check the installed game version.</value></data>
+  <data name="recovery_020" xml:space="preserve"><value>Lobby protection could not initialize; check the plugin log.</value></data>
+  <data name="Auto" xml:space="preserve"><value>Auto</value></data>
+  <data name="Picker" xml:space="preserve"><value>Picker</value></data>
+  <data name="Default" xml:space="preserve"><value>Default</value></data>
+  <data name="Background, controls and text follow your theme." xml:space="preserve"><value>Background, controls and text follow your theme.</value></data>
+  <data name="Theme colour" xml:space="preserve"><value>Theme colour</value></data>
+  <data name="Choose each colour independently." xml:space="preserve"><value>Choose each colour independently.</value></data>
+  <data name="Background" xml:space="preserve"><value>Background</value></data>
+  <data name="Controls" xml:space="preserve"><value>Controls</value></data>
+  <data name="Text" xml:space="preserve"><value>Text</value></data>
+  <data name="Aa  Preview text" xml:space="preserve"><value>Aa  Preview text</value></data>
+  <data name="Control" xml:space="preserve"><value>Control</value></data>
+  <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Switch to Picker to set each colour yourself.</value></data>
+  <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Switch back to Auto to use the automatic theme.</value></data>
 </root>

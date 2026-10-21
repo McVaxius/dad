@@ -19,6 +19,23 @@ internal sealed class VirtualAutomationIpc(Action<string> observe)
     public bool Busy { get; set; }
     public bool LifestreamBusy { get; set; }
     public bool UncertainLogin { get; set; }
+    public bool RecoveryShiftHeld { get; set; }
+    public bool RecoveryOtherOwner { get; set; }
+    public DadConnectionRecoveryObservation RecoverySurface() => Surface switch
+    {
+        "world" => new(DadConnectionRecoverySurface.World, false),
+        "dialog" => new(DadConnectionRecoverySurface.Dialogue, true, 100),
+        "title" => new(DadConnectionRecoverySurface.Title, true, 101),
+        "connecting" => new(DadConnectionRecoverySurface.Connecting, false, 102),
+        "character-select" => new(DadConnectionRecoverySurface.CharacterSelect, true, 103),
+        "data-center" => new(DadConnectionRecoverySurface.DataCenter, true, 104),
+        "service-account" => new(DadConnectionRecoverySurface.ServiceAccount, true, 105),
+        "world-select" => new(DadConnectionRecoverySurface.WorldSelect, true, 106),
+        "login-confirmation" => new(DadConnectionRecoverySurface.LoginConfirmation, true, 107),
+        "lobby-error" => new(DadConnectionRecoverySurface.LobbyError, false, 108),
+        "movie" => default,
+        _ => throw new InvalidOperationException($"Unknown recovery observation: {Surface}"),
+    };
     public string Surface { get; set; } = "world";
     public DadTitleNativeObservation Title() => Surface switch
     {
@@ -28,6 +45,8 @@ internal sealed class VirtualAutomationIpc(Action<string> observe)
         "connecting" => new(new(false, false, true, false, false, false), true, true, false, false),
         "character-select" => new(new(false, false, false, true, false, false), true, true, false, false),
         "dialog" => new(new(true, false, false, false, false, true), true, true, true, false),
+        "data-center" => new(new(false, false, false, false, true, false), true, true, false, false),
+        "service-account" or "world-select" or "login-confirmation" or "lobby-error" => new(new(false, false, false, false, false, true), true, true, false, false),
         _ => throw new InvalidOperationException($"Unknown title observation: {Surface}")
     };
     public object? Invoke(string endpoint, string kind, object?[] values)

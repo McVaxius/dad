@@ -47,7 +47,9 @@ internal static class DadPresentation
         return new() { Height = height * s, Padding = new(12 * s, Math.Max(0, (height * s - ImGui.GetTextLineHeight()) * .5f)),
             Gap = 8 * s, IconSize = icon * s, Rounding = 4 * s, ItemSpacing = new(10 * s, 4 * s), CellPadding = new(16 * s, 8 * s) };
     }
-    internal static MaterialTheme Theme(uint accent)
+    internal static MaterialTheme Theme(uint accent) => Theme(accent, new MaterialColorSettings());
+
+    internal static MaterialTheme Theme(uint accent, MaterialColorSettings colorSettings)
     {
         accent &= 0xFFFFFF;
         var reference = MaterialColor.LabToLch(MaterialColor.SrgbToOklab(new Vector3(Rgb(ReferenceAccent).X, Rgb(ReferenceAccent).Y, Rgb(ReferenceAccent).Z)));
@@ -79,7 +81,7 @@ internal static class DadPresentation
             Tertiary = Relative(0xAAC8F1), OnTertiary = background, TertiaryContainer = Relative(0x223D56), OnTertiaryContainer = foreground,
             InverseSurface = foreground, InverseOnSurface = background, InversePrimary = Relative(0x96592D),
         };
-        return new(colors) { SurfaceOpacity = 1 };
+        return new(colorSettings.Apply(colors)) { SurfaceOpacity = 1 };
     }
     internal static void Surface(Vector2 min, Vector2 max, bool raised = false)
     {

@@ -8803,4 +8803,37 @@
   <data name="member_013" xml:space="preserve"><value>Aplicar esta linha a todos os membros</value></data>
   <data name="member_014" xml:space="preserve"><value>Lista ADS e comando final opcionais por membro. Campos vazios ficam desativados.</value></data>
   <data name="member_015" xml:space="preserve"><value>Atribuições salvas.</value></data>
+  <data name="recovery_001" xml:space="preserve"><value>Recuperar conexões do jogo automaticamente</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>Com o DAD ativado, manter o jogo aberto após erros do lobby e reconectar o mesmo personagem local após uma desconexão. Segure Shift ou use Parar tudo para interromper a recuperação. A conta de serviço continua sendo selecionada manualmente.</value></data>
+  <data name="recovery_003" xml:space="preserve"><value>Recuperação de conexão</value></data>
+  <data name="recovery_004" xml:space="preserve"><value>Aguardando uma sessão local.</value></data>
+  <data name="recovery_005" xml:space="preserve"><value>A recuperação de conexão está desativada.</value></data>
+  <data name="recovery_006" xml:space="preserve"><value>Recuperação de conexão interrompida com Shift.</value></data>
+  <data name="recovery_007" xml:space="preserve"><value>Conexão recuperada.</value></data>
+  <data name="recovery_008" xml:space="preserve"><value>Sessão local detectada.</value></data>
+  <data name="recovery_009" xml:space="preserve"><value>A recuperação de conexão exige a mesma conta local.</value></data>
+  <data name="recovery_010" xml:space="preserve"><value>A recuperação de conexão cedeu o controle a outro processo de login.</value></data>
+  <data name="recovery_011" xml:space="preserve"><value>Recuperando a conexão após o erro {0}.</value></data>
+  <data name="recovery_012" xml:space="preserve"><value>Feche o erro do lobby visível para continuar a recuperação de conexão.</value></data>
+  <data name="recovery_013" xml:space="preserve"><value>A recuperação de conexão aguarda a seleção da conta de serviço.</value></data>
+  <data name="recovery_014" xml:space="preserve"><value>Recuperação de conexão desativada.</value></data>
+  <data name="recovery_015" xml:space="preserve"><value>As condições da ação de recuperação prevista deixaram de ser atendidas.</value></data>
+  <data name="recovery_016" xml:space="preserve"><value>Recuperação de conexão encerrada.</value></data>
+  <data name="recovery_017" xml:space="preserve"><value>Recuperação de conexão interrompida após uma ação nativa ilegível.</value></data>
+  <data name="recovery_018" xml:space="preserve"><value>Sessão encerrada normalmente.</value></data>
+  <data name="recovery_019" xml:space="preserve"><value>A proteção do lobby está indisponível; confira a versão instalada do jogo.</value></data>
+  <data name="recovery_020" xml:space="preserve"><value>Não foi possível iniciar a proteção do lobby; confira o log do plugin.</value></data>
+  <data name="Auto" xml:space="preserve"><value>Automático</value></data>
+  <data name="Picker" xml:space="preserve"><value>Seletor</value></data>
+  <data name="Default" xml:space="preserve"><value>Padrão</value></data>
+  <data name="Background, controls and text follow your theme." xml:space="preserve"><value>O fundo, os controles e o texto seguem o tema.</value></data>
+  <data name="Theme colour" xml:space="preserve"><value>Cor do tema</value></data>
+  <data name="Choose each colour independently." xml:space="preserve"><value>Escolha cada cor separadamente.</value></data>
+  <data name="Background" xml:space="preserve"><value>Fundo</value></data>
+  <data name="Controls" xml:space="preserve"><value>Controles</value></data>
+  <data name="Text" xml:space="preserve"><value>Texto</value></data>
+  <data name="Aa  Preview text" xml:space="preserve"><value>Aa  Prévia do texto</value></data>
+  <data name="Control" xml:space="preserve"><value>Controle</value></data>
+  <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Mude para Seletor para definir cada cor.</value></data>
+  <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Volte para Automático para usar o tema automático.</value></data>
 </root>

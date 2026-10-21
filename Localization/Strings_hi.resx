@@ -8803,4 +8803,37 @@
   <data name="member_013" xml:space="preserve"><value>यह पंक्ति सभी सदस्यों पर लागू करें</value></data>
   <data name="member_014" xml:space="preserve"><value>हर सदस्य के लिए वैकल्पिक ADS सूची और अंतिम कमांड। खाली विकल्प बंद हैं।</value></data>
   <data name="member_015" xml:space="preserve"><value>सदस्य आवंटन सहेजे गए।</value></data>
+  <data name="recovery_001" xml:space="preserve"><value>गेम कनेक्शन अपने आप बहाल करें</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>DAD चालू होने पर लॉबी त्रुटियों के बाद गेम खुला रखें और कनेक्शन टूटने पर उसी स्थानीय पात्र को फिर से जोड़ें। बहाली रोकने के लिए Shift दबाकर रखें या सभी रोकें का उपयोग करें। सेवा खाते का चयन मैन्युअल रहता है।</value></data>
+  <data name="recovery_003" xml:space="preserve"><value>कनेक्शन बहाली</value></data>
+  <data name="recovery_004" xml:space="preserve"><value>स्थानीय सत्र की प्रतीक्षा है।</value></data>
+  <data name="recovery_005" xml:space="preserve"><value>कनेक्शन बहाली बंद है।</value></data>
+  <data name="recovery_006" xml:space="preserve"><value>Shift से कनेक्शन बहाली रोक दी गई।</value></data>
+  <data name="recovery_007" xml:space="preserve"><value>कनेक्शन बहाल हो गया।</value></data>
+  <data name="recovery_008" xml:space="preserve"><value>स्थानीय सत्र मिला।</value></data>
+  <data name="recovery_009" xml:space="preserve"><value>कनेक्शन बहाली के लिए वही स्थानीय खाता चाहिए।</value></data>
+  <data name="recovery_010" xml:space="preserve"><value>कनेक्शन बहाली ने नियंत्रण दूसरी लॉगिन प्रक्रिया को सौंप दिया।</value></data>
+  <data name="recovery_011" xml:space="preserve"><value>त्रुटि {0} के बाद कनेक्शन बहाल किया जा रहा है।</value></data>
+  <data name="recovery_012" xml:space="preserve"><value>कनेक्शन बहाली जारी रखने के लिए दिखाई दे रही लॉबी त्रुटि बंद करें।</value></data>
+  <data name="recovery_013" xml:space="preserve"><value>कनेक्शन बहाली आपके सेवा खाते के चयन की प्रतीक्षा कर रही है।</value></data>
+  <data name="recovery_014" xml:space="preserve"><value>कनेक्शन बहाली बंद कर दी गई।</value></data>
+  <data name="recovery_015" xml:space="preserve"><value>नियोजित बहाली कार्रवाई की शर्तें अब पूरी नहीं होतीं।</value></data>
+  <data name="recovery_016" xml:space="preserve"><value>कनेक्शन बहाली समाप्त हो गई।</value></data>
+  <data name="recovery_017" xml:space="preserve"><value>मूल कार्रवाई पढ़ी नहीं जा सकी, इसलिए कनेक्शन बहाली रोक दी गई।</value></data>
+  <data name="recovery_018" xml:space="preserve"><value>सामान्य रूप से लॉगआउट हुआ।</value></data>
+  <data name="recovery_019" xml:space="preserve"><value>लॉबी सुरक्षा उपलब्ध नहीं है; स्थापित गेम संस्करण जाँचें।</value></data>
+  <data name="recovery_020" xml:space="preserve"><value>लॉबी सुरक्षा शुरू नहीं हो सकी; प्लगइन लॉग जाँचें।</value></data>
+  <data name="Auto" xml:space="preserve"><value>स्वचालित</value></data>
+  <data name="Picker" xml:space="preserve"><value>चयनकर्ता</value></data>
+  <data name="Default" xml:space="preserve"><value>डिफ़ॉल्ट</value></data>
+  <data name="Background, controls and text follow your theme." xml:space="preserve"><value>पृष्ठभूमि, नियंत्रण और पाठ आपकी थीम का पालन करते हैं।</value></data>
+  <data name="Theme colour" xml:space="preserve"><value>थीम का रंग</value></data>
+  <data name="Choose each colour independently." xml:space="preserve"><value>हर रंग अलग से चुनें।</value></data>
+  <data name="Background" xml:space="preserve"><value>पृष्ठभूमि</value></data>
+  <data name="Controls" xml:space="preserve"><value>नियंत्रण</value></data>
+  <data name="Text" xml:space="preserve"><value>पाठ</value></data>
+  <data name="Aa  Preview text" xml:space="preserve"><value>Aa  पाठ का पूर्वावलोकन</value></data>
+  <data name="Control" xml:space="preserve"><value>नियंत्रण</value></data>
+  <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>हर रंग स्वयं तय करने के लिए चयनकर्ता चुनें।</value></data>
+  <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>स्वचालित थीम के लिए स्वचालित विकल्प चुनें।</value></data>
 </root>

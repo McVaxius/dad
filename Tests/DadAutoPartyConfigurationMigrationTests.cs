@@ -31,6 +31,13 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         var configuration = new Configuration();
 
         Assert.Equal(12, configuration.Version);
+        Assert.Equal(AethertekUI.MaterialColorMode.Auto, configuration.UiColors.Mode);
+        configuration.UiColors = new() { Mode = AethertekUI.MaterialColorMode.Picker,
+            BackgroundRgb = 0x123456, ControlsRgb = 0xABCDEF, TextRgb = 0xFEDCBA };
+        var restored = JsonSerializer.Deserialize<Configuration>(JsonSerializer.Serialize(configuration))!;
+        Assert.Equal(configuration.UiColors, restored.UiColors);
+        Assert.True(restored.ConnectionRecoveryEnabled);
+        AssertInert(restored.AutoParty);
         AssertInert(configuration.AutoParty);
         Assert.Null(typeof(DadAutoPartyConfiguration).GetProperty("PairingEnabled"));
         Assert.Null(typeof(DadAutoPartyConfiguration).GetProperty("ExecutionEnabled"));

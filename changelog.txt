@@ -1,3 +1,13 @@
+2026-10-20 - Independent UI colours
+
+- Add Auto (default) and Picker in Colour and Settings, with independent Background, Controls and Text choices. Preserve the existing automatic palette, saved manual choices, native controls and unrelated settings. Translate the editor in every supported language.
+
+2026-10-20 - Local game connection recovery
+
+- Enable game connection recovery by default for new and existing configurations, with a Safety & Finish switch. Protect tagged positive lobby errors from closing the client and recover connection-loss logouts on the same observed local account, character, content ID, world and data center.
+- Clear successive disconnect dialogs, resume native title/data-center/character/login confirmation phases and pause for manual service-account selection. Hold Shift, use Stop All, disable recovery or disable DAD to discard pending phases. Reconnect never starts or replays DAD duties or commands and yields to another login owner.
+- Keep recovery in memory inside the existing title owner. Named lobby-error layouts without a proven native acknowledgement show a visible manual-dismissal wait; recovery continues when they clear. Native signature availability and live game acceptance remain separate from offline lifecycle verification. No version or release change.
+
 2026-10-19 - Per-member shopping and final round commands (I610)
 
 - Add independent optional ADS-list and final slash-command choices for each exact preset/schedule member, plus explicit apply-to-all. Keep command-only and list-only members valid; shopping-wizard edits preserve other members.

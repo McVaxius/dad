@@ -31,7 +31,7 @@ internal readonly record struct DadTitleNativeObservation(
 /// a transport thread, so the takeover target consumes only this short-lived immutable snapshot.
 /// Exact MovieStaffList dismissal is queued back to this same framework thread as one Escape press.
 /// </summary>
-public sealed unsafe class DadTitleMenuReadinessService : IDisposable
+public sealed unsafe partial class DadTitleMenuReadinessService : IDisposable
 {
     private const int EscapeVirtualKey = 0x1B;
     private static readonly ConditionFlag[] ConditionFlags = Enum.GetValues<ConditionFlag>();
@@ -96,6 +96,8 @@ public sealed unsafe class DadTitleMenuReadinessService : IDisposable
 
     private void OnFrameworkUpdate(IFramework _)
     {
+        try { UpdateConnectionRecovery(); }
+        catch { CancelConnectionRecovery("Connection recovery stopped after an unreadable native action."); }
         var captured = Capture(DadClock.UtcNow);
         var pressEscape = false;
         var releaseEscape = false;
@@ -238,6 +240,7 @@ public sealed unsafe class DadTitleMenuReadinessService : IDisposable
             movieEscapeState = MovieEscapeState.None;
         }
         framework.Update -= OnFrameworkUpdate;
+        DisposeConnectionRecovery();
         try
         {
             keyState[EscapeVirtualKey] = false;

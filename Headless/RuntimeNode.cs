@@ -227,6 +227,7 @@ internal sealed class RuntimeNode : IDisposable
         title = new(Plugin.Framework, null!, Plugin.Condition,
             ExternalProxy.Create<IKeyState>((method, values) =>
             {
+                if (method.Name == "get_Item" && (int)values[0]! == 0x10) return automation.RecoveryShiftHeld;
                 if (method.Name != "set_Item" || (int)values[0]! != 0x1B) throw Unexpected($"key:{method.Name}");
                 events.Enqueue($"native:escape:{values[1]}"); return null;
             }), automation.Title);
@@ -238,6 +239,13 @@ internal sealed class RuntimeNode : IDisposable
             vermaxion, title, commands, log), () => clock.Now.UtcDateTime,
             diagnostic: message => events.Enqueue($"wake:{message}"));
         vermaxion.ReservationGranted += wake.OnVermaxionReservationGranted;
+        title.ConfigureConnectionRecovery(configuration,
+            () => automation.Surface == "world" ? new(configuration.ClientAccountId,
+                character.CharacterName, "Synthetic", "Synthetic", 1, character.ContentId) : null,
+            () => automation.RecoveryOtherOwner || automation.Busy || automation.MultiMode || automation.LifestreamBusy ||
+                wake.GetActiveStatus() is { Phase: not (DadWakeTakeoverPhase.Ready or DadWakeTakeoverPhase.Blocked or DadWakeTakeoverPhase.Cancelled) },
+            automation.RecoverySurface,
+            (action, target, _) => events.Enqueue($"native:connection-recovery:{action}:{target.AccountId}:{target.ContentId}:{target.CharacterName}@{target.HomeWorld}:{target.CurrentWorld}:{target.CurrentDataCenterId}"));
         autoRetainer.CharacterPostprocessReady += wake.OnCharacterPostprocessReady;
         transport = new(configuration, presence, claims, wake, new DadRouletteRewardProbeService(Plugin.Framework, presence, log), log);
         var xadb = new DadXadbClient(Plugin.PluginInterface, log);
@@ -329,7 +337,7 @@ internal sealed class RuntimeNode : IDisposable
             currentCharacterId: () => character.ContentId);
         combat.QuestionableDutySettingsGate = () => questionableBridge.MaintainFrenRiderDutySettings(questionablePatched, questionableRunning);
         cleanup = new(configuration, scheduler, coordinator, wake, claims, worker, queue, presence, log,
-            _ => { }, autoParty?.Service, allianceService, dutyIpc.Cancel);
+            _ => { }, autoParty?.Service, allianceService, dutyIpc.Cancel, title.CancelConnectionRecovery);
         transport.ConfigureStopAllHandler(cleanup.RunLocalLifecycleCleanup);
         scheduler.ConfigureAdmissionBlocker(() => DadRuntimeHandlers.SchedulerAdmissionBlocker(
             configuration, scheduler, coordinator, false, coordinator.GetLocalResult()));
@@ -436,6 +444,16 @@ internal sealed class RuntimeNode : IDisposable
             case "wake":
                 controlResult = wake.Handle(DadIpcJson.Deserialize<DadWakeTakeoverRequestDto>(command.GetProperty("request").GetRawText())!);
                 break;
+            case "connection-error":
+                title.OnRecoveryLogout(0, command.GetProperty("code").GetInt32());
+                break;
+            case "lobby-error":
+                var lobbyValue = new byte[16];
+                lobbyValue[0] = 3;
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(lobbyValue.AsSpan(8), command.GetProperty("code").GetInt32());
+                var protectedError = title.ProtectConnectionError(lobbyValue);
+                controlResult = new { protectedError, code = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(lobbyValue.AsSpan(8)) };
+                break;
             case "ar-boundary":
                 if (automation.Busy) throw new InvalidOperationException("A busy synthetic AR cannot deliver its completion boundary.");
                 foreach (var handler in ipcSubscriptions["AutoRetainer.OnCharacterAdditionalTask"].ToArray()) handler.DynamicInvoke();
@@ -465,6 +483,16 @@ internal sealed class RuntimeNode : IDisposable
                 if (command.TryGetProperty("allianceUi", out var observedAlliance))
                     (allianceUi ?? throw new InvalidOperationException("Alliance UI is not configured.")).Observe(observedAlliance);
                 if (command.TryGetProperty("surface", out var surface)) automation.Surface = surface.GetString()!;
+                if (command.TryGetProperty("recoveryShiftHeld", out var recoveryShift)) automation.RecoveryShiftHeld = recoveryShift.GetBoolean();
+                if (command.TryGetProperty("recoveryOtherOwner", out var recoveryOwner)) automation.RecoveryOtherOwner = recoveryOwner.GetBoolean();
+                if (command.TryGetProperty("connectionRecoveryEnabled", out var recoveryEnabled))
+                {
+                    configuration.ConnectionRecoveryEnabled = recoveryEnabled.GetBoolean();
+                    if (!configuration.ConnectionRecoveryEnabled) title.CancelConnectionRecovery("Connection recovery switched off.");
+                    configuration.Save();
+                    persistence.ForceFlush();
+                }
+                if (command.TryGetProperty("recoveryAccount", out var recoveryAccount)) configuration.ClientAccountId = recoveryAccount.GetString()!;
                 if (command.TryGetProperty("uncertainLogin", out var uncertainLogin)) automation.UncertainLogin = uncertainLogin.GetBoolean();
                 if (command.TryGetProperty("automationBusy", out var busy)) automation.Busy = busy.GetBoolean();
                 if (command.TryGetProperty("multiMode", out var multi)) automation.MultiMode = multi.GetBoolean();
@@ -649,6 +677,7 @@ internal sealed class RuntimeNode : IDisposable
         cancellationCleanupPending = coordinator.HasPendingCancellationCleanup,
         alliance = allianceService?.GetStatus(), allianceReceiver = allianceService?.BuildUiSnapshot(),
         automation = new { automation.Suppressed, automation.MultiMode, automation.Surface },
+        connectionRecoveryStatus = title.ConnectionRecoveryStatus,
         dutyFinder = new { dutyFinder.Stage, isUnrestrictedParty = dutyFinder.ObservedUnrestrictedParty,
             dutyFinder.SelectedId, dutyFinder.CheckedRegularDutyId, dutyFinder.Fault },
         build = new

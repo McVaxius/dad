@@ -174,6 +174,12 @@ public sealed class ConfigWindow : Window, IDisposable
 
         DrawSectionHeader("Start safeguards");
 
+        var recovery = configuration.ConnectionRecoveryEnabled;
+        if (UiGui.Checkbox("Recover game connections automatically", ref recovery))
+            plugin.SetConnectionRecoveryEnabled(recovery);
+        UiGui.TextWrapped("Keep the game open after lobby errors and reconnect the same local character after a connection loss while DAD is enabled. Hold Shift or use Stop All to stop recovery. Service-account selection stays manual.");
+        DrawStatusRow("Connection recovery", plugin.TitleMenuReadinessService.ConnectionRecoveryStatus);
+
         var partyOverride = configuration.PartyValidationOverrideEnabled;
         if (UiGui.Checkbox("Skip live party readiness checks (unsafe)", ref partyOverride))
         {

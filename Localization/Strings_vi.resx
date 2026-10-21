@@ -8803,4 +8803,37 @@
   <data name="member_013" xml:space="preserve"><value>Áp dụng dòng này cho mọi thành viên</value></data>
   <data name="member_014" xml:space="preserve"><value>Danh sách ADS và lệnh cuối tùy chọn cho từng thành viên. Lựa chọn trống được tắt.</value></data>
   <data name="member_015" xml:space="preserve"><value>Đã lưu chỉ định thành viên.</value></data>
+  <data name="recovery_001" xml:space="preserve"><value>Tự động khôi phục kết nối trò chơi</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>Khi DAD bật, giữ trò chơi mở sau lỗi sảnh và kết nối lại cùng nhân vật cục bộ khi mất kết nối. Giữ Shift hoặc dùng Dừng tất cả để dừng khôi phục. Tài khoản dịch vụ vẫn được chọn thủ công.</value></data>
+  <data name="recovery_003" xml:space="preserve"><value>Khôi phục kết nối</value></data>
+  <data name="recovery_004" xml:space="preserve"><value>Đang chờ phiên cục bộ.</value></data>
+  <data name="recovery_005" xml:space="preserve"><value>Khôi phục kết nối đang tắt.</value></data>
+  <data name="recovery_006" xml:space="preserve"><value>Đã dừng khôi phục kết nối bằng Shift.</value></data>
+  <data name="recovery_007" xml:space="preserve"><value>Đã khôi phục kết nối.</value></data>
+  <data name="recovery_008" xml:space="preserve"><value>Đã phát hiện phiên cục bộ.</value></data>
+  <data name="recovery_009" xml:space="preserve"><value>Khôi phục kết nối yêu cầu cùng tài khoản cục bộ.</value></data>
+  <data name="recovery_010" xml:space="preserve"><value>Khôi phục kết nối đã nhường quyền điều khiển cho tiến trình đăng nhập khác.</value></data>
+  <data name="recovery_011" xml:space="preserve"><value>Đang khôi phục kết nối sau lỗi {0}.</value></data>
+  <data name="recovery_012" xml:space="preserve"><value>Đóng lỗi sảnh đang hiển thị để tiếp tục khôi phục kết nối.</value></data>
+  <data name="recovery_013" xml:space="preserve"><value>Khôi phục kết nối đang chờ bạn chọn tài khoản dịch vụ.</value></data>
+  <data name="recovery_014" xml:space="preserve"><value>Đã tắt khôi phục kết nối.</value></data>
+  <data name="recovery_015" xml:space="preserve"><value>Các điều kiện cho thao tác khôi phục dự kiến không còn đáp ứng.</value></data>
+  <data name="recovery_016" xml:space="preserve"><value>Đã kết thúc khôi phục kết nối.</value></data>
+  <data name="recovery_017" xml:space="preserve"><value>Đã dừng khôi phục kết nối vì không đọc được thao tác gốc.</value></data>
+  <data name="recovery_018" xml:space="preserve"><value>Đã đăng xuất bình thường.</value></data>
+  <data name="recovery_019" xml:space="preserve"><value>Không có bảo vệ sảnh; hãy kiểm tra phiên bản trò chơi đã cài đặt.</value></data>
+  <data name="recovery_020" xml:space="preserve"><value>Không thể khởi tạo bảo vệ sảnh; hãy kiểm tra nhật ký plugin.</value></data>
+  <data name="Auto" xml:space="preserve"><value>Tự động</value></data>
+  <data name="Picker" xml:space="preserve"><value>Bộ chọn</value></data>
+  <data name="Default" xml:space="preserve"><value>Mặc định</value></data>
+  <data name="Background, controls and text follow your theme." xml:space="preserve"><value>Nền, điều khiển và văn bản theo chủ đề của bạn.</value></data>
+  <data name="Theme colour" xml:space="preserve"><value>Màu chủ đề</value></data>
+  <data name="Choose each colour independently." xml:space="preserve"><value>Chọn từng màu riêng biệt.</value></data>
+  <data name="Background" xml:space="preserve"><value>Nền</value></data>
+  <data name="Controls" xml:space="preserve"><value>Điều khiển</value></data>
+  <data name="Text" xml:space="preserve"><value>Văn bản</value></data>
+  <data name="Aa  Preview text" xml:space="preserve"><value>Aa  Xem trước văn bản</value></data>
+  <data name="Control" xml:space="preserve"><value>Điều khiển</value></data>
+  <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Chuyển sang Bộ chọn để tự đặt từng màu.</value></data>
+  <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Chuyển về Tự động để dùng chủ đề tự động.</value></data>
 </root>

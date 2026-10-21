@@ -8806,4 +8806,37 @@ Nur</value>
   <data name="member_013" xml:space="preserve"><value>Diese Zeile auf alle Mitglieder anwenden</value></data>
   <data name="member_014" xml:space="preserve"><value>Optionale ADS-Liste und Abschlussbefehl je Mitglied. Leere Angaben sind aus.</value></data>
   <data name="member_015" xml:space="preserve"><value>Mitgliedszuordnungen gespeichert.</value></data>
+  <data name="recovery_001" xml:space="preserve"><value>Spielverbindungen automatisch wiederherstellen</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>Bei aktiviertem DAD bleibt das Spiel nach Lobbyfehlern geöffnet und verbindet denselben lokalen Charakter nach einem Verbindungsabbruch erneut. Zum Stoppen Umschalt halten oder Alles stoppen verwenden. Das Dienstkonto wird manuell ausgewählt.</value></data>
+  <data name="recovery_003" xml:space="preserve"><value>Verbindungswiederherstellung</value></data>
+  <data name="recovery_004" xml:space="preserve"><value>Warte auf eine lokale Sitzung.</value></data>
+  <data name="recovery_005" xml:space="preserve"><value>Verbindungswiederherstellung ist aus.</value></data>
+  <data name="recovery_006" xml:space="preserve"><value>Verbindungswiederherstellung mit Umschalt gestoppt.</value></data>
+  <data name="recovery_007" xml:space="preserve"><value>Verbindung wiederhergestellt.</value></data>
+  <data name="recovery_008" xml:space="preserve"><value>Lokale Sitzung erkannt.</value></data>
+  <data name="recovery_009" xml:space="preserve"><value>Die Verbindungswiederherstellung benötigt dasselbe lokale Konto.</value></data>
+  <data name="recovery_010" xml:space="preserve"><value>Die Verbindungswiederherstellung überlässt einem anderen Anmeldevorgang die Kontrolle.</value></data>
+  <data name="recovery_011" xml:space="preserve"><value>Verbindung wird nach Fehler {0} wiederhergestellt.</value></data>
+  <data name="recovery_012" xml:space="preserve"><value>Schließe die sichtbare Lobby-Fehlermeldung, um die Verbindung weiter wiederherzustellen.</value></data>
+  <data name="recovery_013" xml:space="preserve"><value>Die Verbindungswiederherstellung wartet auf deine Dienstkontoauswahl.</value></data>
+  <data name="recovery_014" xml:space="preserve"><value>Verbindungswiederherstellung ausgeschaltet.</value></data>
+  <data name="recovery_015" xml:space="preserve"><value>Die Bedingungen für die vorgesehene Wiederherstellungsaktion sind nicht mehr erfüllt.</value></data>
+  <data name="recovery_016" xml:space="preserve"><value>Verbindungswiederherstellung beendet.</value></data>
+  <data name="recovery_017" xml:space="preserve"><value>Verbindungswiederherstellung nach einer nicht lesbaren nativen Aktion gestoppt.</value></data>
+  <data name="recovery_018" xml:space="preserve"><value>Normal abgemeldet.</value></data>
+  <data name="recovery_019" xml:space="preserve"><value>Lobby-Schutz ist nicht verfügbar; prüfe die installierte Spielversion.</value></data>
+  <data name="recovery_020" xml:space="preserve"><value>Lobby-Schutz konnte nicht initialisiert werden; prüfe das Plugin-Protokoll.</value></data>
+  <data name="Auto" xml:space="preserve"><value>Automatisch</value></data>
+  <data name="Picker" xml:space="preserve"><value>Farbwahl</value></data>
+  <data name="Default" xml:space="preserve"><value>Standard</value></data>
+  <data name="Background, controls and text follow your theme." xml:space="preserve"><value>Hintergrund, Steuerelemente und Text folgen deinem Design.</value></data>
+  <data name="Theme colour" xml:space="preserve"><value>Designfarbe</value></data>
+  <data name="Choose each colour independently." xml:space="preserve"><value>Wähle jede Farbe unabhängig aus.</value></data>
+  <data name="Background" xml:space="preserve"><value>Hintergrund</value></data>
+  <data name="Controls" xml:space="preserve"><value>Steuerelemente</value></data>
+  <data name="Text" xml:space="preserve"><value>Text</value></data>
+  <data name="Aa  Preview text" xml:space="preserve"><value>Aa  Textvorschau</value></data>
+  <data name="Control" xml:space="preserve"><value>Steuerelement</value></data>
+  <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Wechsle zur Farbwahl, um jede Farbe selbst festzulegen.</value></data>
+  <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Wechsle zurück zu Automatisch, um das automatische Design zu verwenden.</value></data>
 </root>

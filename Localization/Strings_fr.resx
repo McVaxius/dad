@@ -8845,4 +8845,37 @@ Les lignes</value>
   <data name="member_013" xml:space="preserve"><value>Appliquer cette ligne à tous les membres</value></data>
   <data name="member_014" xml:space="preserve"><value>Liste ADS et commande finale facultatives par membre. Les champs vides sont désactivés.</value></data>
   <data name="member_015" xml:space="preserve"><value>Affectations enregistrées.</value></data>
+  <data name="recovery_001" xml:space="preserve"><value>Rétablir automatiquement la connexion au jeu</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>Lorsque DAD est activé, garder le jeu ouvert après une erreur du lobby et reconnecter le même personnage local après une déconnexion. Maintenir Maj ou utiliser Tout arrêter pour interrompre la reprise. Le compte de service se choisit manuellement.</value></data>
+  <data name="recovery_003" xml:space="preserve"><value>Reprise de connexion</value></data>
+  <data name="recovery_004" xml:space="preserve"><value>En attente d’une session locale.</value></data>
+  <data name="recovery_005" xml:space="preserve"><value>La reprise de connexion est désactivée.</value></data>
+  <data name="recovery_006" xml:space="preserve"><value>Reprise de connexion arrêtée avec Maj.</value></data>
+  <data name="recovery_007" xml:space="preserve"><value>Connexion rétablie.</value></data>
+  <data name="recovery_008" xml:space="preserve"><value>Session locale détectée.</value></data>
+  <data name="recovery_009" xml:space="preserve"><value>La reprise de connexion exige le même compte local.</value></data>
+  <data name="recovery_010" xml:space="preserve"><value>La reprise de connexion laisse la main à une autre procédure de connexion.</value></data>
+  <data name="recovery_011" xml:space="preserve"><value>Reprise de connexion après l’erreur {0}.</value></data>
+  <data name="recovery_012" xml:space="preserve"><value>Fermez l’erreur du lobby affichée pour poursuivre la reprise de connexion.</value></data>
+  <data name="recovery_013" xml:space="preserve"><value>La reprise de connexion attend votre choix de compte de service.</value></data>
+  <data name="recovery_014" xml:space="preserve"><value>Reprise de connexion désactivée.</value></data>
+  <data name="recovery_015" xml:space="preserve"><value>Les conditions de l’action de reprise prévue ne sont plus réunies.</value></data>
+  <data name="recovery_016" xml:space="preserve"><value>Reprise de connexion terminée.</value></data>
+  <data name="recovery_017" xml:space="preserve"><value>Reprise de connexion arrêtée après une action native illisible.</value></data>
+  <data name="recovery_018" xml:space="preserve"><value>Déconnexion normale.</value></data>
+  <data name="recovery_019" xml:space="preserve"><value>La protection du lobby est indisponible ; vérifiez la version du jeu installée.</value></data>
+  <data name="recovery_020" xml:space="preserve"><value>La protection du lobby n’a pas pu être initialisée ; consultez le journal du plugin.</value></data>
+  <data name="Auto" xml:space="preserve"><value>Automatique</value></data>
+  <data name="Picker" xml:space="preserve"><value>Sélecteur</value></data>
+  <data name="Default" xml:space="preserve"><value>Par défaut</value></data>
+  <data name="Background, controls and text follow your theme." xml:space="preserve"><value>Le fond, les commandes et le texte suivent votre thème.</value></data>
+  <data name="Theme colour" xml:space="preserve"><value>Couleur du thème</value></data>
+  <data name="Choose each colour independently." xml:space="preserve"><value>Choisissez chaque couleur séparément.</value></data>
+  <data name="Background" xml:space="preserve"><value>Fond</value></data>
+  <data name="Controls" xml:space="preserve"><value>Commandes</value></data>
+  <data name="Text" xml:space="preserve"><value>Texte</value></data>
+  <data name="Aa  Preview text" xml:space="preserve"><value>Aa  Aperçu du texte</value></data>
+  <data name="Control" xml:space="preserve"><value>Commande</value></data>
+  <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Passez au Sélecteur pour définir chaque couleur.</value></data>
+  <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Revenez à Automatique pour utiliser le thème automatique.</value></data>
 </root>

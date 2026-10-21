@@ -20,6 +20,7 @@ public sealed class Configuration : IPluginConfiguration
     public int Version { get; set; } = DadAutoPartyConfigurationMigration.CurrentVersion;
     public string UiLanguage { get; set; } = "en";
     public uint UiAccentRgb { get; set; } = 0xFFAF74;
+    public AethertekUI.MaterialColorSettings UiColors { get; set; } = new();
     public bool UiCompact { get; set; } = true;
     public bool UiCompactVisibleOnMainWindow { get; set; }
     public bool UiTransparencyVisibleOnMainWindow { get; set; }
@@ -47,6 +48,7 @@ public sealed class Configuration : IPluginConfiguration
     private int uiUnfocusedDelaySeconds = 10;
     public int UiUnfocusedDelaySeconds { get => uiUnfocusedDelaySeconds; set => uiUnfocusedDelaySeconds = System.Math.Clamp(value, 0, 3600); }
     public bool PluginEnabled { get; set; } = false;
+    public bool ConnectionRecoveryEnabled { get; set; } = true;
     public bool RunAsServerDad { get; set; } = false;
     public bool LocalOnlyModeEnabled { get; set; }
     public bool DebugUiEnabled { get; set; }

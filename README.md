@@ -777,6 +777,13 @@ ID to distinguish the running DLL from an older build. Review reports for person
   **Equip recommended gear and update current gearset** defaults on, including existing presets, and is preserved by
   saving, cloning, and sharing. Each worker prepares once after job selection and before repair/queueing; gear preparation
   errors or a five-second timeout log once and continue the duty without retrying. Cancellation stops pending preparation.
+- **Recover game connections automatically** in **Settings -> Safety & Finish** defaults on for new and existing
+  configurations while DAD is enabled. Lobby protection keeps eligible game errors from closing the client; connection
+  recovery clears disconnect dialogs and logs back into the exact locally observed character, retaining its account,
+  content ID, world and data center. Service-account selection stays manual. Hold **Shift**, use **Stop all**, switch
+  recovery off or disable DAD to discard pending recovery. After unload/reload, a new observed local session is required;
+  stale recovery and abandoned duties/commands are never replayed. Another login owner retains control. If a named
+  lobby-error layout has no proven acknowledgement, the status asks you to close that dialog before recovery continues.
 - When a Client Dad loses its Coordinator route, a separate `DAD Client` window opens automatically with the
   target, current attempt, next retry, and last disconnect. Reconnect uses capped backoff while DAD remains
   enabled in Client, non-local mode; it stops when the route returns or the role, mode, or enabled state changes.

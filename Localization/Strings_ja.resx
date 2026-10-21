@@ -8804,4 +8804,37 @@
   <data name="member_013" xml:space="preserve"><value>この行の設定を全メンバーに適用</value></data>
   <data name="member_014" xml:space="preserve"><value>メンバーごとに任意のADSリストと最終コマンドを設定します。空欄は無効です。</value></data>
   <data name="member_015" xml:space="preserve"><value>メンバーの割り当てを保存しました。</value></data>
+  <data name="recovery_001" xml:space="preserve"><value>ゲーム接続を自動復旧</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>DADが有効な間、ロビーエラー後もゲームを終了せず、切断後に同じローカルキャラクターで再接続します。Shiftを押し続けるか「すべて停止」で復旧を停止します。サービスアカウントは手動で選択してください。</value></data>
+  <data name="recovery_003" xml:space="preserve"><value>接続の復旧</value></data>
+  <data name="recovery_004" xml:space="preserve"><value>ローカルセッションを待機しています。</value></data>
+  <data name="recovery_005" xml:space="preserve"><value>接続の復旧はオフです。</value></data>
+  <data name="recovery_006" xml:space="preserve"><value>Shiftで接続の復旧を停止しました。</value></data>
+  <data name="recovery_007" xml:space="preserve"><value>接続が復旧しました。</value></data>
+  <data name="recovery_008" xml:space="preserve"><value>ローカルセッションを確認しました。</value></data>
+  <data name="recovery_009" xml:space="preserve"><value>接続の復旧には同じローカルアカウントが必要です。</value></data>
+  <data name="recovery_010" xml:space="preserve"><value>別のログイン処理に接続の復旧を引き継ぎました。</value></data>
+  <data name="recovery_011" xml:space="preserve"><value>エラー {0} 後の接続を復旧しています。</value></data>
+  <data name="recovery_012" xml:space="preserve"><value>表示中のロビーエラーを閉じると、接続の復旧を続行します。</value></data>
+  <data name="recovery_013" xml:space="preserve"><value>接続の復旧はサービスアカウントの選択を待っています。</value></data>
+  <data name="recovery_014" xml:space="preserve"><value>接続の復旧をオフにしました。</value></data>
+  <data name="recovery_015" xml:space="preserve"><value>予定していた復旧操作の条件が満たされなくなりました。</value></data>
+  <data name="recovery_016" xml:space="preserve"><value>接続の復旧を終了しました。</value></data>
+  <data name="recovery_017" xml:space="preserve"><value>ネイティブ操作を読み取れなかったため、接続の復旧を停止しました。</value></data>
+  <data name="recovery_018" xml:space="preserve"><value>通常のログアウトを行いました。</value></data>
+  <data name="recovery_019" xml:space="preserve"><value>ロビー保護を利用できません。インストール済みのゲームバージョンを確認してください。</value></data>
+  <data name="recovery_020" xml:space="preserve"><value>ロビー保護を初期化できませんでした。プラグインのログを確認してください。</value></data>
+  <data name="Auto" xml:space="preserve"><value>自動</value></data>
+  <data name="Picker" xml:space="preserve"><value>ピッカー</value></data>
+  <data name="Default" xml:space="preserve"><value>既定</value></data>
+  <data name="Background, controls and text follow your theme." xml:space="preserve"><value>背景、コントロール、テキストはテーマに従います。</value></data>
+  <data name="Theme colour" xml:space="preserve"><value>テーマの色</value></data>
+  <data name="Choose each colour independently." xml:space="preserve"><value>各色を個別に選択します。</value></data>
+  <data name="Background" xml:space="preserve"><value>背景</value></data>
+  <data name="Controls" xml:space="preserve"><value>コントロール</value></data>
+  <data name="Text" xml:space="preserve"><value>テキスト</value></data>
+  <data name="Aa  Preview text" xml:space="preserve"><value>Aa  テキストのプレビュー</value></data>
+  <data name="Control" xml:space="preserve"><value>コントロール</value></data>
+  <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>各色を自分で設定するにはピッカーに切り替えます。</value></data>
+  <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>自動テーマを使うには「自動」に戻します。</value></data>
 </root>
