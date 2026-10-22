@@ -13,13 +13,18 @@ namespace dad.Tests;
 
 public sealed class DadAlliancePartyFinderApi15LayoutTests
 {
-    // Keep the CI archive baseline and the reviewed 15.0.3.2 development references paired.
+    // Keep each reviewed Dalamud build paired with its exact upstream ClientStructs submodule.
     // https://github.com/goatcorp/Dalamud/tree/83042016d0e9996dc44c9f7fd96a8d33a5e586f2/lib/FFXIVClientStructs
-    // The newer AgentLookingForGroup adds a method; the tested layouts and condition values are unchanged.
+    // https://github.com/goatcorp/Dalamud/tree/f7d06f363955251991222363a7c008b8998b6565/lib/FFXIVClientStructs
+    // Reviewed 15.0.3.8 against 15.0.3.2: AgentLookingForGroup adds JoinConfirmAddonId;
+    // list renderers add fields/flags without moving the fields DAD reads. AtkUnitBase's
+    // visibility aliases keep the same bits; its callbacks and AgentInterface are unchanged.
+    // Recruitment/addon layouts, consumed enum values and ConditionFlag are unchanged.
     private static readonly (Version DalamudVersion, string ClientStructsCommit)[] ReviewedApi15Builds =
     [
         (new Version(15, 0, 3, 0), "cc474ca90dce0824334544ad7ec7d769f3cb6ee5"),
         (new Version(15, 0, 3, 2), "50e46a849ce2b2ada83e8fe4209c50b6a34d7695"),
+        (new Version(15, 0, 3, 8), "d6397a76b3a63c2b247025dc296653182b718ca6"),
     ];
 
     [Fact]

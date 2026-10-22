@@ -1,3 +1,7 @@
+2026-10-21 - Reviewed Party Finder SDK pairing
+
+- Accept the exact reviewed Dalamud 15.0.3.8 / ClientStructs d6397a76b3a63c2b247025dc296653182b718ca6 pair in the existing API 15 identity guards after checking the upstream submodule, recruitment/addon layouts, consumed GUI APIs and condition values. Retain the earlier reviewed pairs and every native layout/enum assertion; unreviewed pairs still fail. No gameplay, startup/recovery or release-version change.
+
 2026-10-20 - Independent UI colours
 
 - Add Auto (default) and Picker in Colour and Settings, with independent Background, Controls and Text choices. Preserve the existing automatic palette, saved manual choices, native controls and unrelated settings. Translate the editor in every supported language.
