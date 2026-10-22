@@ -8885,4 +8885,28 @@ Les lignes</value>
   <data name="ui_layout_opacity" xml:space="preserve"><value>Opacit? des fen?tres</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>Lorsque la fen?tre est inactive</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Configuration, achats et aide</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Activer la sélection</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Désactiver la sélection</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>Enregistrer la sélection</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>Annuler la sélection</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>Sessions multiples</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>Aucun profil enregistré avec propriétaire n&apos;est disponible.</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>Plusieurs propriétaires de profil ; vérifiez le propriétaire.</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>L&apos;identité du compte ou du personnage est manquante.</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>Aucun profil de personnage enregistré ne correspond exactement.</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>En attente de confirmation</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>Profil modifié ; annulez et modifiez à nouveau.</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>Conflit de révision ; annulez et modifiez à nouveau.</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>Enregistrement refusé</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>Lecture seule</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>Modifications en attente</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>Comptes connectés</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>Personnage actuel</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer occupé</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>{0} compte(s)</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>{0} connexion(s) en attente de l&apos;identité du compte ; {1} coordinateur(s).</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>{0} en lecture seule</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} modification(s) en attente</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Les personnages sont activés par défaut. Modifiez les profils enregistrés ici sans vous connecter à chaque personnage.</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Enregistrement du compte en cours</value></data>
 </root>

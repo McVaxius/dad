@@ -8881,4 +8881,28 @@ Tempo di recupero di</value>
   <data name="ui_layout_opacity" xml:space="preserve"><value>Opacit? della finestra</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>Quando non ? attiva</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Configurazione, acquisti e aiuto</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Abilita selezionati</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Disabilita selezionati</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>Salva selezionati</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>Annulla selezionati</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>Più sessioni</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>Nessun profilo salvato con proprietario disponibile.</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>Più proprietari del profilo; verifica la proprietà.</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>Manca l&apos;identità dell&apos;account o del personaggio.</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>Nessun profilo personaggio salvato corrisponde esattamente.</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>In attesa di conferma</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>Profilo modificato; annulla e modifica di nuovo.</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>Conflitto di revisione; annulla e modifica di nuovo.</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>Salvataggio rifiutato</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>Sola lettura</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>Modifiche in sospeso</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>Account connessi</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>Personaggio attuale</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer occupato</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>{0} account</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>{0} connessioni in attesa dell&apos;identità dell&apos;account; {1} coordinatori.</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>{0} in sola lettura</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} modifiche in sospeso</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>I personaggi sono abilitati per impostazione predefinita. Modifica qui i profili salvati senza accedere con ogni personaggio.</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Salvataggio account in corso</value></data>
 </root>

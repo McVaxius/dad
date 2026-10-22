@@ -8846,4 +8846,28 @@
   <data name="ui_layout_opacity" xml:space="preserve"><value>창 불투명도</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>포커스가 없을 때</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>??, ?? ? ???</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>선택 항목 활성화</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>선택 항목 비활성화</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>선택 항목 저장</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>선택 항목 취소</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>여러 세션</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>소유자가 확인된 저장 프로필이 없습니다.</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>프로필 소유자가 여러 명입니다. 소유권을 확인하세요.</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>계정 또는 캐릭터 식별 정보가 없습니다.</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>정확히 일치하는 저장된 캐릭터 프로필이 없습니다.</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>확인 응답 대기 중</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>프로필이 변경되었습니다. 취소한 후 다시 편집하세요.</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>리비전이 충돌합니다. 취소한 후 다시 편집하세요.</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>저장 거부됨</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>읽기 전용</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>저장되지 않은 변경 사항</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>연결된 계정</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>현재 캐릭터</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer 작업 중</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>계정 {0}개</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>계정 식별 대기 연결 {0}개; 코디네이터 {1}개.</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>읽기 전용 {0}개</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>저장되지 않은 변경 {0}개</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>캐릭터는 기본적으로 활성화됩니다. 각 캐릭터에 로그인하지 않고 여기에서 저장된 프로필을 편집하세요.</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>계정 저장 중</value></data>
 </root>

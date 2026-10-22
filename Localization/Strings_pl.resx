@@ -8843,4 +8843,28 @@
   <data name="ui_layout_opacity" xml:space="preserve"><value>Krycie okna</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>Bez fokusu</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Konfiguracja, zakupy i pomoc</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Włącz wybrane</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Wyłącz wybrane</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>Zapisz wybrane</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>Anuluj wybrane</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>Wiele sesji</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>Brak zapisanego profilu o znanym właścicielu.</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>Wielu właścicieli profilu; sprawdź własność.</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>Brak tożsamości konta lub postaci.</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>Brak dokładnie pasującego zapisanego profilu postaci.</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>Oczekiwanie na potwierdzenie</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>Profil się zmienił; anuluj i edytuj ponownie.</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>Konflikt wersji; anuluj i edytuj ponownie.</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>Zapis odrzucony</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>Tylko do odczytu</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>Oczekujące zmiany</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>Połączone konta</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>Bieżąca postać</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer zajęty</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>Liczba kont: {0}</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>Połączenia oczekujące na tożsamość konta: {0}; koordynatorzy: {1}.</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>Tylko do odczytu: {0}</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>Oczekujące zmiany: {0}</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Postacie są domyślnie włączone. Edytuj zapisane profile tutaj bez logowania się każdą postacią.</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Trwa zapisywanie konta</value></data>
 </root>

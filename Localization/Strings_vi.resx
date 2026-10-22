@@ -8843,4 +8843,28 @@
   <data name="ui_layout_opacity" xml:space="preserve"><value>?? m? c?a s?</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>Khi kh?ng ???c ch?n</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Thi?t l?p, mua s?m v? tr? gi?p</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Bật mục đã chọn</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Tắt mục đã chọn</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>Lưu mục đã chọn</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>Hủy mục đã chọn</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>Nhiều phiên</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>Không có hồ sơ đã lưu xác định được chủ sở hữu.</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>Có nhiều chủ sở hữu hồ sơ; hãy kiểm tra quyền sở hữu.</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>Thiếu định danh tài khoản hoặc nhân vật.</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>Không có hồ sơ nhân vật đã lưu khớp chính xác.</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>Đang chờ xác nhận</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>Hồ sơ đã thay đổi; hãy hủy rồi sửa lại.</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>Xung đột phiên bản; hãy hủy rồi sửa lại.</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>Lưu bị từ chối</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>Chỉ đọc</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>Thay đổi chưa lưu</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>Tài khoản đã kết nối</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>Nhân vật hiện tại</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer đang bận</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>{0} tài khoản</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>{0} kết nối đang chờ định danh tài khoản; {1} bộ điều phối.</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>{0} chỉ đọc</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} thay đổi chưa lưu</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Nhân vật được bật theo mặc định. Sửa hồ sơ đã lưu tại đây mà không cần đăng nhập từng nhân vật.</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Đang lưu tài khoản</value></data>
 </root>

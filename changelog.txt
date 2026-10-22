@@ -8,6 +8,8 @@
 2026-10-22 - Approved DAD workspace layout
 
 - Adopt the approved workspace rail and task-focused Plan editor, keep ordered schedules and current run/crew evidence prominent, and tighten independent guides, forms, lists and appearance groups. Preserve existing native actions, control identities, per-owner drafts, explicit saves, confirmations and exact Undo paths. No version or release change.
+- Replace connected-crew cards with compact account rows, collapse mirrored session observations, flag conflicting live sessions, and show only the current character with actual state and eligibility. Keep unidentified connections and full diagnostics separate.
+- Move per-character Enabled editing into the ordinary Crew roster, including stored logged-out characters. Keep default-on profiles, row and selected Save/Cancel, exact profile ownership and revisions, and a compact bulk-action toolbar. No automation, lifecycle, transport or release-version change.
 
 2026-10-21 - Reviewed Party Finder SDK pairing
 

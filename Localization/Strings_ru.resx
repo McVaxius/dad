@@ -8872,4 +8872,28 @@
   <data name="ui_layout_opacity" xml:space="preserve"><value>Непрозрачность окна</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>Когда окно не в фокусе</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>?????????, ??????? ? ??????</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Включить выбранные</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Отключить выбранные</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>Сохранить выбранные</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>Отменить выбранные</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>Несколько сеансов</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>Сохранённый профиль с известным владельцем недоступен.</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>Несколько владельцев профиля; проверьте владельца.</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>Не указана учётная запись или персонаж.</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>Нет точно соответствующего сохранённого профиля персонажа.</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>Ожидание подтверждения</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>Профиль изменён; отмените изменения и начните заново.</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>Конфликт версий; отмените изменения и начните заново.</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>Сохранение отклонено</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>Только чтение</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>Несохранённые изменения</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>Подключённые учётные записи</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>Текущий персонаж</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer занят</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>Учётных записей: {0}</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>Подключений в ожидании учётной записи: {0}; координаторов: {1}.</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>Только чтение: {0}</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>Несохранённых изменений: {0}</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Персонажи включены по умолчанию. Редактируйте сохранённые профили здесь, не входя за каждого персонажа.</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Сохранение учётной записи</value></data>
 </root>

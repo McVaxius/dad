@@ -8843,4 +8843,28 @@
   <data name="ui_layout_opacity" xml:space="preserve"><value>Window opacity</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>When unfocused</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Setup, shopping &amp; help</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Enable selected</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Disable selected</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>Save selected</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>Cancel selected</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>Multiple sessions</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>No owned stored profile is available.</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>Multiple profile owners; review ownership.</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>Account or character identity is missing.</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>No exact stored character profile is available.</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>Awaiting acknowledgement</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>Profile changed; cancel and edit again.</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>Revision conflict; cancel and edit again.</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>Save rejected</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>Read-only</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>Pending changes</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>Connected accounts</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>Current character</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer busy</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>{0} account(s)</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>{0} connection(s) awaiting account identity; {1} coordinator(s).</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>{0} read-only</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} pending change(s)</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Characters are enabled by default. Edit stored profiles here without logging into each character.</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Account save in progress</value></data>
 </root>

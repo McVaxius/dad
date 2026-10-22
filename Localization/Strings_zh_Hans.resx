@@ -8851,4 +8851,28 @@
   <data name="ui_layout_opacity" xml:space="preserve"><value>窗口不透明度</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>失去焦点时</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>设置、购物与帮助</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>启用所选</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>禁用所选</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>保存所选</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>取消所选</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>多个会话</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>没有可用的已确认所有者的已存储配置。</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>存在多个配置所有者；请检查归属。</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>缺少账号或角色标识。</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>没有完全匹配的已存储角色配置。</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>等待确认</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>配置已更改；请取消后重新编辑。</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>修订版本冲突；请取消后重新编辑。</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>保存被拒绝</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>只读</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>待保存的更改</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>已连接账号</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>当前角色</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer 忙碌</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>{0} 个账号</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>{0} 个连接正在等待账号标识；{1} 个协调端。</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>{0} 个只读</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} 项待保存更改</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>角色默认启用。无需登录各个角色，即可在此编辑已存储的配置。</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>正在保存账号</value></data>
 </root>

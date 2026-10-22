@@ -8844,4 +8844,28 @@
   <data name="ui_layout_opacity" xml:space="preserve"><value>ウィンドウの不透明度</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>フォーカスがないとき</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>設定・買い物・ヘルプ</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>選択を有効化</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>選択を無効化</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>選択を保存</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>選択を取り消す</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>複数のセッション</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>所有者が確認できる保存済みプロファイルがありません。</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>プロファイルの所有者が複数います。所有者を確認してください。</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>アカウントまたはキャラクターの識別情報がありません。</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>完全に一致する保存済みキャラクタープロファイルがありません。</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>応答を待機中</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>プロファイルが変更されました。取り消してから再編集してください。</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>リビジョンが競合しています。取り消してから再編集してください。</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>保存が拒否されました</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>読み取り専用</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>未保存の変更</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>接続中のアカウント</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>現在のキャラクター</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer 実行中</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>{0} アカウント</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>アカウント識別待ちの接続: {0}、コーディネーター: {1}。</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>読み取り専用: {0}</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>未保存の変更: {0}</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>キャラクターは既定で有効です。各キャラクターにログインせずに、ここで保存済みプロファイルを編集できます。</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>アカウントを保存中</value></data>
 </root>

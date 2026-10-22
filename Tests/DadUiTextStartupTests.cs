@@ -31,6 +31,13 @@ namespace dad.Tests
             Assert.Equal(expectedAuto, UiText.T("Auto"));
             Assert.Equal(expectedPicker, UiText.T("Picker"));
             Assert.Equal(expectedProtection, UiText.T("Lobby protection is enabled."));
+            Assert.Equal(text.Resources.GetString("ui_accounts_enable_selected", false), UiText.T("Enable selected"));
+            Assert.Equal(text.Resources.GetString("ui_accounts_revision_conflict", false),
+                UiText.T("Revision conflict; cancel and edit again."));
+            Assert.Equal(string.Format(text.Culture, text.Resources.GetString("ui_accounts_read_only_count", false)!, 3),
+                UiText.F("{0} read-only", 3));
+            Assert.Equal(string.Format(text.Culture, text.Resources.GetString("ui_accounts_unidentified_count", false)!, 2, 1),
+                UiText.F("{0} connection(s) awaiting account identity; {1} coordinator(s).", 2, 1));
 
             using (UiText.Font(UiFontRole.Body))
                 Assert.False(fontScope.Disposed);

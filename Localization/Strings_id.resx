@@ -8843,4 +8843,28 @@
   <data name="ui_layout_opacity" xml:space="preserve"><value>Opasitas jendela</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>Saat tidak aktif</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Pengaturan, belanja, dan bantuan</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Aktifkan pilihan</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Nonaktifkan pilihan</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>Simpan pilihan</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>Batalkan pilihan</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>Beberapa sesi</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>Tidak ada profil tersimpan dengan pemilik yang diketahui.</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>Beberapa pemilik profil; periksa kepemilikan.</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>Identitas akun atau karakter tidak tersedia.</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>Tidak ada profil karakter tersimpan yang cocok persis.</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>Menunggu konfirmasi</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>Profil berubah; batalkan lalu edit kembali.</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>Konflik revisi; batalkan lalu edit kembali.</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>Penyimpanan ditolak</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>Hanya baca</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>Perubahan tertunda</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>Akun terhubung</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>Karakter saat ini</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer sibuk</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>{0} akun</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>{0} koneksi menunggu identitas akun; {1} koordinator.</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>{0} hanya baca</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} perubahan tertunda</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Karakter diaktifkan secara bawaan. Edit profil tersimpan di sini tanpa masuk ke setiap karakter.</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Penyimpanan akun berlangsung</value></data>
 </root>

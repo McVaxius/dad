@@ -14,6 +14,8 @@
     <ProjectReference Include="..\Headless\Dad.Headless.csproj" Aliases="DadRuntime" />
     <ProjectReference Include="../../../aethertekUI/src/AethertekUI/AethertekUI.csproj" />
     <Compile Include="..\Windows\UiText.cs" Link="UiText.cs" />
+    <Compile Include="..\Windows\DadAccountSummaryProjection.cs" Link="DadAccountSummaryProjection.cs" />
+    <Compile Include="..\Windows\DadRosterEnabledDrafts.cs" Link="DadRosterEnabledDrafts.cs" />
     <EmbeddedResource Include="..\Localization\Strings_*.resx" LogicalName="dad.Localization.%(Filename).resources" />
     <Compile Include="..\Configuration.cs" Link="Configuration.cs" />
     <Reference Include="FFXIVClientStructs" HintPath="$(DalamudLibPath)FFXIVClientStructs.dll" Private="true" />

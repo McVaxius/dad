@@ -594,30 +594,7 @@ public sealed partial class MainWindow : Window, IDisposable
     }
 
     private void DrawHomeParticipantCards(DadCharacterPool pool, bool showDetails = true)
-    {
-        var participants = BuildVisibleParticipants(pool);
-        DadUi.Section("Connected crew");
-        var minimum = Math.Max(260 * MaterialTheme.Metrics.Scale,
-            participants.Select(p => MaterialText.Measure(FormatOperatorCharacterKey(p.ActiveCharacterKey.Value, "(unknown)")).X)
-                .DefaultIfEmpty(0).Max() + 40 * MaterialTheme.Metrics.Scale);
-        var columns = ImGui.GetContentRegionAvail().X >= minimum * 2 + ImGui.GetStyle().ItemSpacing.X ? 2 : 1;
-        if (!ImGui.BeginTable("dad-home-participant-cards", columns, ImGuiTableFlags.SizingStretchSame | ImGuiTableFlags.NoSavedSettings)) return;
-        foreach (var participant in participants)
-        {
-            ImGui.TableNextColumn();
-            if (!DadUi.BeginCard("dad-home-participant-" + participant.WorkerSessionId.Value)) continue;
-            using (UiText.Font(UiFontRole.BodyStrong))
-                MaterialText.Text(FormatOperatorAccountLabel(participant.ManagedAccountAlias, participant.ManagedAccountKey.Value));
-            MaterialText.Text(FormatOperatorCharacterKey(participant.ActiveCharacterKey.Value, "(unknown)"));
-            DadUi.Badge(participant.IsEligibleForRun ? "Eligible" : participant.PostArReady ? "Post-AR ready" : "Waiting",
-                participant.IsEligibleForRun ? DadUiTone.Success : DadUiTone.Warning);
-            using (UiText.Font(UiFontRole.Caption))
-                UiGui.TextWrapped(FormatParticipantStatus(participant));
-            if (showDetails && DadUi.Button("Details##dad-home-participant-details")) plugin.OpenMainTab(DadMainWindowTab.Multiplayer);
-            DadUi.EndCard();
-        }
-        ImGui.EndTable();
-    }
+        => DrawAccountSummary(pool, showDetails);
 
     private void DrawOverviewCompact(DadVisibleRunState runState, CharacterConfig profile, uint windowRootId)
     {
@@ -626,10 +603,6 @@ public sealed partial class MainWindow : Window, IDisposable
         ImGuiP.PushOverrideID(windowRootId);
         var enabled=plugin.Configuration.PluginEnabled;
         if (UiGui.Checkbox("DAD enabled",ref enabled)) plugin.SetPluginEnabled(enabled,printStatus:false);
-        DadUi.SameLineIfFits((ImGui.GetFrameHeight() + ImGui.GetStyle().ItemInnerSpacing.X + MaterialText.Measure(UiText.T("Allow DAD to automate this character")).X) / MaterialTheme.Metrics.Scale);
-        var allowed=profile.Enabled;
-        if (UiGui.Checkbox("Allow DAD to automate this character",ref allowed))
-        { plugin.ConfigManager.UpdateActiveConfig(active=>active.Enabled=allowed);plugin.UpdateDtrBar(); }
         ImGui.PopID();
         DrawHomeParticipantCards(plugin.CharacterIntelligenceService.CurrentPool);
         if (!UiGui.CollapsingHeader("Setup, shopping & help###Expert workspaces")) return;
@@ -2037,10 +2010,7 @@ public sealed partial class MainWindow : Window, IDisposable
             DrawStatusRow("XADB roster", DadXadbClient.RosterIpcMissingWarning);
         if (catalog.Warnings.Count > 0)
             DrawStatusRow("Warnings", string.Join(" | ", catalog.Warnings.Distinct(StringComparer.OrdinalIgnoreCase)));
-        DrawStatusRow("Selection", $"{selectedFiltered.Count} selected in current filter.");
-
-        if (showAdvanced)
-            DrawRosterBulkTools(filtered, selectedFiltered);
+        DrawRosterSelectFiltered(filtered);
 
         if (filtered.Count == 0)
         {
@@ -2051,45 +2021,32 @@ public sealed partial class MainWindow : Window, IDisposable
         var showAccountColumn = string.IsNullOrWhiteSpace(rosterAccountFilter) ||
                                 string.Equals(rosterAccountFilter, RosterUnassignedAccountFilter, StringComparison.OrdinalIgnoreCase);
         var showProvenance = plugin.Configuration.DebugUiEnabled;
-        var columnCount = (showAccountColumn ? 8 : 7) + (showProvenance ? 3 : 0);
+        var columnCount = (showAccountColumn ? 9 : 8) + (showProvenance ? 3 : 0);
         var tableFlags = ImGuiTableFlags.Borders |
                          ImGuiTableFlags.RowBg |
                          ImGuiTableFlags.Resizable |
                          ImGuiTableFlags.SizingStretchProp |
-                         ImGuiTableFlags.ScrollY;
-        if (showProvenance)
-            tableFlags |= ImGuiTableFlags.ScrollX;
+                         ImGuiTableFlags.ScrollY |
+                         ImGuiTableFlags.ScrollX;
         using var tightRosterRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
-        if (!ImGui.BeginTable("dad-crew-roster", columnCount, tableFlags, new Vector2(0f, 430f)))
+        if (!ImGui.BeginTable("dad-crew-roster", columnCount, tableFlags, new Vector2(0f, 430f), RosterTableMinimumWidth(showAccountColumn, showProvenance)))
             return;
 
-        ImGui.TableSetupColumn("Sel");
-        if (showAccountColumn)
-            ImGui.TableSetupColumn("Account");
-        ImGui.TableSetupColumn("Character");
-        if (showProvenance)
-            ImGui.TableSetupColumn("ContentId");
-        ImGui.TableSetupColumn("World/DC");
-        if (showProvenance)
-            ImGui.TableSetupColumn("Snapshot age");
-        ImGui.TableSetupColumn("Job/Lvl");
-        ImGui.TableSetupColumn("State");
-        if (showProvenance)
-            ImGui.TableSetupColumn("Source");
-        ImGui.TableSetupColumn("Blockers");
-        ImGui.TableSetupColumn("Actions");
+        foreach (var column in RosterColumns(showAccountColumn, showProvenance))
+            ImGui.TableSetupColumn(column.Heading, ImGuiTableColumnFlags.WidthFixed, column.Width);
         ImGui.TableSetupScrollFreeze(0, 1);
         UiGui.TableHeadersRow();
 
         var clipper = ImGui.ImGuiListClipper();
-        clipper.Begin(filtered.Count);
+        var rosterRowHeight = RosterEnabledRowHeight();
+        clipper.Begin(filtered.Count, rosterRowHeight);
         while (clipper.Step())
         {
             for (var rowIndex = clipper.DisplayStart; rowIndex < clipper.DisplayEnd; rowIndex++)
             {
                 var character = filtered[rowIndex];
                 var selectionKey = BuildRosterSelectionKey(character);
-                ImGui.TableNextRow();
+                ImGui.TableNextRow(ImGuiTableRowFlags.None, rosterRowHeight);
                 ImGui.TableNextColumn();
                 var selected = rosterSelectedRows.Contains(selectionKey);
                 if (UiGui.Checkbox($"##dad-roster-select-{selectionKey}", ref selected))
@@ -2105,7 +2062,9 @@ public sealed partial class MainWindow : Window, IDisposable
                     UiGui.TextUnformatted(FormatRosterAccount(character));
                 }
                 ImGui.TableNextColumn();
-                MaterialText.Text(FormatOperatorCharacterKey(character.CharacterKey.Value, "(unknown)"));
+                MaterialText.SingleLine(FormatOperatorCharacterKey(character.CharacterKey.Value, "(unknown)"));
+                ImGui.TableNextColumn();
+                DrawRosterEnabledCell(character);
                 if (showProvenance)
                 {
                     ImGui.TableNextColumn();
@@ -2141,6 +2100,7 @@ public sealed partial class MainWindow : Window, IDisposable
         clipper.Destroy();
 
         ImGui.EndTable();
+        DrawRosterBulkTools(filtered, selectedFiltered);
     }
 
     private void DrawScheduleBuilderTab(DadVisibleRunState runState)
@@ -3703,47 +3663,7 @@ public sealed partial class MainWindow : Window, IDisposable
     }
 
     private void DrawRosterBulkTools(IReadOnlyList<DadRosterCharacter> filtered, IReadOnlyList<DadRosterCharacter> selectedFiltered)
-    {
-        if (filtered.Count == 0)
-            return;
-
-        var allFilteredSelected = filtered.All(character => rosterSelectedRows.Contains(BuildRosterSelectionKey(character)));
-        if (UiGui.Checkbox("Select filtered", ref allFilteredSelected))
-        {
-            foreach (var character in filtered)
-            {
-                var key = BuildRosterSelectionKey(character);
-                if (allFilteredSelected)
-                    rosterSelectedRows.Add(key);
-                else
-                    rosterSelectedRows.Remove(key);
-            }
-        }
-
-        ImGui.SameLine();
-        if (UiGui.SmallButton("Clear selection"))
-            rosterSelectedRows.Clear();
-
-        ImGui.BeginDisabled(selectedFiltered.Count == 0);
-        if (UiGui.SmallButton("Activate selected"))
-            SetRosterVisibility(selectedFiltered, DadRosterVisibility.Active);
-        ImGui.SameLine();
-        if (UiGui.SmallButton("Hide selected"))
-            SetRosterVisibility(selectedFiltered, DadRosterVisibility.Hidden);
-        ImGui.SameLine();
-        if (UiGui.SmallButton("Ignore selected"))
-            SetRosterVisibility(selectedFiltered, DadRosterVisibility.Ignored);
-        ImGui.SameLine();
-        if (UiGui.SmallButton("Mark update selected"))
-            SetRosterVisibility(selectedFiltered, DadRosterVisibility.NeedsUpdate);
-        ImGui.SameLine();
-        if (UiGui.SmallButton("Queue selected update"))
-            QueueRosterUpdate(selectedFiltered, dryRun: false);
-        ImGui.SameLine();
-        if (UiGui.SmallButton("Dry-run selected update"))
-            QueueRosterUpdate(selectedFiltered, dryRun: true);
-        ImGui.EndDisabled();
-    }
+        => DrawRosterToolbar(filtered);
 
     private void DrawRosterAssignmentSelector(DadAccountRosterCatalog catalog)
     {

@@ -8843,4 +8843,28 @@
   <data name="ui_layout_opacity" xml:space="preserve"><value>विंडो की अपारदर्शिता</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>फ़ोकस में न होने पर</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>?????, ??????? ?? ??????</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>चयनित सक्षम करें</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>चयनित अक्षम करें</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>चयनित सहेजें</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>चयनित रद्द करें</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>एकाधिक सत्र</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>ज्ञात स्वामी की कोई सहेजी गई प्रोफ़ाइल उपलब्ध नहीं है।</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>प्रोफ़ाइल के कई स्वामी हैं; स्वामित्व जाँचें।</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>खाते या पात्र की पहचान मौजूद नहीं है।</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>पूरी तरह मेल खाने वाली सहेजी गई पात्र प्रोफ़ाइल उपलब्ध नहीं है।</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>पुष्टि की प्रतीक्षा</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>प्रोफ़ाइल बदल गई है; रद्द करके फिर से संपादित करें।</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>संशोधन में टकराव है; रद्द करके फिर से संपादित करें।</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>सहेजना अस्वीकार हुआ</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>केवल पढ़ने के लिए</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>लंबित बदलाव</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>जुड़े हुए खाते</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>वर्तमान पात्र</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer व्यस्त</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>{0} खाते</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>{0} कनेक्शन खाते की पहचान की प्रतीक्षा में हैं; {1} समन्वयक।</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>{0} केवल पढ़ने के लिए</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} लंबित बदलाव</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>पात्र डिफ़ॉल्ट रूप से सक्षम हैं। हर पात्र में लॉग इन किए बिना सहेजी गई प्रोफ़ाइल यहाँ संपादित करें।</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>खाता सहेजा जा रहा है</value></data>
 </root>

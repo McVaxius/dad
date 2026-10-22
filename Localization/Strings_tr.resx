@@ -8843,4 +8843,28 @@
   <data name="ui_layout_opacity" xml:space="preserve"><value>Pencere opakl???</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>Odak d???ndayken</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Kurulum, al??veri? ve yard?m</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Seçilenleri etkinleştir</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Seçilenleri devre dışı bırak</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>Seçilenleri kaydet</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>Seçilenleri iptal et</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>Birden çok oturum</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>Sahibi bilinen kayıtlı bir profil yok.</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>Birden çok profil sahibi var; sahipliği inceleyin.</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>Hesap veya karakter kimliği eksik.</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>Tam eşleşen kayıtlı karakter profili yok.</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>Onay bekleniyor</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>Profil değişti; iptal edip yeniden düzenleyin.</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>Revizyon çakışması; iptal edip yeniden düzenleyin.</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>Kayıt reddedildi</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>Salt okunur</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>Bekleyen değişiklikler</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>Bağlı hesaplar</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>Geçerli karakter</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer meşgul</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>{0} hesap</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>{0} bağlantı hesap kimliğini bekliyor; {1} koordinatör.</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>{0} salt okunur</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} bekleyen değişiklik</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Karakterler varsayılan olarak etkindir. Her karakterle giriş yapmadan kayıtlı profilleri burada düzenleyin.</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Hesap kaydediliyor</value></data>
 </root>

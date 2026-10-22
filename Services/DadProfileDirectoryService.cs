@@ -77,52 +77,70 @@ public sealed class DadProfileDirectoryService : IDisposable
     }
 
     public DadProfileUpdateAck UpdateProfile(DadProfileUpdateRequest request)
+        => UpdateProfile(request, completed: null);
+
+    /// <summary>Expose completed save results to the owning UI without treating queued status as acceptance.</summary>
+    public DadProfileUpdateAck UpdateProfile(DadProfileUpdateRequest request, Action<DadProfileUpdateAck>? completed)
     {
+        DadProfileUpdateAck Complete(DadProfileUpdateAck result)
+        {
+            if (!disposed)
+                completed?.Invoke(result);
+            return result;
+        }
+
         var local = BuildLocalCatalog();
         if (local.Accounts.Any(account => DadRosterIdentity.SameAccount(account.AccountKey, request.AccountKey)))
         {
             var localAck = configManager.ApplyProfileUpdate(request);
             RebuildCurrentCatalogs(force: true);
-            return localAck;
+            return Complete(localAck);
         }
 
         var owner = remoteCatalogs.FindOwner(request.AccountKey);
         if (owner == null)
         {
-            return new DadProfileUpdateAck
+            return Complete(new DadProfileUpdateAck
             {
                 RequestId = request.RequestId,
                 Summary = $"No online Client Dad owns account {request.AccountKey}.",
-            };
+            });
         }
 
         if (owner.OwnerWorkerSessionId.IsEmpty || !transportService.IsWorkerOnline(owner.OwnerWorkerSessionId))
         {
-            return new DadProfileUpdateAck
+            return Complete(new DadProfileUpdateAck
             {
                 RequestId = request.RequestId,
                 Summary = $"Owning Client Dad for {request.AccountKey} is offline; profile is read-only.",
-            };
+            });
         }
 
         var ownerKey = owner.OwnerWorkerSessionId.Value;
         var ack = transportService.SendProfileUpdate(
             owner.OwnerWorkerSessionId,
             request,
-            completed => ApplyRemoteProfileAck(ownerKey, completed));
+            result =>
+            {
+                ApplyRemoteProfileAck(ownerKey, result);
+                if (!disposed)
+                    completed?.Invoke(result);
+            });
         if (ack == null)
         {
-            return new DadProfileUpdateAck
+            return Complete(new DadProfileUpdateAck
             {
                 RequestId = request.RequestId,
                 Summary = "Could not queue profile update through Dad Coordinator hub.",
-            };
+            });
         }
 
         if (ack.Account != null)
             ApplyRemoteProfileAck(ownerKey, ack);
 
-        return ack;
+        return ack.Accepted || ack.RevisionConflict || ack.Account != null
+            ? Complete(ack)
+            : ack;
     }
 
     public string GetAccountDirectoryJson()

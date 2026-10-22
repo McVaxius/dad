@@ -8843,4 +8843,28 @@
   <data name="ui_layout_opacity" xml:space="preserve"><value>Opacidade da janela</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>Sem foco</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Configura??o, compras e ajuda</value></data>
+  <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Ativar selecionados</value></data>
+  <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Desativar selecionados</value></data>
+  <data name="ui_accounts_save_selected" xml:space="preserve"><value>Salvar selecionados</value></data>
+  <data name="ui_accounts_cancel_selected" xml:space="preserve"><value>Cancelar selecionados</value></data>
+  <data name="ui_accounts_multiple_sessions" xml:space="preserve"><value>Várias sessões</value></data>
+  <data name="ui_accounts_no_owned_profile" xml:space="preserve"><value>Nenhum perfil salvo com proprietário está disponível.</value></data>
+  <data name="ui_accounts_multiple_owners" xml:space="preserve"><value>Vários proprietários do perfil; verifique a propriedade.</value></data>
+  <data name="ui_accounts_missing_identity" xml:space="preserve"><value>Falta a identidade da conta ou do personagem.</value></data>
+  <data name="ui_accounts_no_exact_profile" xml:space="preserve"><value>Nenhum perfil de personagem salvo corresponde exatamente.</value></data>
+  <data name="ui_accounts_awaiting_ack" xml:space="preserve"><value>Aguardando confirmação</value></data>
+  <data name="ui_accounts_profile_changed" xml:space="preserve"><value>O perfil foi alterado; cancele e edite novamente.</value></data>
+  <data name="ui_accounts_revision_conflict" xml:space="preserve"><value>Conflito de revisão; cancele e edite novamente.</value></data>
+  <data name="ui_accounts_save_rejected" xml:space="preserve"><value>Salvamento rejeitado</value></data>
+  <data name="ui_accounts_read_only" xml:space="preserve"><value>Somente leitura</value></data>
+  <data name="ui_accounts_pending_changes" xml:space="preserve"><value>Alterações pendentes</value></data>
+  <data name="ui_accounts_connected_accounts" xml:space="preserve"><value>Contas conectadas</value></data>
+  <data name="ui_accounts_current_character" xml:space="preserve"><value>Personagem atual</value></data>
+  <data name="ui_accounts_autoretainer_busy" xml:space="preserve"><value>AutoRetainer ocupado</value></data>
+  <data name="ui_accounts_account_count" xml:space="preserve"><value>{0} conta(s)</value></data>
+  <data name="ui_accounts_unidentified_count" xml:space="preserve"><value>{0} conexão(ões) aguardando a identidade da conta; {1} coordenador(es).</value></data>
+  <data name="ui_accounts_read_only_count" xml:space="preserve"><value>{0} somente leitura</value></data>
+  <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} alteração(ões) pendente(s)</value></data>
+  <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Os personagens são ativados por padrão. Edite os perfis salvos aqui sem entrar com cada personagem.</value></data>
+  <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Salvamento da conta em andamento</value></data>
 </root>
