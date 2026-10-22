@@ -8804,7 +8804,7 @@
   <data name="member_014" xml:space="preserve"><value>Danh sách ADS và lệnh cuối tùy chọn cho từng thành viên. Lựa chọn trống được tắt.</value></data>
   <data name="member_015" xml:space="preserve"><value>Đã lưu chỉ định thành viên.</value></data>
   <data name="recovery_001" xml:space="preserve"><value>Tự động khôi phục kết nối trò chơi</value></data>
-  <data name="recovery_002" xml:space="preserve"><value>Khi DAD bật, giữ trò chơi mở sau lỗi sảnh và kết nối lại cùng nhân vật cục bộ khi mất kết nối. Giữ Shift hoặc dùng Dừng tất cả để dừng khôi phục. Tài khoản dịch vụ vẫn được chọn thủ công.</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>Khi bật thiết lập này, giữ trò chơi mở sau lỗi sảnh ngay cả khi tự động hóa đã dừng. Chỉ kết nối lại cùng nhân vật cục bộ khi DAD đang bật. Giữ Shift hoặc dùng Dừng tất cả để dừng kết nối lại. Tài khoản dịch vụ vẫn được chọn thủ công.</value></data>
   <data name="recovery_003" xml:space="preserve"><value>Khôi phục kết nối</value></data>
   <data name="recovery_004" xml:space="preserve"><value>Đang chờ phiên cục bộ.</value></data>
   <data name="recovery_005" xml:space="preserve"><value>Khôi phục kết nối đang tắt.</value></data>
@@ -8823,7 +8823,6 @@
   <data name="recovery_018" xml:space="preserve"><value>Đã đăng xuất bình thường.</value></data>
   <data name="recovery_019" xml:space="preserve"><value>Không có bảo vệ sảnh; hãy kiểm tra phiên bản trò chơi đã cài đặt.</value></data>
   <data name="recovery_020" xml:space="preserve"><value>Không thể khởi tạo bảo vệ sảnh; hãy kiểm tra nhật ký plugin.</value></data>
-  <data name="Auto" xml:space="preserve"><value>Tự động</value></data>
   <data name="Picker" xml:space="preserve"><value>Bộ chọn</value></data>
   <data name="Default" xml:space="preserve"><value>Mặc định</value></data>
   <data name="Background, controls and text follow your theme." xml:space="preserve"><value>Nền, điều khiển và văn bản theo chủ đề của bạn.</value></data>
@@ -8836,4 +8835,12 @@
   <data name="Control" xml:space="preserve"><value>Điều khiển</value></data>
   <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Chuyển sang Bộ chọn để tự đặt từng màu.</value></data>
   <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Chuyển về Tự động để dùng chủ đề tự động.</value></data>
+  <data name="recovery_021" xml:space="preserve"><value>Bảo vệ lỗi sảnh đang bật.</value></data>
+  <data name="ui_layout_manage" xml:space="preserve"><value>Qu?n l?</value></data>
+  <data name="ui_layout_rules" xml:space="preserve"><value>Quy t?c</value></data>
+  <data name="ui_layout_theme_language" xml:space="preserve"><value>Giao di?n v? ng?n ng?</value></data>
+  <data name="ui_layout_main_controls" xml:space="preserve"><value>?i?u khi?n c?a s? ch?nh</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>?? m? c?a s?</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>Khi kh?ng ???c ch?n</value></data>
+  <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Thi?t l?p, mua s?m v? tr? gi?p</value></data>
 </root>

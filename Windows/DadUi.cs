@@ -96,22 +96,15 @@ internal static class DadUi
 
     public static void Section(string title, string? subtitle = null)
     {
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
         using (UiText.Font(UiFontRole.BodyStrong))
-        {
-            ImGui.PushStyleColor(ImGuiCol.Text,MaterialTheme.Current.Colors.OnSurface);
-            UiGui.TextUnformatted(title);
-            ImGui.PopStyleColor();
-        }
+            MaterialSettings.Section(UiText.T(title));
         if (!string.IsNullOrWhiteSpace(subtitle))
             MutedWrapped(subtitle);
     }
 
-    public static bool BeginCard(string id, float minimumHeight = 0f)
+    public static bool BeginCard(string id, float minimumHeight = 0f, bool flat = false)
     {
-        ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, new Vector2(DadPresentation.Compact?8:12,DadPresentation.Compact?6:10)*MaterialTheme.Metrics.Scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, flat ? Vector2.Zero : new Vector2(DadPresentation.Compact?8:12,DadPresentation.Compact?6:10)*MaterialTheme.Metrics.Scale);
         var open = ImGui.BeginTable(
             id,
             1,
@@ -129,15 +122,41 @@ internal static class DadUi
         return true;
     }
 
-    public static void EndCard()
+    public static void EndCard(bool flat = false)
     {
         var table=ImGuiP.GetCurrentTable();
         if (table.IsInsideRow) ImGuiP.TableEndRow(table);
-        ImGuiP.TablePushBackgroundChannel();
-        DadPresentation.Surface(table.OuterRect.Min,new Vector2(table.OuterRect.Max.X,Math.Max(table.OuterRect.Max.Y,table.RowPosY2)));
-        ImGuiP.TablePopBackgroundChannel();
+        if (!flat)
+        {
+            ImGuiP.TablePushBackgroundChannel();
+            DadPresentation.Surface(table.OuterRect.Min,new Vector2(table.OuterRect.Max.X,Math.Max(table.OuterRect.Max.Y,table.RowPosY2)));
+            ImGuiP.TablePopBackgroundChannel();
+        }
         ImGui.EndTable();
         ImGui.PopStyleVar();
+    }
+
+    public static bool NavigationItem(string id, string label, MaterialIcon icon, bool selected)
+    {
+        var scale = MaterialTheme.Metrics.Scale;
+        var text = UiText.T(label);
+        var size = MaterialText.Measure(text);
+        var height = Math.Max((DadPresentation.Compact ? 32 : 38) * scale, size.Y + 12 * scale);
+        using var appearance = new MaterialStyleScope();
+        appearance.Color(ImGuiCol.Text, Vector4.Zero);
+        appearance.Color(ImGuiCol.Header, MaterialTheme.Current.Colors.PrimaryContainer);
+        var clicked = ImGui.Selectable(id, selected, ImGuiSelectableFlags.None,
+            new Vector2(Math.Max(1, ImGui.GetContentRegionAvail().X), height));
+        var min = ImGui.GetItemRectMin();
+        var max = ImGui.GetItemRectMax();
+        var color = selected ? MaterialTheme.Current.Colors.Primary : MaterialTheme.Current.Colors.OnSurfaceVariant;
+        var draw = ImGui.GetWindowDrawList();
+        draw.PushClipRect(min, max, true);
+        MaterialIcons.Draw(icon, min + new Vector2(8 * scale, (height - 20 * scale) * .5f), 20 * scale, color, ImGui.GetStyle().Alpha);
+        MaterialText.AddText(draw, min + new Vector2(36 * scale, (height - size.Y) * .5f),
+            MaterialCanvas.Color(WithAlpha(color, color.W * ImGui.GetStyle().Alpha)), text);
+        draw.PopClipRect();
+        return clicked;
     }
 
     public static void Badge(string text,DadUiTone tone=DadUiTone.Neutral)

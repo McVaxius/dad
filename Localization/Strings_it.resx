@@ -8842,7 +8842,7 @@ Tempo di recupero di</value>
   <data name="member_014" xml:space="preserve"><value>Lista ADS e comando finale facoltativi per membro. Le scelte vuote sono disattivate.</value></data>
   <data name="member_015" xml:space="preserve"><value>Assegnazioni salvate.</value></data>
   <data name="recovery_001" xml:space="preserve"><value>Ripristina automaticamente la connessione al gioco</value></data>
-  <data name="recovery_002" xml:space="preserve"><value>Quando DAD è attivo, mantieni il gioco aperto dopo gli errori della lobby e riconnetti lo stesso personaggio locale dopo una disconnessione. Tieni premuto Maiusc o usa Ferma tutto per interrompere il ripristino. L&apos;account di servizio si seleziona manualmente.</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>Quando questa impostazione è attiva, mantieni il gioco aperto dopo gli errori della lobby, anche con l&apos;automazione arrestata. Riconnetti lo stesso personaggio locale solo quando DAD è attivo. Tieni premuto Maiusc o usa Ferma tutto per interrompere la riconnessione. L&apos;account di servizio si seleziona manualmente.</value></data>
   <data name="recovery_003" xml:space="preserve"><value>Ripristino connessione</value></data>
   <data name="recovery_004" xml:space="preserve"><value>In attesa di una sessione locale.</value></data>
   <data name="recovery_005" xml:space="preserve"><value>Il recupero della connessione è disattivato.</value></data>
@@ -8861,7 +8861,6 @@ Tempo di recupero di</value>
   <data name="recovery_018" xml:space="preserve"><value>Disconnessione normale.</value></data>
   <data name="recovery_019" xml:space="preserve"><value>La protezione della lobby non è disponibile; controlla la versione del gioco installata.</value></data>
   <data name="recovery_020" xml:space="preserve"><value>Impossibile inizializzare la protezione della lobby; controlla il registro del plugin.</value></data>
-  <data name="Auto" xml:space="preserve"><value>Automatico</value></data>
   <data name="Picker" xml:space="preserve"><value>Selettore</value></data>
   <data name="Default" xml:space="preserve"><value>Predefinito</value></data>
   <data name="Background, controls and text follow your theme." xml:space="preserve"><value>Sfondo, controlli e testo seguono il tema.</value></data>
@@ -8874,4 +8873,12 @@ Tempo di recupero di</value>
   <data name="Control" xml:space="preserve"><value>Controllo</value></data>
   <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Passa a Selettore per impostare ogni colore.</value></data>
   <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Torna ad Automatico per usare il tema automatico.</value></data>
+  <data name="recovery_021" xml:space="preserve"><value>La protezione della lobby è attiva.</value></data>
+  <data name="ui_layout_manage" xml:space="preserve"><value>Gestione</value></data>
+  <data name="ui_layout_rules" xml:space="preserve"><value>Regole</value></data>
+  <data name="ui_layout_theme_language" xml:space="preserve"><value>Tema e lingua</value></data>
+  <data name="ui_layout_main_controls" xml:space="preserve"><value>Controlli della finestra principale</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>Opacit? della finestra</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>Quando non ? attiva</value></data>
+  <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Configurazione, acquisti e aiuto</value></data>
 </root>

@@ -259,6 +259,8 @@ public sealed partial class Plugin : IDalamudPlugin
         EnsureClientAccountId();
         ConfigManager = new ConfigManager(PluginInterface, Log);
         ConfigManager.EnsureAccountSelected(Configuration.ClientAccountId, "Dad client");
+        // Validate UI resources before creating services that register native hooks or callbacks.
+        ApplyAppearance();
         DependencyService = new DadDependencyService(PluginInterface, Log);
         ExternalPluginCapabilityService = new DadExternalPluginCapabilityService();
         XadbClient = new DadXadbClient(PluginInterface, Log);
@@ -558,7 +560,6 @@ public sealed partial class Plugin : IDalamudPlugin
             HelpMessage = $"Open {PluginInfo.DisplayName}. Use {PluginInfo.Command} mini, {PluginInfo.Command} quick, {PluginInfo.Command} config, {PluginInfo.Command} batch, {PluginInfo.Command} fleet, {PluginInfo.Command} wizard, {PluginInfo.Command} shopping, {PluginInfo.Command} debug, {PluginInfo.Command} on, {PluginInfo.Command} off, {PluginInfo.Command} status, {PluginInfo.Command} run planner, {PluginInfo.Command} test profiles, {PluginInfo.Command} test workers, {PluginInfo.Command} test duty-ipc current, or {PluginInfo.Command} cancel.",
         });
 
-        ApplyAppearance();
         PluginInterface.UiBuilder.Draw += DrawUi;
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
@@ -5862,55 +5863,108 @@ public sealed partial class Plugin : IDalamudPlugin
         { Configuration.UiTransparencyEnabled = enabled; Configuration.Save(); }
     }
 
-    internal void DrawWindowAppearanceSettings()
-    {
-        if (!MaterialText.CollapsingHeader(UiText.T("Window appearance") + "###UiWindowAppearance")) return;
-        DrawWindowAppearanceEditor();
-    }
+    internal void DrawWindowAppearanceSettings() => DrawWindowAppearanceEditor(grouped: true);
 
-    private void DrawWindowAppearanceEditor()
+    private void DrawWindowAppearanceEditor() => DrawWindowAppearanceEditor(grouped: false);
+
+    private void DrawWindowAppearanceEditor(bool grouped)
     {
-        var showStatus = Configuration.UiShowTitlebarStatus;
-        if (UiGui.Checkbox("Show titlebar status###UiShowTitlebarStatus", ref showStatus))
-        { Configuration.UiShowTitlebarStatus = showStatus; Configuration.Save(); }
-        var detailedStatus = Configuration.UiDetailedTitlebarStatus;
-        if (UiGui.Checkbox("Detailed titlebar status###UiDetailedTitlebarStatus", ref detailedStatus))
-        { Configuration.UiDetailedTitlebarStatus = detailedStatus; Configuration.Save(); }
-        DrawCompactPreference();
-        ImGui.SameLine();
-        MaterialText.Text(UiText.T("Compact mode"));
-        DrawAppearanceSelector();
-        var compactVisible = Configuration.UiCompactVisibleOnMainWindow;
-        if (UiGui.Checkbox("Compact visible on main window", ref compactVisible))
-        { Configuration.UiCompactVisibleOnMainWindow = compactVisible; Configuration.Save(); }
-        var transparencyVisible = Configuration.UiTransparencyVisibleOnMainWindow;
-        if (UiGui.Checkbox("Transparency visible on main window", ref transparencyVisible))
-        { Configuration.UiTransparencyVisibleOnMainWindow = transparencyVisible; Configuration.Save(); }
-        var languageVisible = Configuration.UiLanguageVisibleOnMainWindow;
-        if (UiGui.Checkbox("Language visible on main window", ref languageVisible))
-        { Configuration.UiLanguageVisibleOnMainWindow = languageVisible; Configuration.Save(); }
-        var enabled = Configuration.UiTransparencyEnabled;
-        if (UiGui.Checkbox("Transparency", ref enabled))
-        { Configuration.UiTransparencyEnabled = enabled; Configuration.Save(); }
-        MaterialText.Text(UiText.T("Opacity (%)"));
-        ImGui.SetNextItemWidth(MaterialLayout.FitNextItemWidth(160 * MaterialTheme.Metrics.Scale, 80 * MaterialTheme.Metrics.Scale));
-        var normalOpacity = Configuration.UiWindowOpacityPercent;
-        if (ImGui.InputInt("##UiWindowOpacityPercent", ref normalOpacity))
-        { Configuration.UiWindowOpacityPercent = normalOpacity; Configuration.Save(); }
-        var autoFade = Configuration.UiAutoFade;
-        if (UiGui.Checkbox("Auto-fade when unfocused", ref autoFade))
-        { Configuration.UiAutoFade = autoFade; Configuration.Save(); }
-        ImGui.BeginDisabled(!autoFade);
-        MaterialText.Text(UiText.T("Unfocused opacity (%)"));
-        ImGui.SetNextItemWidth(MaterialLayout.FitNextItemWidth(160 * MaterialTheme.Metrics.Scale, 80 * MaterialTheme.Metrics.Scale));
-        var fadedOpacity = Configuration.UiFadedOpacityPercent;
-        if (ImGui.InputInt("##UiFadedOpacityPercent", ref fadedOpacity))
-        { Configuration.UiFadedOpacityPercent = fadedOpacity; Configuration.Save(); }
-        MaterialText.Text(UiText.T("Unfocused delay (seconds)"));
-        ImGui.SetNextItemWidth(MaterialLayout.FitNextItemWidth(160 * MaterialTheme.Metrics.Scale, 80 * MaterialTheme.Metrics.Scale));
-        var delay = Configuration.UiUnfocusedDelaySeconds;
-        if (ImGui.InputInt("##UiUnfocusedDelaySeconds", ref delay))
-        { Configuration.UiUnfocusedDelaySeconds = delay; Configuration.Save(); }
-        ImGui.EndDisabled();
+        using var controls = MaterialControls.Push(MaterialControlContext.Dense);
+        void DrawThemeAndLanguage()
+        {
+            DrawCompactPreference();
+            ImGui.SameLine();
+            MaterialText.Text(UiText.T("Compact mode"));
+            DrawAppearanceSelector();
+        }
+        void DrawMainWindowControls()
+        {
+            var showStatus = Configuration.UiShowTitlebarStatus;
+            if (UiGui.Checkbox("Show titlebar status###UiShowTitlebarStatus", ref showStatus))
+            { Configuration.UiShowTitlebarStatus = showStatus; Configuration.Save(); }
+            var detailedStatus = Configuration.UiDetailedTitlebarStatus;
+            if (UiGui.Checkbox("Detailed titlebar status###UiDetailedTitlebarStatus", ref detailedStatus))
+            { Configuration.UiDetailedTitlebarStatus = detailedStatus; Configuration.Save(); }
+            var compactVisible = Configuration.UiCompactVisibleOnMainWindow;
+            if (UiGui.Checkbox("Compact visible on main window", ref compactVisible))
+            { Configuration.UiCompactVisibleOnMainWindow = compactVisible; Configuration.Save(); }
+            var transparencyVisible = Configuration.UiTransparencyVisibleOnMainWindow;
+            if (UiGui.Checkbox("Transparency visible on main window", ref transparencyVisible))
+            { Configuration.UiTransparencyVisibleOnMainWindow = transparencyVisible; Configuration.Save(); }
+            var languageVisible = Configuration.UiLanguageVisibleOnMainWindow;
+            if (UiGui.Checkbox("Language visible on main window", ref languageVisible))
+            { Configuration.UiLanguageVisibleOnMainWindow = languageVisible; Configuration.Save(); }
+        }
+        void DrawOpacity()
+        {
+            var enabled = Configuration.UiTransparencyEnabled;
+            if (UiGui.Checkbox("Transparency", ref enabled))
+            { Configuration.UiTransparencyEnabled = enabled; Configuration.Save(); }
+            MaterialText.Text(UiText.T("Opacity (%)"));
+            ImGui.SetNextItemWidth(MaterialLayout.FitNextItemWidth(160 * MaterialTheme.Metrics.Scale, 80 * MaterialTheme.Metrics.Scale));
+            var normalOpacity = Configuration.UiWindowOpacityPercent;
+            if (ImGui.InputInt("##UiWindowOpacityPercent", ref normalOpacity))
+            { Configuration.UiWindowOpacityPercent = normalOpacity; Configuration.Save(); }
+        }
+        void DrawUnfocused()
+        {
+            var autoFade = Configuration.UiAutoFade;
+            if (UiGui.Checkbox("Auto-fade when unfocused", ref autoFade))
+            { Configuration.UiAutoFade = autoFade; Configuration.Save(); }
+            ImGui.BeginDisabled(!autoFade);
+            MaterialText.Text(UiText.T("Unfocused opacity (%)"));
+            ImGui.SetNextItemWidth(MaterialLayout.FitNextItemWidth(160 * MaterialTheme.Metrics.Scale, 80 * MaterialTheme.Metrics.Scale));
+            var fadedOpacity = Configuration.UiFadedOpacityPercent;
+            if (ImGui.InputInt("##UiFadedOpacityPercent", ref fadedOpacity))
+            { Configuration.UiFadedOpacityPercent = fadedOpacity; Configuration.Save(); }
+            MaterialText.Text(UiText.T("Unfocused delay (seconds)"));
+            ImGui.SetNextItemWidth(MaterialLayout.FitNextItemWidth(160 * MaterialTheme.Metrics.Scale, 80 * MaterialTheme.Metrics.Scale));
+            var delay = Configuration.UiUnfocusedDelaySeconds;
+            if (ImGui.InputInt("##UiUnfocusedDelaySeconds", ref delay))
+            { Configuration.UiUnfocusedDelaySeconds = delay; Configuration.Save(); }
+            ImGui.EndDisabled();
+        }
+        if (grouped)
+        {
+            var scale = MaterialTheme.Metrics.Scale;
+            var labels = new MaterialAppearanceSections(UiText.T("Theme & language"), UiText.T("Main window controls"),
+                UiText.T("Window opacity"), UiText.T("When unfocused"));
+            var checkboxWidth = new[] { "Show titlebar status", "Detailed titlebar status", "Compact visible on main window",
+                "Transparency visible on main window", "Language visible on main window", "Transparency", "Auto-fade when unfocused" }
+                .Max(label =>
+                {
+                    var translated = UiText.T(label);
+                    using var height = MaterialText.PushLineHeight(translated);
+                    return ImGui.GetFrameHeight() + ImGui.GetStyle().ItemInnerSpacing.X
+                        + Math.Max(ImGui.CalcTextSize(label).X, MaterialText.Measure(translated).X);
+                });
+            var compactWidth = ImGui.GetFrameHeight() + ImGui.GetStyle().ItemInnerSpacing.X + ImGui.CalcTextSize("C").X
+                + ImGui.GetStyle().ItemSpacing.X + MaterialText.Measure(UiText.T("Compact mode")).X;
+            var minimumColumn = Math.Max((Configuration.UiCompact ? 298 : 316) * scale, Math.Max(checkboxWidth, compactWidth));
+            minimumColumn = Math.Max(minimumColumn,
+                new[] { labels.ThemeAndLanguage, labels.MainWindowControls, labels.WindowOpacity, labels.WhenUnfocused }
+                    .Max(label => MaterialText.Measure(label).X));
+            // The selector accepts logical units; column bounds and measured captions are pixels.
+            using (MaterialControls.Push(DadPresentation.Controls(28, 18)))
+            {
+                var metrics = MaterialControls.Metrics;
+                var languageMinimum = UiText.Languages.Max(language => MaterialText.Measure(languageOptions.LabelFor(language.Code)).X)
+                    + metrics.Height + 3 * metrics.Gap + Math.Min(metrics.IconSize, metrics.Height);
+                minimumColumn = Math.Max(minimumColumn, Math.Max(AppearanceLanguageWidth() * scale, languageMinimum));
+                var pickerEditor = Math.Max(100 * scale, ImGui.CalcTextSize("#FFFFFF").X + 2 * ImGui.GetStyle().FramePadding.X)
+                    + ImGui.GetFrameHeight() + ImGui.GetStyle().ItemInnerSpacing.X;
+                var pickerLabels = new[] { "Background", "Controls", "Text" }.Max(label => MaterialText.Measure(UiText.T(label)).X);
+                minimumColumn = Math.Max(minimumColumn, pickerLabels + pickerEditor + 2 * ImGui.GetStyle().ItemSpacing.X);
+            }
+            MaterialAppearanceTab.Draw("dad-window-appearance-groups", labels, MathF.Ceiling(minimumColumn),
+                DrawThemeAndLanguage, DrawMainWindowControls, DrawOpacity, DrawUnfocused);
+        }
+        else
+        {
+            DrawThemeAndLanguage();
+            DrawMainWindowControls();
+            DrawOpacity();
+            DrawUnfocused();
+        }
     }
 }

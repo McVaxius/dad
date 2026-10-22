@@ -102,6 +102,7 @@ public sealed class DadAutoPartyWindow : Window
     public override void Draw()
     {
         motion.DrawChrome();
+        using var controls = MaterialControls.Push(MaterialControlContext.Dense);
         UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         ObserveTask();
         ObserveDirectoryRefresh();
@@ -196,57 +197,62 @@ public sealed class DadAutoPartyWindow : Window
             activationPending ||
             operationTask is { IsCompleted: false };
         ImGui.BeginDisabled(registrationLocked);
-        UiGui.TextWrapped("2. Enter a name for this DAD, then generate the registration challenge.");
-        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X * .55f);
-        UiGui.InputText("DAD endpoint alias", ref endpointAlias, 48);
-        var challengeButtonLabel = configuration.RegistrationRecoveryState ==
-            DadAutoPartyRegistrationRecoveryState.RecoveryAvailable ||
-            configuration.RegistrationState is DadAutoPartyRegistrationState.Active or
-                DadAutoPartyRegistrationState.BootstrapImported
-                ? "Recover registration"
-                : "Generate registration challenge";
-        if (UiGui.Button(challengeButtonLabel))
+        MaterialSettings.Columns("dad-autoparty-registration-fields", 320 * MaterialTheme.Metrics.Scale, () =>
         {
-            Start(async () =>
+            UiGui.TextWrapped("2. Enter a name for this DAD, then generate the registration challenge.");
+            ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X * .55f);
+            UiGui.InputText("DAD endpoint alias", ref endpointAlias, 48);
+            var challengeButtonLabel = configuration.RegistrationRecoveryState ==
+                DadAutoPartyRegistrationRecoveryState.RecoveryAvailable ||
+                configuration.RegistrationState is DadAutoPartyRegistrationState.Active or
+                    DadAutoPartyRegistrationState.BootstrapImported
+                    ? "Recover registration"
+                    : "Generate registration challenge";
+            if (UiGui.Button(challengeButtonLabel))
             {
-                var result = await plugin.AutoPartyService.IdentityPackages
-                    .GenerateChallengeAsync(endpointAlias)
-                    .ConfigureAwait(false);
-                return new UiOperationResult(
-                    result.SafeCode,
-                    result.Succeeded ? result.OutputPath : string.Empty);
-            });
-        }
-        UiGui.TextWrapped("3. Copy the complete challenge and use Discord's /autoparty register command in the configured server.");
-        UiGui.TextUnformatted("Encrypted registration challenge");
-        UiGui.InputTextMultiline(
-            "##Encrypted registration challenge",
-            ref challengeCopy,
-            4096,
-            new Vector2(-1f, ImGui.GetTextLineHeightWithSpacing() * 3f),
-            ImGuiInputTextFlags.ReadOnly);
-        if (!string.IsNullOrWhiteSpace(challengeCopy) && UiGui.Button("Copy challenge"))
-            ImGui.SetClipboardText(challengeCopy);
+                Start(async () =>
+                {
+                    var result = await plugin.AutoPartyService.IdentityPackages
+                        .GenerateChallengeAsync(endpointAlias)
+                        .ConfigureAwait(false);
+                    return new UiOperationResult(
+                        result.SafeCode,
+                        result.Succeeded ? result.OutputPath : string.Empty);
+                });
+            }
+            UiGui.TextWrapped("3. Copy the complete challenge and use Discord's /autoparty register command in the configured server.");
+            UiGui.TextUnformatted("Encrypted registration challenge");
+            UiGui.InputTextMultiline(
+                "##Encrypted registration challenge",
+                ref challengeCopy,
+                4096,
+                new Vector2(-1f, ImGui.GetTextLineHeightWithSpacing() * 3f),
+                ImGuiInputTextFlags.ReadOnly);
+            if (!string.IsNullOrWhiteSpace(challengeCopy) && UiGui.Button("Copy challenge"))
+                ImGui.SetClipboardText(challengeCopy);
 
-        UiGui.TextWrapped("4. Paste the bot's complete bootstrap DM reply (or its APB1 token) below, then import it.");
-        UiGui.TextUnformatted("Encrypted bootstrap DM");
-        UiGui.InputTextMultiline(
-            "##Encrypted bootstrap DM",
-            ref bootstrapCopy,
-            4096,
-            new Vector2(-1f, ImGui.GetTextLineHeightWithSpacing() * 3f));
-        if (UiGui.Button("Import bootstrap"))
+        }, () =>
         {
-            var copy = bootstrapCopy;
-            bootstrapCopy = string.Empty;
-            Start(async () =>
+            UiGui.TextWrapped("4. Paste the bot's complete bootstrap DM reply (or its APB1 token) below, then import it.");
+            UiGui.TextUnformatted("Encrypted bootstrap DM");
+            UiGui.InputTextMultiline(
+                "##Encrypted bootstrap DM",
+                ref bootstrapCopy,
+                4096,
+                new Vector2(-1f, ImGui.GetTextLineHeightWithSpacing() * 3f));
+            if (UiGui.Button("Import bootstrap"))
             {
-                var result = await plugin.AutoPartyEndpointService
-                    .ImportBootstrapCopyPasteAsync(copy)
-                    .ConfigureAwait(false);
-                return new UiOperationResult(result.SafeCode);
-            });
-        }
+                var copy = bootstrapCopy;
+                bootstrapCopy = string.Empty;
+                Start(async () =>
+                {
+                    var result = await plugin.AutoPartyEndpointService
+                        .ImportBootstrapCopyPasteAsync(copy)
+                        .ConfigureAwait(false);
+                    return new UiOperationResult(result.SafeCode);
+                });
+            }
+        });
         ImGui.EndDisabled();
 
         UiGui.TextWrapped("5. Keep AutoParty enabled and wait for Registration Active and mailbox Ready. Then open Pairing & sharing.");
@@ -877,11 +883,21 @@ public sealed class DadAutoPartyWindow : Window
     {
         UiGui.TextWrapped(
             $"Selected party order ({freeformSelectionOrder.Count}/{DadAutoPartyFreeformRules.MaximumParticipants}); first row is Party leader.");
+        var root = ImGui.GetID("");
+        using var rows = MaterialTable.PushTightRows();
+        var actionWidth = new[] { "Up", "Down", "Remove" }.Sum(label => MaterialText.Measure(UiText.T(label)).X + 2 * ImGui.GetStyle().FramePadding.X) + 2 * ImGui.GetStyle().ItemSpacing.X;
+        if (!ImGui.BeginTable("dad-autoparty-selection-order", 2, ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.RowBg | ImGuiTableFlags.NoSavedSettings)) return;
+        ImGui.TableSetupColumn("Characters", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthFixed, actionWidth);
         for (var index = 0; index < freeformSelectionOrder.Count; index++)
         {
             var key = freeformSelectionOrder[index];
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGuiP.PushOverrideID(root);
             ImGui.PushID(key);
             UiGui.TextWrapped($"{(index == 0 ? "Party leader" : $"Member {index + 1}")}: {ResolveSelectionLabel(key, directory)}");
+            ImGui.TableNextColumn();
             ImGui.BeginDisabled(index == 0);
             if (UiGui.SmallButton("Up"))
                 (freeformSelectionOrder[index - 1], freeformSelectionOrder[index]) =
@@ -898,10 +914,13 @@ public sealed class DadAutoPartyWindow : Window
             {
                 freeformSelectionOrder.RemoveAt(index);
                 ImGui.PopID();
+                ImGui.PopID();
                 break;
             }
             ImGui.PopID();
+            ImGui.PopID();
         }
+        ImGui.EndTable();
     }
 
     private string CreateFreeformParty(DadAutoPartyDirectorySnapshot directory)

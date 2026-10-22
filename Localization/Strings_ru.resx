@@ -8833,7 +8833,7 @@
   <data name="member_014" xml:space="preserve"><value>Необязательные список ADS и финальная команда для каждого участника. Пустые поля отключены.</value></data>
   <data name="member_015" xml:space="preserve"><value>Назначения сохранены.</value></data>
   <data name="recovery_001" xml:space="preserve"><value>Автоматически восстанавливать соединение с игрой</value></data>
-  <data name="recovery_002" xml:space="preserve"><value>При включённом DAD игра остаётся открытой после ошибок лобби и повторно подключает того же локального персонажа после разрыва связи. Для остановки удерживайте Shift или используйте Остановить всё. Учётная запись службы выбирается вручную.</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>При включённой настройке игра остаётся открытой после ошибок лобби, даже когда автоматизация остановлена. Повторное подключение того же локального персонажа выполняется только при включённом DAD. Чтобы остановить повторное подключение, удерживайте Shift или используйте Остановить всё. Учётная запись службы выбирается вручную.</value></data>
   <data name="recovery_003" xml:space="preserve"><value>Восстановление соединения</value></data>
   <data name="recovery_004" xml:space="preserve"><value>Ожидание локального сеанса.</value></data>
   <data name="recovery_005" xml:space="preserve"><value>Восстановление соединения отключено.</value></data>
@@ -8852,7 +8852,6 @@
   <data name="recovery_018" xml:space="preserve"><value>Обычный выход из игры.</value></data>
   <data name="recovery_019" xml:space="preserve"><value>Защита лобби недоступна; проверьте установленную версию игры.</value></data>
   <data name="recovery_020" xml:space="preserve"><value>Не удалось включить защиту лобби; проверьте журнал плагина.</value></data>
-  <data name="Auto" xml:space="preserve"><value>Авто</value></data>
   <data name="Picker" xml:space="preserve"><value>Палитра</value></data>
   <data name="Default" xml:space="preserve"><value>По умолчанию</value></data>
   <data name="Background, controls and text follow your theme." xml:space="preserve"><value>Фон, элементы управления и текст следуют теме.</value></data>
@@ -8865,4 +8864,12 @@
   <data name="Control" xml:space="preserve"><value>Кнопка</value></data>
   <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Переключитесь на Палитру, чтобы задать каждый цвет.</value></data>
   <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Вернитесь в Авто, чтобы использовать автоматическую тему.</value></data>
+  <data name="recovery_021" xml:space="preserve"><value>Защита от ошибок лобби включена.</value></data>
+  <data name="ui_layout_manage" xml:space="preserve"><value>Управление</value></data>
+  <data name="ui_layout_rules" xml:space="preserve"><value>Правила</value></data>
+  <data name="ui_layout_theme_language" xml:space="preserve"><value>Тема и язык</value></data>
+  <data name="ui_layout_main_controls" xml:space="preserve"><value>Элементы главного окна</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>Непрозрачность окна</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>Когда окно не в фокусе</value></data>
+  <data name="ui_layout_home_setup_help" xml:space="preserve"><value>?????????, ??????? ? ??????</value></data>
 </root>

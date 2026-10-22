@@ -8804,7 +8804,7 @@
   <data name="member_014" xml:space="preserve"><value>Daftar ADS dan perintah akhir opsional per anggota. Pilihan kosong dinonaktifkan.</value></data>
   <data name="member_015" xml:space="preserve"><value>Penetapan anggota disimpan.</value></data>
   <data name="recovery_001" xml:space="preserve"><value>Pulihkan koneksi game secara otomatis</value></data>
-  <data name="recovery_002" xml:space="preserve"><value>Saat DAD aktif, biarkan game terbuka setelah kesalahan lobi dan hubungkan kembali karakter lokal yang sama setelah koneksi terputus. Tahan Shift atau gunakan Hentikan semua untuk menghentikan pemulihan. Akun layanan tetap dipilih secara manual.</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>Saat pengaturan ini aktif, biarkan game terbuka setelah kesalahan lobi, meskipun otomatisasi dihentikan. Hubungkan kembali karakter lokal yang sama hanya saat DAD aktif. Tahan Shift atau gunakan Hentikan semua untuk menghentikan penyambungan kembali. Akun layanan tetap dipilih secara manual.</value></data>
   <data name="recovery_003" xml:space="preserve"><value>Pemulihan koneksi</value></data>
   <data name="recovery_004" xml:space="preserve"><value>Menunggu sesi lokal.</value></data>
   <data name="recovery_005" xml:space="preserve"><value>Pemulihan koneksi nonaktif.</value></data>
@@ -8823,7 +8823,6 @@
   <data name="recovery_018" xml:space="preserve"><value>Keluar secara normal.</value></data>
   <data name="recovery_019" xml:space="preserve"><value>Perlindungan lobi tidak tersedia; periksa versi game yang terpasang.</value></data>
   <data name="recovery_020" xml:space="preserve"><value>Perlindungan lobi tidak dapat diinisialisasi; periksa log plugin.</value></data>
-  <data name="Auto" xml:space="preserve"><value>Otomatis</value></data>
   <data name="Picker" xml:space="preserve"><value>Pemilih</value></data>
   <data name="Default" xml:space="preserve"><value>Bawaan</value></data>
   <data name="Background, controls and text follow your theme." xml:space="preserve"><value>Latar belakang, kontrol, dan teks mengikuti tema.</value></data>
@@ -8836,4 +8835,12 @@
   <data name="Control" xml:space="preserve"><value>Kontrol</value></data>
   <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Beralih ke Pemilih untuk menentukan setiap warna.</value></data>
   <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Kembali ke Otomatis untuk menggunakan tema otomatis.</value></data>
+  <data name="recovery_021" xml:space="preserve"><value>Perlindungan lobi aktif.</value></data>
+  <data name="ui_layout_manage" xml:space="preserve"><value>Kelola</value></data>
+  <data name="ui_layout_rules" xml:space="preserve"><value>Aturan</value></data>
+  <data name="ui_layout_theme_language" xml:space="preserve"><value>Tema dan bahasa</value></data>
+  <data name="ui_layout_main_controls" xml:space="preserve"><value>Kontrol jendela utama</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>Opasitas jendela</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>Saat tidak aktif</value></data>
+  <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Pengaturan, belanja, dan bantuan</value></data>
 </root>

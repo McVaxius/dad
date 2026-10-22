@@ -77,9 +77,11 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
         ApplyPendingPositionChange();
         var snapshot = plugin.BuildMiniStatusSnapshot();
         DrawHeader(snapshot);
-        DrawAutoParty(snapshot.AutoParty);
-        DrawEmergencyStop();
         DrawRun(snapshot);
+        DrawEmergencyStop();
+        var autoPartyNeedsAttention = !string.IsNullOrWhiteSpace(snapshot.AutoParty.FirstBlocker) || IsPending("autoparty-disband");
+        if (UiGui.CollapsingHeader("AutoParty", autoPartyNeedsAttention ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None))
+            DrawAutoParty(snapshot.AutoParty);
         DrawScheduler(snapshot);
         DrawInboundTakeover(snapshot.LocalTakeover);
         DrawFailures(snapshot);
@@ -124,7 +126,7 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
         var authorityTone=snapshot.Authority.Kind==DadAuthorityViewKind.RemoteStale || !string.IsNullOrWhiteSpace(snapshot.TransportError)
             ?DadUiTone.Warning:snapshot.Authority.HasRemoteAuthority || snapshot.IsCoordinator?DadUiTone.Success:DadUiTone.Neutral;
         DadUi.Badge(snapshot.Authority.StateText,authorityTone);
-        if (DadUi.BeginCard("dad-mini-connection"))
+        if (DadUi.BeginCard("dad-mini-connection", flat: true))
         {
             var connectionWidth=Math.Max(DadUi.CaptionWidth("Connection"),DadUi.BadgeWidth(snapshot.TransportStatus)*MaterialTheme.Metrics.Scale);
             var clientsWidth=Math.Max(DadUi.CaptionWidth("Clients"),MaterialText.Measure(UiText.F("{0} client(s)",snapshot.ConnectedWorkerCount)).X);
@@ -139,7 +141,7 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
             ImGuiP.PushOverrideID(windowRootId);
             DrawNavigationControls();
             ImGui.PopID();
-            DadUi.EndCard();
+            DadUi.EndCard(flat: true);
         }
         if (!snapshot.IsCoordinator && !plugin.TransportService.CurrentTransport.AuthorityRoutable)
         {
@@ -166,7 +168,7 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
     private void DrawAutoParty(DadMiniAutoPartySnapshot autoParty)
     {
         var windowRootId = ImGui.GetID("");
-        if (!DadUi.BeginCard("dad-mini-autoparty")) return;
+        if (!DadUi.BeginCard("dad-mini-autoparty", flat: true)) return;
         DadUi.IconHeading("AutoParty",string.Empty,MaterialIcon.Group);DadUi.SameLineIfFits(DadUi.BadgeWidth(autoParty.Enabled?"Enabled":"Disabled"));
         DadUi.Badge(autoParty.Enabled?"Enabled":"Disabled",autoParty.Enabled?DadUiTone.Success:DadUiTone.Neutral);
         (string Label,string Value)[] values=
@@ -215,7 +217,7 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
             UiGui.SetTooltip(autoParty.GuardedDisbandBlocker);
         if (IsPending("autoparty-disband")) DrawStateText("Click Confirm AutoParty disband within five seconds.",MiniState.Warning);
         ImGui.PopID();
-        DadUi.EndCard();
+        DadUi.EndCard(flat: true);
     }
 
     private void DrawEmergencyStop()

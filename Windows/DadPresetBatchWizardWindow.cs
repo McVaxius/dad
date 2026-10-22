@@ -1,3 +1,4 @@
+using AethertekUI;
 using AethertekUI.Dalamud;
 using System.Globalization;
 using System.Numerics;
@@ -16,6 +17,7 @@ public sealed class DadPresetBatchWizardWindow : Window
     private DadPresetBatchPreview? preview;
     private int stepIndex;
     private bool initialized;
+    private float accountLaneContentHeight;
     private string status = "Nothing is written until Preview is valid and Apply is pressed.";
     private string newPoolName = "Data-center pool";
     private int newPoolCrewCount = 1;
@@ -93,7 +95,7 @@ public sealed class DadPresetBatchWizardWindow : Window
         for (var index = 0; index < labels.Length; index++)
         {
             if (index > 0)
-                ImGui.SameLine();
+                DadUi.SameLineIfFits((MaterialText.Measure(UiText.T(labels[index])).X + 2 * ImGui.GetStyle().FramePadding.X) / MaterialTheme.Metrics.Scale);
             if (UiGui.SmallButton($"{labels[index]}##dad-batch-step-{index}"))
                 stepIndex = index;
         }
@@ -105,86 +107,112 @@ public sealed class DadPresetBatchWizardWindow : Window
         UiGui.TextWrapped("Selecting Rotating initially selects every Active character on that account; expand the lane to remove characters. Lane order is slot order.");
 
         var accounts = GetAccountKeys();
-        foreach (var account in accounts)
+        var root = ImGui.GetID("");
+        using var controls = MaterialTable.PushControls();
+        using var rows = MaterialTable.PushTightRows();
+        var accountWidth = Math.Max(MaterialText.Measure(UiText.T("Account")).X,
+            accounts.Select(account => MaterialText.Measure(account.Value).X).DefaultIfEmpty(0).Max());
+        var rotatingWidth = MaterialText.Measure(UiText.T("Rotating")).X + ImGui.GetFrameHeight() + ImGui.GetStyle().ItemInnerSpacing.X;
+        var anchorWidth = MaterialText.Measure(UiText.T("Anchor")).X + ImGui.GetFrameHeight() + ImGui.GetStyle().ItemInnerSpacing.X;
+        var minimum = accountWidth + rotatingWidth + anchorWidth + 300 * MaterialTheme.Metrics.Scale;
+        var footerReserve = ImGui.GetFrameHeightWithSpacing() * 3 + ImGui.GetTextLineHeightWithSpacing() * 2;
+        var measuredHeight = accountLaneContentHeight > 0 ? accountLaneContentHeight : (accounts.Count + 1) * ImGui.GetFrameHeightWithSpacing() + ImGui.GetStyle().ScrollbarSize;
+        var listHeight = Math.Min(measuredHeight, Math.Max(ImGui.GetFrameHeight() * 3, ImGui.GetContentRegionAvail().Y - footerReserve));
+        if (ImGui.BeginTable("dad-batch-account-lanes", 4, ImGuiTableFlags.SizingFixedFit | ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollX | ImGuiTableFlags.ScrollY | ImGuiTableFlags.NoSavedSettings, new Vector2(0, listHeight), Math.Max(minimum, ImGui.GetContentRegionAvail().X)))
         {
-            ImGui.PushID(account.Value);
-            var rotatingIndex = draft.RotatingLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
-            var anchorIndex = draft.AnchorLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
-            var rotating = rotatingIndex >= 0;
-            var anchor = anchorIndex >= 0;
-            UiGui.TextUnformatted(account.Value);
-            ImGui.SameLine();
-            if (UiGui.Checkbox("Rotating", ref rotating))
+            ImGui.TableSetupColumn("Account", ImGuiTableColumnFlags.WidthFixed, accountWidth);
+            ImGui.TableSetupColumn("Rotating", ImGuiTableColumnFlags.WidthFixed, rotatingWidth);
+            ImGui.TableSetupColumn("Anchor", ImGuiTableColumnFlags.WidthFixed, anchorWidth);
+            ImGui.TableSetupColumn("Characters", ImGuiTableColumnFlags.WidthStretch);
+            UiGui.TableHeadersRow();
+            foreach (var account in accounts)
             {
-                if (rotating)
+                ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+                ImGuiP.PushOverrideID(root);
+                ImGui.PushID(account.Value);
+                var rotatingIndex = draft.RotatingLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
+                var anchorIndex = draft.AnchorLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
+                var rotating = rotatingIndex >= 0;
+                var anchor = anchorIndex >= 0;
+                UiGui.TextUnformatted(account.Value);
+                ImGui.TableNextColumn();
+                if (UiGui.Checkbox("Rotating", ref rotating))
                 {
-                    draft.AnchorLanes.RemoveAll(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
-                    draft.RotatingLanes.Add(new DadPresetBatchRotatingLane
+                    if (rotating)
                     {
-                        AccountKey = account,
-                        Characters = GetCharacters(account).Select(DadRosterIdentity.From).ToList(),
-                    });
-                }
-                else
-                {
-                    draft.RotatingLanes.RemoveAll(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
-                }
-                InvalidatePreview();
-                rotatingIndex = draft.RotatingLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
-                anchor = false;
-            }
-            ImGui.SameLine();
-            if (UiGui.Checkbox("Anchor", ref anchor))
-            {
-                if (anchor)
-                {
-                    draft.RotatingLanes.RemoveAll(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
-                    draft.AnchorLanes.Add(new DadPresetBatchAnchorLane { AccountKey = account });
-                }
-                else
-                {
-                    draft.AnchorLanes.RemoveAll(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
-                }
-                InvalidatePreview();
-                rotating = false;
-            }
-
-            rotatingIndex = draft.RotatingLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
-            if (rotatingIndex >= 0)
-            {
-                ImGui.SameLine();
-                DrawMoveButtons(draft.RotatingLanes, rotatingIndex, "rotating");
-                rotatingIndex = draft.RotatingLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
-                var lane = draft.RotatingLanes[rotatingIndex];
-                ImGui.SameLine();
-                UiGui.TextDisabled($"{lane.Characters.Count} selected");
-                if (UiGui.TreeNode($"Characters##dad-batch-characters-{account.Value}"))
-                {
-                    foreach (var character in GetCharacters(account))
-                    {
-                        var reference = DadRosterIdentity.From(character);
-                        var selected = lane.Characters.Any(candidate => DadRosterIdentity.Matches(character, candidate));
-                        if (UiGui.Checkbox($"{character.CharacterKey.Value} [{character.DataCenterName}]##{DadRosterIdentity.BuildKey(character)}", ref selected))
+                        draft.AnchorLanes.RemoveAll(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
+                        draft.RotatingLanes.Add(new DadPresetBatchRotatingLane
                         {
-                            if (selected)
-                                lane.Characters.Add(reference);
-                            else
-                                lane.Characters.RemoveAll(candidate => DadRosterIdentity.Matches(character, candidate));
-                            InvalidatePreview();
-                        }
+                            AccountKey = account,
+                            Characters = GetCharacters(account).Select(DadRosterIdentity.From).ToList(),
+                        });
                     }
-                    ImGui.TreePop();
+                    else
+                    {
+                        draft.RotatingLanes.RemoveAll(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
+                    }
+                    InvalidatePreview();
+                    rotatingIndex = draft.RotatingLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
+                    anchor = false;
                 }
+                ImGui.TableNextColumn();
+                if (UiGui.Checkbox("Anchor", ref anchor))
+                {
+                    if (anchor)
+                    {
+                        draft.RotatingLanes.RemoveAll(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
+                        draft.AnchorLanes.Add(new DadPresetBatchAnchorLane { AccountKey = account });
+                    }
+                    else
+                    {
+                        draft.AnchorLanes.RemoveAll(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
+                    }
+                    InvalidatePreview();
+                    rotating = false;
+                }
+
+                ImGui.TableNextColumn();
+                rotatingIndex = draft.RotatingLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
+                if (rotatingIndex >= 0)
+                {
+                    DrawMoveButtons(draft.RotatingLanes, rotatingIndex, "rotating");
+                    rotatingIndex = draft.RotatingLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
+                    var lane = draft.RotatingLanes[rotatingIndex];
+                    ImGui.SameLine();
+                    UiGui.TextDisabled($"{lane.Characters.Count} selected");
+                    if (UiGui.TreeNode($"Characters##dad-batch-characters-{account.Value}"))
+                    {
+                        foreach (var character in GetCharacters(account))
+                        {
+                            var reference = DadRosterIdentity.From(character);
+                            var selected = lane.Characters.Any(candidate => DadRosterIdentity.Matches(character, candidate));
+                            if (UiGui.Checkbox($"{character.CharacterKey.Value} [{character.DataCenterName}]##{DadRosterIdentity.BuildKey(character)}", ref selected))
+                            {
+                                if (selected)
+                                    lane.Characters.Add(reference);
+                                else
+                                    lane.Characters.RemoveAll(candidate => DadRosterIdentity.Matches(character, candidate));
+                                InvalidatePreview();
+                            }
+                        }
+                        ImGui.TreePop();
+                    }
+                }
+                else if (anchor)
+                {
+                    anchorIndex = draft.AnchorLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
+                    DrawMoveButtons(draft.AnchorLanes, anchorIndex, "anchor");
+                    DadUi.SameLineIfFits(MaterialText.Measure(UiText.T("choose one character per pool in step 2")).X / MaterialTheme.Metrics.Scale);
+                    UiGui.TextDisabled("choose one character per pool in step 2");
+                }
+                ImGui.PopID();
+                ImGui.PopID();
             }
-            else if (anchor)
-            {
-                anchorIndex = draft.AnchorLanes.FindIndex(lane => DadRosterIdentity.SameAccount(lane.AccountKey, account));
-                ImGui.SameLine();
-                DrawMoveButtons(draft.AnchorLanes, anchorIndex, "anchor");
-                ImGui.SameLine();
-                UiGui.TextDisabled("choose one character per pool in step 2");
-            }
-            ImGui.PopID();
+            var laneTable = ImGuiP.GetCurrentTable();
+            if (laneTable.IsInsideRow) ImGuiP.TableEndRow(laneTable);
+            accountLaneContentHeight = laneTable.RowPosY2 - laneTable.WorkRect.Min.Y + ImGui.GetStyle().ScrollbarSize + 2 * MaterialTheme.Metrics.Scale;
+            ImGui.EndTable();
         }
 
         if (accounts.Count == 0)
@@ -193,12 +221,18 @@ public sealed class DadPresetBatchWizardWindow : Window
 
     private void DrawPoolsStep()
     {
+        using var controls = MaterialControls.Push(MaterialControlContext.Dense);
         DadUi.Heading("NAMED DC POOLS AND ANCHORS", "Each selected DC can belong to only one pool. Every rotating lane must supply the requested count in every pool.");
-        ImGui.SetNextItemWidth(260f);
-        UiGui.InputText("New pool name", ref newPoolName, DadPresetBatchLimits.MaxTextLength);
-        ImGui.SetNextItemWidth(140f);
-        UiGui.InputInt("Crew count", ref newPoolCrewCount);
-        DrawDataCenterChecklist(newPoolDataCenters, "new-pool");
+        MaterialSettings.Columns("dad-batch-new-pool-fields", 300 * MaterialTheme.Metrics.Scale, () =>
+        {
+            ImGui.SetNextItemWidth(260f);
+            UiGui.InputText("New pool name", ref newPoolName, DadPresetBatchLimits.MaxTextLength);
+            ImGui.SetNextItemWidth(140f);
+            UiGui.InputInt("Crew count", ref newPoolCrewCount);
+        }, () =>
+        {
+            DrawDataCenterChecklist(newPoolDataCenters, "new-pool");
+        });
         ImGui.BeginDisabled(draft.Pools.Count >= DadPresetBatchLimits.MaxPools);
         if (UiGui.Button("Add pool"))
         {
@@ -221,27 +255,33 @@ public sealed class DadPresetBatchWizardWindow : Window
             {
                 var name = pool.DisplayName;
                 var count = pool.CrewCount;
-                ImGui.SetNextItemWidth(260f);
-                if (UiGui.InputText("Name", ref name, DadPresetBatchLimits.MaxTextLength))
+                MaterialSettings.Columns("dad-batch-pool-fields", 300 * MaterialTheme.Metrics.Scale, () =>
                 {
-                    pool.DisplayName = name;
-                    InvalidatePreview();
-                }
-                ImGui.SetNextItemWidth(140f);
-                if (UiGui.InputInt("Crews", ref count))
+                    ImGui.SetNextItemWidth(260f);
+                    if (UiGui.InputText("Name", ref name, DadPresetBatchLimits.MaxTextLength))
+                    {
+                        pool.DisplayName = name;
+                        InvalidatePreview();
+                    }
+                    ImGui.SetNextItemWidth(140f);
+                    if (UiGui.InputInt("Crews", ref count))
+                    {
+                        pool.CrewCount = Math.Max(1, count);
+                        InvalidatePreview();
+                    }
+                }, () =>
                 {
-                    pool.CrewCount = Math.Max(1, count);
-                    InvalidatePreview();
-                }
-                var selectedDataCenters = pool.DataCenterIds.ToHashSet();
-                if (DrawDataCenterChecklist(selectedDataCenters, pool.PoolId))
-                {
-                    pool.DataCenterIds = selectedDataCenters.Order().ToList();
-                    InvalidatePreview();
-                }
+                    var selectedDataCenters = pool.DataCenterIds.ToHashSet();
+                    if (DrawDataCenterChecklist(selectedDataCenters, pool.PoolId))
+                    {
+                        pool.DataCenterIds = selectedDataCenters.Order().ToList();
+                        InvalidatePreview();
+                    }
 
-                foreach (var anchor in draft.AnchorLanes)
-                    DrawAnchorAssignment(anchor, pool);
+                    foreach (var anchor in draft.AnchorLanes)
+                        DrawAnchorAssignment(anchor, pool);
+
+                });
 
                 if (UiGui.SmallButton("Delete pool"))
                 {
@@ -257,6 +297,7 @@ public sealed class DadPresetBatchWizardWindow : Window
 
     private void DrawTemplatesStep()
     {
+        using var controls = MaterialControls.Push(MaterialControlContext.Dense);
         DadUi.Heading("TEMPLATES AND SCHEDULES", "Each selected ordinary Plan is cloned once per generated crew. Source Plans remain unchanged.");
         var primaryCount = draft.RotatingLanes.Count + draft.AnchorLanes.Count;
         foreach (var group in plugin.Configuration.PlannerGroups)
@@ -302,50 +343,55 @@ public sealed class DadPresetBatchWizardWindow : Window
             var activity = template.ActivityLabel;
             var format = template.PlanNameFormat;
             var schedule = template.ScheduleName;
-            ImGui.SetNextItemWidth(260f);
-            if (UiGui.InputText("Activity label", ref activity, DadPresetBatchLimits.MaxTextLength))
+            MaterialSettings.Columns("dad-batch-template-fields", 320 * MaterialTheme.Metrics.Scale, () =>
             {
-                template.ActivityLabel = activity;
-                InvalidatePreview();
-            }
-            ImGui.SetNextItemWidth(360f);
-            if (UiGui.InputText("Plan name format", ref format, DadPresetBatchLimits.MaxTextLength))
+                ImGui.SetNextItemWidth(260f);
+                if (UiGui.InputText("Activity label", ref activity, DadPresetBatchLimits.MaxTextLength))
+                {
+                    template.ActivityLabel = activity;
+                    InvalidatePreview();
+                }
+                ImGui.SetNextItemWidth(360f);
+                if (UiGui.InputText("Plan name format", ref format, DadPresetBatchLimits.MaxTextLength))
+                {
+                    template.PlanNameFormat = format;
+                    InvalidatePreview();
+                }
+                if (ImGui.IsItemHovered())
+                    UiGui.SetTooltip("Tokens: {Activity}, {Pool}, {Index}, {Index:00}.");
+            }, () =>
             {
-                template.PlanNameFormat = format;
-                InvalidatePreview();
-            }
-            if (ImGui.IsItemHovered())
-                UiGui.SetTooltip("Tokens: {Activity}, {Pool}, {Index}, {Index:00}.");
-            ImGui.SetNextItemWidth(300f);
-            if (UiGui.InputText("Schedule name", ref schedule, DadPresetBatchLimits.MaxTextLength))
-            {
-                template.ScheduleName = schedule;
-                InvalidatePreview();
-            }
-            var repeat = template.RepeatCount;
-            ImGui.SetNextItemWidth(140f);
-            if (UiGui.InputInt("Repeat each entry", ref repeat))
-            {
-                template.RepeatCount = Math.Clamp(repeat, DadScheduleRules.MinRepeatCount, DadScheduleRules.MaxRepeatCount);
-                InvalidatePreview();
-            }
-            var daily = template.ScheduleCadence == DadScheduleCadence.DailyReset;
-            if (UiGui.Checkbox("DailyReset Schedule", ref daily))
-            {
-                template.ScheduleCadence = daily ? DadScheduleCadence.DailyReset : DadScheduleCadence.Manual;
-                if (!daily)
-                    template.SetDailyRewardChecksForAllPrimary = false;
-                InvalidatePreview();
-            }
-            ImGui.SameLine();
-            ImGui.BeginDisabled(!daily);
-            var allDaily = template.SetDailyRewardChecksForAllPrimary;
-            if (UiGui.Checkbox("Set Daily on every primary row", ref allDaily))
-            {
-                template.SetDailyRewardChecksForAllPrimary = allDaily;
-                InvalidatePreview();
-            }
-            ImGui.EndDisabled();
+                ImGui.SetNextItemWidth(300f);
+                if (UiGui.InputText("Schedule name", ref schedule, DadPresetBatchLimits.MaxTextLength))
+                {
+                    template.ScheduleName = schedule;
+                    InvalidatePreview();
+                }
+                var repeat = template.RepeatCount;
+                ImGui.SetNextItemWidth(140f);
+                if (UiGui.InputInt("Repeat each entry", ref repeat))
+                {
+                    template.RepeatCount = Math.Clamp(repeat, DadScheduleRules.MinRepeatCount, DadScheduleRules.MaxRepeatCount);
+                    InvalidatePreview();
+                }
+                var daily = template.ScheduleCadence == DadScheduleCadence.DailyReset;
+                if (UiGui.Checkbox("DailyReset Schedule", ref daily))
+                {
+                    template.ScheduleCadence = daily ? DadScheduleCadence.DailyReset : DadScheduleCadence.Manual;
+                    if (!daily)
+                        template.SetDailyRewardChecksForAllPrimary = false;
+                    InvalidatePreview();
+                }
+                ImGui.SameLine();
+                ImGui.BeginDisabled(!daily);
+                var allDaily = template.SetDailyRewardChecksForAllPrimary;
+                if (UiGui.Checkbox("Set Daily on every primary row", ref allDaily))
+                {
+                    template.SetDailyRewardChecksForAllPrimary = allDaily;
+                    InvalidatePreview();
+                }
+                ImGui.EndDisabled();
+            });
             ImGui.PopID();
         }
 

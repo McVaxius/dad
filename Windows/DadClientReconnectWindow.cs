@@ -1,3 +1,4 @@
+using AethertekUI;
 using AethertekUI.Dalamud;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
@@ -56,6 +57,7 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
     public override void Draw()
     {
         motion.DrawChrome();
+        using var controls = MaterialControls.Push(MaterialControlContext.Dense);
         UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         ApplyPendingPositionChange();
         var transport = plugin.TransportService.CurrentTransport;
@@ -75,7 +77,6 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
         if (transport.LastConnectedUtc.HasValue)
             DadUi.KeyValue("Last connected", transport.LastConnectedUtc.Value.ToLocalTime().ToString("G"), 120f);
 
-        ImGui.Spacing();
         UiGui.TextWrapped("If the IP, port, and shared secret are correct, please disable and re-enable DAD on the Coordinator.");
         ImGui.Spacing();
 

@@ -177,7 +177,7 @@ public sealed class ConfigWindow : Window, IDisposable
         var recovery = configuration.ConnectionRecoveryEnabled;
         if (UiGui.Checkbox("Recover game connections automatically", ref recovery))
             plugin.SetConnectionRecoveryEnabled(recovery);
-        UiGui.TextWrapped("Keep the game open after lobby errors and reconnect the same local character after a connection loss while DAD is enabled. Hold Shift or use Stop All to stop recovery. Service-account selection stays manual.");
+        UiGui.TextWrapped("Keep the game open after lobby errors whenever this setting is on, even with automation stopped. Reconnect the same local character only while DAD is enabled. Hold Shift or use Stop All to stop reconnecting. Service-account selection stays manual.");
         DrawStatusRow("Connection recovery", plugin.TitleMenuReadinessService.ConnectionRecoveryStatus);
 
         var partyOverride = configuration.PartyValidationOverrideEnabled;

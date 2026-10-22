@@ -8807,7 +8807,7 @@ Nur</value>
   <data name="member_014" xml:space="preserve"><value>Optionale ADS-Liste und Abschlussbefehl je Mitglied. Leere Angaben sind aus.</value></data>
   <data name="member_015" xml:space="preserve"><value>Mitgliedszuordnungen gespeichert.</value></data>
   <data name="recovery_001" xml:space="preserve"><value>Spielverbindungen automatisch wiederherstellen</value></data>
-  <data name="recovery_002" xml:space="preserve"><value>Bei aktiviertem DAD bleibt das Spiel nach Lobbyfehlern geöffnet und verbindet denselben lokalen Charakter nach einem Verbindungsabbruch erneut. Zum Stoppen Umschalt halten oder Alles stoppen verwenden. Das Dienstkonto wird manuell ausgewählt.</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>Solange diese Einstellung eingeschaltet ist, bleibt das Spiel nach Lobbyfehlern geöffnet, auch wenn die Automatisierung gestoppt ist. Derselbe lokale Charakter wird nur bei aktiviertem DAD erneut verbunden. Zum Stoppen der erneuten Verbindung Umschalt halten oder Alles stoppen verwenden. Das Dienstkonto wird manuell ausgewählt.</value></data>
   <data name="recovery_003" xml:space="preserve"><value>Verbindungswiederherstellung</value></data>
   <data name="recovery_004" xml:space="preserve"><value>Warte auf eine lokale Sitzung.</value></data>
   <data name="recovery_005" xml:space="preserve"><value>Verbindungswiederherstellung ist aus.</value></data>
@@ -8826,7 +8826,6 @@ Nur</value>
   <data name="recovery_018" xml:space="preserve"><value>Normal abgemeldet.</value></data>
   <data name="recovery_019" xml:space="preserve"><value>Lobby-Schutz ist nicht verfügbar; prüfe die installierte Spielversion.</value></data>
   <data name="recovery_020" xml:space="preserve"><value>Lobby-Schutz konnte nicht initialisiert werden; prüfe das Plugin-Protokoll.</value></data>
-  <data name="Auto" xml:space="preserve"><value>Automatisch</value></data>
   <data name="Picker" xml:space="preserve"><value>Farbwahl</value></data>
   <data name="Default" xml:space="preserve"><value>Standard</value></data>
   <data name="Background, controls and text follow your theme." xml:space="preserve"><value>Hintergrund, Steuerelemente und Text folgen deinem Design.</value></data>
@@ -8839,4 +8838,12 @@ Nur</value>
   <data name="Control" xml:space="preserve"><value>Steuerelement</value></data>
   <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Wechsle zur Farbwahl, um jede Farbe selbst festzulegen.</value></data>
   <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Wechsle zurück zu Automatisch, um das automatische Design zu verwenden.</value></data>
+  <data name="recovery_021" xml:space="preserve"><value>Der Lobby-Schutz ist aktiviert.</value></data>
+  <data name="ui_layout_manage" xml:space="preserve"><value>Verwaltung</value></data>
+  <data name="ui_layout_rules" xml:space="preserve"><value>Regeln</value></data>
+  <data name="ui_layout_theme_language" xml:space="preserve"><value>Design und Sprache</value></data>
+  <data name="ui_layout_main_controls" xml:space="preserve"><value>Bedienelemente im Hauptfenster</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>Fensterdeckkraft</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>Ohne Fokus</value></data>
+  <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Einrichtung, Einkauf und Hilfe</value></data>
 </root>

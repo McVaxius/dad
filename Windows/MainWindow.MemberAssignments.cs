@@ -18,19 +18,7 @@ public sealed partial class MainWindow
         UiGui.TextWrapped("The last preset command applies; a nonblank schedule command overrides it.");
         UiGui.TextWrapped("Apply to all copies choices to displayed members. Remote clients require remote-command permission.");
         UiGui.TextWrapped("Acknowledgement confirms registered submission. Command effects remain unverified.");
-        var ownerKey = $"{kind}:{ownerId}";
-        if (memberDraftOwner != ownerKey)
-        {
-            memberDraftOwner = ownerKey;
-            var source = kind == DadShoppingAssociationOwnerKind.Plan
-                ? DadShoppingAssociationRules.PlanAssignments(plugin.Configuration.PlannerGroups.SingleOrDefault(value => value.GroupId == ownerId))
-                : DadShoppingAssociationRules.ScheduleAssignments(plugin.Configuration.Schedules.SingleOrDefault(value => value.ScheduleId == ownerId));
-            memberDrafts = source.Select(static value => value.Clone()).ToList();
-            foreach (var slot in slots)
-                if (!memberDrafts.Any(value => Matches(value, slot)))
-                    memberDrafts.Add(DadShoppingAssociationRules.CopyChoicesToMember(new(), slot, null));
-            shoppingEditorStatus = string.Empty;
-        }
+        PrepareMemberAssignmentsDraft(kind, ownerId, slots);
         if (UiGui.SmallButton("Refresh ADS presets"))
         {
             var result = plugin.DutySupportAdsService.GetShopListPresets();
@@ -84,11 +72,31 @@ public sealed partial class MainWindow
         DrawShoppingFailureHistory(kind, ownerId, locked, blocker);
         DadUi.EndCard();
 
-        static bool Matches(DadShoppingAssociation row, DadPlannerGroupSlot slot)
-            => string.Equals(row.ShopperSlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase) &&
-               DadRosterIdentity.SameAccount(row.ShopperAccountKey, slot.RequiredAccountKey) &&
-               string.Equals(row.ShopperCharacterKey.Value, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase);
     }
+
+    private void PrepareMemberAssignmentsDraft(DadShoppingAssociationOwnerKind kind, string ownerId,
+        IReadOnlyList<DadPlannerGroupSlot> slots)
+    {
+        var ownerKey = $"{kind}:{ownerId}";
+        if (memberDraftOwner != ownerKey)
+        {
+            memberDraftOwner = ownerKey;
+            var source = kind == DadShoppingAssociationOwnerKind.Plan
+                ? DadShoppingAssociationRules.PlanAssignments(plugin.Configuration.PlannerGroups.SingleOrDefault(value => value.GroupId == ownerId))
+                : DadShoppingAssociationRules.ScheduleAssignments(plugin.Configuration.Schedules.SingleOrDefault(value => value.ScheduleId == ownerId));
+            memberDrafts = source.Select(static value => value.Clone()).ToList();
+            foreach (var slot in slots)
+                if (!memberDrafts.Any(value => Matches(value, slot)))
+                    memberDrafts.Add(DadShoppingAssociationRules.CopyChoicesToMember(new(), slot, null));
+            shoppingEditorStatus = string.Empty;
+        }
+    }
+
+    private static bool Matches(DadShoppingAssociation row, DadPlannerGroupSlot slot)
+        => string.Equals(row.ShopperSlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase) &&
+           DadRosterIdentity.SameAccount(row.ShopperAccountKey, slot.RequiredAccountKey) &&
+           string.Equals(row.ShopperCharacterKey.Value, slot.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase);
+
     internal static bool DrawMemberAssignmentFields(DadShoppingAssociation row, IReadOnlyList<DadAdsShopListPresetSummary> presets)
     {
         var selected = presets.FirstOrDefault(value => value.PresetId == row.PresetId);

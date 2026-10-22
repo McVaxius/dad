@@ -8804,7 +8804,7 @@
   <data name="member_014" xml:space="preserve"><value>Optional ADS list and final slash command per member. Blank choices are off.</value></data>
   <data name="member_015" xml:space="preserve"><value>Member assignments saved.</value></data>
   <data name="recovery_001" xml:space="preserve"><value>Recover game connections automatically</value></data>
-  <data name="recovery_002" xml:space="preserve"><value>Keep the game open after lobby errors and reconnect the same local character after a connection loss while DAD is enabled. Hold Shift or use Stop All to stop recovery. Service-account selection stays manual.</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>Keep the game open after lobby errors whenever this setting is on, even with automation stopped. Reconnect the same local character only while DAD is enabled. Hold Shift or use Stop All to stop reconnecting. Service-account selection stays manual.</value></data>
   <data name="recovery_003" xml:space="preserve"><value>Connection recovery</value></data>
   <data name="recovery_004" xml:space="preserve"><value>Waiting for a local session.</value></data>
   <data name="recovery_005" xml:space="preserve"><value>Connection recovery is off.</value></data>
@@ -8823,7 +8823,6 @@
   <data name="recovery_018" xml:space="preserve"><value>Logged out normally.</value></data>
   <data name="recovery_019" xml:space="preserve"><value>Lobby protection is unavailable; check the installed game version.</value></data>
   <data name="recovery_020" xml:space="preserve"><value>Lobby protection could not initialize; check the plugin log.</value></data>
-  <data name="Auto" xml:space="preserve"><value>Auto</value></data>
   <data name="Picker" xml:space="preserve"><value>Picker</value></data>
   <data name="Default" xml:space="preserve"><value>Default</value></data>
   <data name="Background, controls and text follow your theme." xml:space="preserve"><value>Background, controls and text follow your theme.</value></data>
@@ -8836,4 +8835,12 @@
   <data name="Control" xml:space="preserve"><value>Control</value></data>
   <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Switch to Picker to set each colour yourself.</value></data>
   <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Switch back to Auto to use the automatic theme.</value></data>
+  <data name="recovery_021" xml:space="preserve"><value>Lobby protection is enabled.</value></data>
+  <data name="ui_layout_manage" xml:space="preserve"><value>Manage</value></data>
+  <data name="ui_layout_rules" xml:space="preserve"><value>Rules</value></data>
+  <data name="ui_layout_theme_language" xml:space="preserve"><value>Theme &amp; language</value></data>
+  <data name="ui_layout_main_controls" xml:space="preserve"><value>Main window controls</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>Window opacity</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>When unfocused</value></data>
+  <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Setup, shopping &amp; help</value></data>
 </root>

@@ -1,3 +1,4 @@
+using AethertekUI;
 using AethertekUI.Dalamud;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
@@ -64,6 +65,9 @@ public sealed class DadDependenciesWindow : Window, IDisposable
     public override void Draw()
     {
         motion.DrawChrome();
+        using var controls = MaterialControls.Push(MaterialControlContext.Dense);
+        using var rowSpacing = new MaterialStyleScope();
+        rowSpacing.Style(ImGuiStyleVar.ItemSpacing, new Vector2(ImGui.GetStyle().ItemSpacing.X, 2 * MaterialTheme.Metrics.Scale));
         UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         ApplyPendingPositionChange();
         var snapshot = plugin.DependencyService.Snapshot;
@@ -77,15 +81,16 @@ public sealed class DadDependenciesWindow : Window, IDisposable
 
         foreach (var entry in snapshot.Entries)
         {
-            DadUi.Section(entry.DisplayName);
+            ImGui.Separator();
+            using (UiText.Font(UiFontRole.BodyStrong)) UiGui.TextUnformatted(entry.DisplayName);
             var tone = entry.State switch
             {
                 DadDependencyState.Ready => DadUiTone.Success,
                 DadDependencyState.Checking => DadUiTone.Neutral,
                 _ => DadUiTone.Warning,
             };
+            DadUi.SameLineIfFits(DadUi.BadgeWidth(FormatState(entry.State)));
             DadUi.Badge(FormatState(entry.State), tone);
-            ImGui.SameLine();
             UiGui.TextWrapped(entry.OperatorSummary);
 
             if (entry.State is DadDependencyState.Missing or DadDependencyState.InstalledNotLoaded or DadDependencyState.UpdateRequired)

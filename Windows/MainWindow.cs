@@ -109,6 +109,7 @@ public sealed partial class MainWindow : Window, IDisposable
     private DadMainWindowTab? deferredMainTab;
     private DadPresetsWindowTab? deferredPresetsTab;
     private DadStatusWindowTab? deferredStatusTab;
+    private int selectedMainPage;
 
     private sealed record PlannerLaneCardView(
         DadPlannerLaneDefinition Lane,
@@ -280,63 +281,7 @@ public sealed partial class MainWindow : Window, IDisposable
             DrawActiveRunBanner(runState, activityDisplay.Run);
         ImGui.Spacing();
 
-        var tabLabels=new[]{"Home","Plan","Schedules","Crew","Clients","Status"};
-        var availableTabWidth=Math.Max(0,ImGui.GetContentRegionAvail().X-5*ImGui.GetStyle().ItemInnerSpacing.X);
-        var tabWidth=MathF.Floor(availableTabWidth/tabLabels.Length);
-        var tabTextWidths=new float[tabLabels.Length];
-        using (UiText.Font(UiFontRole.BodyStrong))
-            for (var index=0;index<tabLabels.Length;index++) tabTextWidths[index]=MaterialText.Measure(UiText.T(tabLabels[index])).X;
-        var tabInset=56*MaterialTheme.Metrics.Scale;
-        var proportionalTabs=tabTextWidths.Any(width=>width+tabInset>tabWidth);
-        var tabFontScale=proportionalTabs?Math.Clamp((availableTabWidth-tabInset*tabLabels.Length-tabLabels.Length)/Math.Max(1,tabTextWidths.Sum()),.5f,1f):1f;
-        var tabWidths=tabTextWidths.Select(width=>MathF.Ceiling(width*tabFontScale+tabInset)).ToArray();
-        var extraTabWidth=MathF.Floor(Math.Max(0,availableTabWidth-tabWidths.Sum())/tabLabels.Length);
-        bool BeginMainTab(int index,ImGuiTabItemFlags flags,MaterialIcon icon)
-        {
-            using var fit=new DadPresentation.FontScaleScope(tabFontScale);
-            return UiGui.BeginPrimaryTabItem(tabLabels[index],flags,icon,proportionalTabs?tabWidths[index]+extraTabWidth:tabWidth);
-        }
-        using var tabLineHeight=MaterialText.PushLineHeight(tabLabels.Select(UiText.T).ToArray());
-        if (ImGui.BeginTabBar("dad-main-tabs",ImGuiTabBarFlags.FittingPolicyScroll))
-        {
-            if (BeginMainTab(0, BuildMainTabFlags(DadMainWindowTab.Overview), MaterialIcon.Home))
-            {
-                DrawOverviewTab(runState, profile, windowRootId);
-                ImGui.EndTabItem();
-            }
-
-            if (BeginMainTab(1, BuildPlanningMainTabFlags(showPlanner: true), MaterialIcon.Document))
-            {
-                DrawPresetPlannerTab(characterPool, runState);
-                ImGui.EndTabItem();
-            }
-
-            if (BeginMainTab(2, BuildPlanningMainTabFlags(showPlanner: false), MaterialIcon.Calendar))
-            {
-                DrawSchedulesTab(runState);
-                ImGui.EndTabItem();
-            }
-
-            if (BeginMainTab(3, BuildMainTabFlags(DadMainWindowTab.Crew), MaterialIcon.Group))
-            {
-                DrawCrewTab(characterPool, runState);
-                ImGui.EndTabItem();
-            }
-
-            if (BeginMainTab(4, BuildMainTabFlags(DadMainWindowTab.Multiplayer), MaterialIcon.Person))
-            {
-                DrawMultiplayerTab(characterPool, runState);
-                ImGui.EndTabItem();
-            }
-
-            if (BeginMainTab(5, BuildMainTabFlags(DadMainWindowTab.Status), MaterialIcon.Chart))
-            {
-                DrawStatusTab(characterPool, runState, profile, activityDisplay.Run);
-                ImGui.EndTabItem();
-            }
-
-            ImGui.EndTabBar();
-        }
+        DrawMainWorkspaceRail(runState, profile, characterPool, activityDisplay.Run, windowRootId);
 
         DrawScheduleImportConfirmation();
         DrawPlannerImportConfirmation();
@@ -344,6 +289,70 @@ public sealed partial class MainWindow : Window, IDisposable
         pendingMainTab = null;
         pendingPresetsTab = null;
         pendingStatusTab = null;
+    }
+
+    private void DrawMainWorkspaceRail(DadVisibleRunState runState, CharacterConfig profile,
+        DadCharacterPool characterPool, DadRunResult displayRun, uint windowRootId)
+    {
+        var tabLabels = new[] { "Home", "Plan", "Schedules", "Crew", "Clients", "Status" };
+        var icons = new[] { MaterialIcon.Home, MaterialIcon.Document, MaterialIcon.Calendar,
+            MaterialIcon.Group, MaterialIcon.Person, MaterialIcon.Chart };
+        if (pendingMainTab.HasValue)
+            selectedMainPage = pendingMainTab.Value switch
+            {
+                DadMainWindowTab.Overview => 0,
+                DadMainWindowTab.Presets => (pendingPresetsTab ?? DadPresetsWindowTab.Planner) == DadPresetsWindowTab.Planner ? 1 : 2,
+                DadMainWindowTab.Crew => 3,
+                DadMainWindowTab.Multiplayer => 4,
+                _ => 5,
+            };
+
+        var scale = MaterialTheme.Metrics.Scale;
+        var railWidth = Math.Max((DadPresentation.Compact ? 126 : 144) * scale,
+            tabLabels.Concat(new[] { "Settings", "Manage" }).Max(label => MaterialText.Measure(UiText.T(label)).X) + 52 * scale);
+        // Reuse the previous bar/tab identity roots for every retained page control.
+        ImGuiP.PushOverrideID(windowRootId);
+        var barRoot = ImGui.GetID("dad-main-tabs");
+        ImGui.PopID();
+        if (!ImGui.BeginTable("dad-main-workspace-layout", 2,
+                ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.NoSavedSettings)) return;
+        ImGui.TableSetupColumn("Navigation", ImGuiTableColumnFlags.WidthFixed, railWidth);
+        ImGui.TableSetupColumn("Workspace", ImGuiTableColumnFlags.WidthStretch);
+        ImGui.TableNextRow();
+        ImGui.TableNextColumn();
+        if (ImGui.BeginChild("dad-main-navigation", Vector2.Zero, false, ImGuiWindowFlags.AlwaysUseWindowPadding))
+        {
+            ImGuiP.PushOverrideID(barRoot);
+            for (var index = 0; index < tabLabels.Length; index++)
+                if (DadUi.NavigationItem(tabLabels[index], tabLabels[index], icons[index], selectedMainPage == index))
+                    selectedMainPage = index;
+            ImGui.PopID();
+            var manageHeight = ImGui.GetTextLineHeightWithSpacing() + ImGui.GetFrameHeightWithSpacing() + 12 * scale;
+            ImGui.SetCursorPosY(Math.Max(ImGui.GetCursorPosY(), ImGui.GetWindowHeight() - manageHeight - ImGui.GetStyle().WindowPadding.Y));
+            DadUi.Section("Manage");
+            if (DadUi.IconButton("Settings##dad-main-navigation-settings", MaterialIcon.Settings)) plugin.ToggleConfigUi();
+        }
+        ImGui.EndChild();
+        ImGui.TableNextColumn();
+        if (ImGui.BeginChild("dad-main-workspace", Vector2.Zero, false, ImGuiWindowFlags.AlwaysUseWindowPadding))
+        {
+            ImGuiP.PushOverrideID(barRoot);
+            var pageRoot = ImGui.GetID(tabLabels[selectedMainPage]);
+            ImGui.PopID();
+            ImGuiP.PushOverrideID(pageRoot);
+            switch (selectedMainPage)
+            {
+                case 0: DrawOverviewTab(runState, profile, windowRootId); break;
+                case 1: DrawPresetPlannerTab(characterPool, runState); break;
+                case 2: DrawSchedulesTab(runState); break;
+                case 3: DrawCrewTab(characterPool, runState); break;
+                case 4: DrawMultiplayerTab(characterPool, runState); break;
+                case 5: DrawStatusTab(characterPool, runState, profile, displayRun); break;
+            }
+            ImGui.PopID();
+        }
+        ImGui.EndChild();
+        ImGui.EndTable();
     }
 
     private void DrawShellHeader(
@@ -354,24 +363,19 @@ public sealed partial class MainWindow : Window, IDisposable
         string version)
     {
         var scale=MaterialTheme.Metrics.Scale;
-        using var headerFont=UiText.Font(UiFontRole.Caption);
+        using var headerFont=UiText.Font(UiFontRole.Body);
         using var headerGeometry=new MaterialStyleScope();
         headerGeometry.Style(ImGuiStyleVar.FramePadding,new Vector2(6,4)*scale);
         var origin=ImGui.GetCursorScreenPos();
-        var contentWidth=ImGui.GetContentRegionAvail().X;
-        using (UiText.Font(UiFontRole.Title))
-        {
-            var logoSize = MaterialText.Measure("dad");
-            DadPresentation.DrawPluginIcon(ImGui.GetWindowDrawList(), origin, origin + logoSize);
-            ImGui.Dummy(logoSize);
-        }
+        var logoSize = new Vector2(Math.Max(28 * scale, ImGui.GetTextLineHeight()));
+        DadPresentation.DrawPluginIcon(ImGui.GetWindowDrawList(), origin, origin + logoSize);
+        ImGui.Dummy(logoSize);
         ImGui.SameLine();
         ImGui.BeginGroup();
         using (UiText.Font(UiFontRole.BodyStrong))
-        using (new DadPresentation.FontScaleScope(1.125f)) UiGui.TextUnformatted("DAD CONTROL CENTER");
-        using (UiText.Font(UiFontRole.Small)) UiGui.TextDisabled("Automate. Organize. Do more together.");
+            UiGui.TextUnformatted("DAD");
+        using (UiText.Font(UiFontRole.Caption)) MaterialText.Text(version);
         ImGui.EndGroup();
-        using var labels=new DadPresentation.FontScaleScope(.75f);
         using var controls=new MaterialStyleScope();
         controls.Style(ImGuiStyleVar.FramePadding,new Vector2(4,2)*scale);
         controls.Style(ImGuiStyleVar.ItemSpacing,new Vector2(6,DadPresentation.Compact?5:8)*scale);
@@ -386,7 +390,7 @@ public sealed partial class MainWindow : Window, IDisposable
         if (ImGui.IsItemHovered()) UiGui.SetTooltip("Open the seven guided DAD workflows at any time.");
         DadUi.SameLineIfFits(DadUi.IconButtonWidth("Support on Ko-fi"));
         if (DadUi.IconButton("Support on Ko-fi",MaterialIcon.Heart,DadUiTone.Neutral,new Vector2(0,28*scale))) Util.OpenLink(PluginInfo.SupportUrl);
-        var bottom=Math.Max(origin.Y+DadPresentation.HeaderHeight*scale,ImGui.GetItemRectMax().Y+8*scale);
+        var bottom=Math.Max(origin.Y+logoSize.Y,ImGui.GetItemRectMax().Y)+6*scale;
         ImGui.SetCursorScreenPos(new Vector2(origin.X,bottom));
         ImGui.Separator();
     }
@@ -566,9 +570,70 @@ public sealed partial class MainWindow : Window, IDisposable
         DrawStatusRow("Profile notes", FormatOperatorText(profile.TargetNotes, "(none)"));
     }
 
+    private void DrawHomeCurrentActivity(DadVisibleRunState runState, CharacterConfig profile)
+    {
+        var run = GetActiveRun(runState);
+        DadUi.Heading("Home", string.Empty);
+        if (DadUi.BeginCard("dad-home-current-activity"))
+        {
+            DadUi.Heading("Current Run", string.Empty);
+            DadUi.SameLineIfFits(DadUi.BadgeWidth(run.Status.ToString()));
+            DadUi.Badge(run.Status.ToString(), DadOperatorPhaseText.HasBlockingFailure(run) ? DadUiTone.Warning : DadUiTone.Accent);
+            UiGui.TextWrapped(BuildActiveRunKeyStatus(run));
+            var total = Math.Max(run.TotalTaskCount, run.RequestedTaskCount);
+            if (total > 0)
+            {
+                ImGui.ProgressBar(Math.Clamp((float)run.CompletedTaskCount / total, 0, 1),
+                    new Vector2(-1, 6 * MaterialTheme.Metrics.Scale), string.Empty);
+                DadUi.KeyValue("Task progress", $"{run.CompletedTaskCount}/{total}");
+            }
+            DadUi.KeyValue("Operator phase", FormatPhaseForDisplay(run));
+            DadUi.KeyValue("Next action", BuildOverviewNextAction(runState, profile, run));
+            DadUi.EndCard();
+        }
+    }
+
+    private void DrawHomeParticipantCards(DadCharacterPool pool, bool showDetails = true)
+    {
+        var participants = BuildVisibleParticipants(pool);
+        DadUi.Section("Connected crew");
+        var minimum = Math.Max(260 * MaterialTheme.Metrics.Scale,
+            participants.Select(p => MaterialText.Measure(FormatOperatorCharacterKey(p.ActiveCharacterKey.Value, "(unknown)")).X)
+                .DefaultIfEmpty(0).Max() + 40 * MaterialTheme.Metrics.Scale);
+        var columns = ImGui.GetContentRegionAvail().X >= minimum * 2 + ImGui.GetStyle().ItemSpacing.X ? 2 : 1;
+        if (!ImGui.BeginTable("dad-home-participant-cards", columns, ImGuiTableFlags.SizingStretchSame | ImGuiTableFlags.NoSavedSettings)) return;
+        foreach (var participant in participants)
+        {
+            ImGui.TableNextColumn();
+            if (!DadUi.BeginCard("dad-home-participant-" + participant.WorkerSessionId.Value)) continue;
+            using (UiText.Font(UiFontRole.BodyStrong))
+                MaterialText.Text(FormatOperatorAccountLabel(participant.ManagedAccountAlias, participant.ManagedAccountKey.Value));
+            MaterialText.Text(FormatOperatorCharacterKey(participant.ActiveCharacterKey.Value, "(unknown)"));
+            DadUi.Badge(participant.IsEligibleForRun ? "Eligible" : participant.PostArReady ? "Post-AR ready" : "Waiting",
+                participant.IsEligibleForRun ? DadUiTone.Success : DadUiTone.Warning);
+            using (UiText.Font(UiFontRole.Caption))
+                UiGui.TextWrapped(FormatParticipantStatus(participant));
+            if (showDetails && DadUi.Button("Details##dad-home-participant-details")) plugin.OpenMainTab(DadMainWindowTab.Multiplayer);
+            DadUi.EndCard();
+        }
+        ImGui.EndTable();
+    }
+
     private void DrawOverviewCompact(DadVisibleRunState runState, CharacterConfig profile, uint windowRootId)
     {
         var homeRootId = ImGui.GetID("");
+        DrawHomeCurrentActivity(runState, profile);
+        ImGuiP.PushOverrideID(windowRootId);
+        var enabled=plugin.Configuration.PluginEnabled;
+        if (UiGui.Checkbox("DAD enabled",ref enabled)) plugin.SetPluginEnabled(enabled,printStatus:false);
+        DadUi.SameLineIfFits((ImGui.GetFrameHeight() + ImGui.GetStyle().ItemInnerSpacing.X + MaterialText.Measure(UiText.T("Allow DAD to automate this character")).X) / MaterialTheme.Metrics.Scale);
+        var allowed=profile.Enabled;
+        if (UiGui.Checkbox("Allow DAD to automate this character",ref allowed))
+        { plugin.ConfigManager.UpdateActiveConfig(active=>active.Enabled=allowed);plugin.UpdateDtrBar(); }
+        ImGui.PopID();
+        DrawHomeParticipantCards(plugin.CharacterIntelligenceService.CurrentPool);
+        if (!UiGui.CollapsingHeader("Setup, shopping & help###Expert workspaces")) return;
+        ImGuiP.PushOverrideID(homeRootId);
         var scale=MaterialTheme.Metrics.Scale;
         var settingsWidth=ImGui.GetFrameHeight()+ImGui.GetStyle().ItemInnerSpacing.X+MaterialText.Measure(UiText.T("Allow DAD to automate this character")).X;
         var cardWidth=Math.Max(settingsWidth,UiGui.IconButtonWidth("Refresh paired DAD character lists"))+24*scale;
@@ -587,11 +652,6 @@ public sealed partial class MainWindow : Window, IDisposable
                     controls.Style(ImGuiStyleVar.ItemInnerSpacing,new Vector2(14*scale,ImGui.GetStyle().ItemInnerSpacing.Y));
                     // These controls originally lived in the shell, outside the Home tab and its cards.
                     ImGuiP.PushOverrideID(windowRootId);
-                    var enabled=plugin.Configuration.PluginEnabled;
-                    if (UiGui.Checkbox("DAD enabled",ref enabled)) plugin.SetPluginEnabled(enabled,printStatus:false);
-                    var allowed=profile.Enabled;
-                    if (UiGui.Checkbox("Allow DAD to automate this character",ref allowed))
-                    { plugin.ConfigManager.UpdateActiveConfig(active=>active.Enabled=allowed);plugin.UpdateDtrBar(); }
                     if (DadUi.IconButton(plugin.KrangleService.Enabled?"Show character names":"Hide character names",MaterialIcon.Group,DadUiTone.Neutral,new Vector2(0,(DadPresentation.Compact?32:36)*scale))) plugin.ToggleKrangleOperatorNames();
                     if (ImGui.IsItemHovered()) UiGui.SetTooltip("Changes local operator labels only. Run contracts keep their real identities.");
                     ImGui.PopID();
@@ -705,6 +765,7 @@ public sealed partial class MainWindow : Window, IDisposable
             DrawHomeExpertShortcuts(buttonWidth/scale);
             ImGui.PopID();DadUi.EndCard();
         }
+        ImGui.PopID();
     }
 
     private void DrawHomeGuidedTasks()
@@ -1089,6 +1150,10 @@ public sealed partial class MainWindow : Window, IDisposable
             ? transport.SharedSecretConfigured ? "LAN secret configured" : "LAN secret missing"
             : "Loopback; secret optional");
         DrawStatusRow("Connected clients", transport.ConnectedPeerCount.ToString(UiText.Current.Culture));
+        DrawStatusRow("First blocker", FormatText(firstBlocker, "None"));
+        DrawStatusRow("Next action", nextAction);
+        DrawHomeParticipantCards(characterPool, showDetails: false);
+        if (!UiGui.CollapsingHeader("Technical details")) return;
         DrawStatusRow("Authority", $"{runState.AuthorityView.StateText} | {runState.AuthorityView.FreshnessText}");
         DrawStatusRow("Visible run", activeRun.Status == DadRunStatus.Idle
             ? "Idle."
@@ -1154,6 +1219,7 @@ public sealed partial class MainWindow : Window, IDisposable
         if (UiGui.BeginTabItem("Current Activity", BuildStatusTabFlags(DadStatusWindowTab.CurrentActivity)))
         {
             DrawCurrentActivitySummary(runState, profile, displayRun);
+            DrawHomeParticipantCards(characterPool);
             DrawActiveScheduleStatus(plugin.SchedulerService.GetScheduleSnapshot());
             DrawCrewActiveJobSection();
             if (plugin.Configuration.DebugUiEnabled)
@@ -1567,19 +1633,6 @@ public sealed partial class MainWindow : Window, IDisposable
         ImGui.EndTabBar();
     }
 
-    private ImGuiTabItemFlags BuildMainTabFlags(DadMainWindowTab tab)
-        => pendingMainTab == tab ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
-
-    private ImGuiTabItemFlags BuildPlanningMainTabFlags(bool showPlanner)
-    {
-        if (pendingMainTab != DadMainWindowTab.Presets)
-            return ImGuiTabItemFlags.None;
-
-        var requested = pendingPresetsTab ?? DadPresetsWindowTab.Planner;
-        var plannerRequested = requested == DadPresetsWindowTab.Planner;
-        return plannerRequested == showPlanner ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
-    }
-
     private ImGuiTabItemFlags BuildPresetsTabFlags(DadPresetsWindowTab tab)
         => pendingPresetsTab == tab ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
 
@@ -1620,7 +1673,8 @@ public sealed partial class MainWindow : Window, IDisposable
             return;
         }
 
-        using var tightProfileRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
+        using var profileControls = MaterialTable.PushControls();
+        using var tightProfileRows = MaterialTable.PushTightRows();
         if (!ImGui.BeginTable("dad-unified-launch-profiles", 7, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable))
             return;
 
@@ -2187,13 +2241,9 @@ public sealed partial class MainWindow : Window, IDisposable
             return;
         }
 
-        DrawMemberAssignmentsEditor(
-            DadShoppingAssociationOwnerKind.Schedule,
-            schedule.ScheduleId,
-            schedule.DisplayName,
-            schedule.ShoppingAssociation,
-            DadShoppingAssociationRules.ResolveCommonScheduleShopperSlots(schedule, groups),
-            ownerMutationLocked: activeScheduleLocked);
+        var memberSlots = DadShoppingAssociationRules.ResolveCommonScheduleShopperSlots(schedule, groups);
+        PrepareMemberAssignmentsDraft(DadShoppingAssociationOwnerKind.Schedule, schedule.ScheduleId, memberSlots);
+        var scheduleRoot = ImGui.GetID("");
 
         var knownGroupIds = groups.Select(static group => group.GroupId).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var missingPresetCount = schedule.Entries.Count(entry =>
@@ -2228,7 +2278,6 @@ public sealed partial class MainWindow : Window, IDisposable
                     RequestedBy = "schedule-ui-retry",
                 },
                 Plugin.IsBusy(runState.VisibleRun));
-        var useColumns = ImGui.GetContentRegionAvail().X >= ImGui.GetFontSize() * 66f;
         var skipBadges = DadScheduleSkipBadgeProjection.Build(
             schedule,
             activeRun,
@@ -2236,20 +2285,16 @@ public sealed partial class MainWindow : Window, IDisposable
             plugin.SchedulerService.GetQueueSnapshot().RecentResults);
         if (!ImGui.BeginTable(
                 "dad-schedule-workspace",
-                useColumns ? 2 : 1,
+                1,
                 ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.NoSavedSettings))
         {
             return;
         }
 
-        if (useColumns)
-        {
-            ImGui.TableSetupColumn("Ordered presets", ImGuiTableColumnFlags.WidthStretch, 1.55f);
-            ImGui.TableSetupColumn("Cadence and actions", ImGuiTableColumnFlags.WidthStretch, 1f);
-        }
+        ImGui.TableSetupColumn("Ordered presets", ImGuiTableColumnFlags.WidthStretch);
 
         ImGui.TableNextColumn();
-        if (DadUi.BeginCard("dad-schedule-ordered-card"))
+        if (DadUi.BeginCard("dad-schedule-ordered-card", flat: true))
         {
             DadUi.Heading("ORDERED PRESETS", "Set the exact order and repeat count for each saved preset.");
             DrawScheduleEntryEditor(
@@ -2258,11 +2303,19 @@ public sealed partial class MainWindow : Window, IDisposable
                 activeScheduleLocked,
                 plugin.GetPlannerUiSnapshot(runState),
                 skipBadges);
-            DadUi.EndCard();
+            DadUi.EndCard(flat: true);
+        }
+
+        if (UiGui.CollapsingHeader("MEMBER SHOPPING & FINAL COMMANDS"))
+        {
+            ImGuiP.PushOverrideID(scheduleRoot);
+            DrawMemberAssignmentsEditor(DadShoppingAssociationOwnerKind.Schedule, schedule.ScheduleId,
+                schedule.DisplayName, schedule.ShoppingAssociation, memberSlots, activeScheduleLocked);
+            ImGui.PopID();
         }
 
         ImGui.TableNextColumn();
-        if (DadUi.BeginCard("dad-schedule-cadence-card"))
+        if (DadUi.BeginCard("dad-schedule-cadence-card", flat: true))
         {
             DadUi.Heading("CADENCE & ACTIONS", "Choose when this chain is eligible, then validate or run it.");
             if (activeScheduleLocked)
@@ -2270,20 +2323,23 @@ public sealed partial class MainWindow : Window, IDisposable
             if (activeRun.IsActive)
                 DrawStatusRow("Running now", DadScheduleCursorFormatter.Format(activeRun, snapshot.Schedules));
 
-            var dailyMode = schedule.Cadence == DadScheduleCadence.DailyReset;
-            ImGui.BeginDisabled(activeScheduleLocked);
-            if (UiGui.Checkbox("Daily mode", ref dailyMode))
+            if (UiGui.CollapsingHeader("Cadence"))
             {
-                schedule.Cadence = dailyMode ? DadScheduleCadence.DailyReset : DadScheduleCadence.Manual;
-                plugin.SchedulerService.UpdateSchedule(schedule);
-            }
-            ImGui.EndDisabled();
-            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                UiGui.SetTooltip("Daily mode runs once per FFXIV daily reset window at 15:00 UTC.");
+                var dailyMode = schedule.Cadence == DadScheduleCadence.DailyReset;
+                ImGui.BeginDisabled(activeScheduleLocked);
+                if (UiGui.Checkbox("Daily mode", ref dailyMode))
+                {
+                    schedule.Cadence = dailyMode ? DadScheduleCadence.DailyReset : DadScheduleCadence.Manual;
+                    plugin.SchedulerService.UpdateSchedule(schedule);
+                }
+                ImGui.EndDisabled();
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    UiGui.SetTooltip("Daily mode runs once per FFXIV daily reset window at 15:00 UTC.");
 
-            DrawStatusRow("Cadence", schedule.Cadence == DadScheduleCadence.DailyReset
-                ? $"Daily reset at 15:00 UTC; next {FormatTime(DadScheduleRules.GetNextDailyResetUtc(DateTime.UtcNow))}"
-                : "Manual only");
+                DrawStatusRow("Cadence", schedule.Cadence == DadScheduleCadence.DailyReset
+                    ? $"Daily reset at 15:00 UTC; next {FormatTime(DadScheduleRules.GetNextDailyResetUtc(DateTime.UtcNow))}"
+                    : "Manual only");
+            }
             DrawStatusRow("First blocker", FormatText(firstBlocker, "None"));
             DrawStatusRow("Last dry-run", lastDryRun == null
                 ? "Not run"
@@ -2318,7 +2374,7 @@ public sealed partial class MainWindow : Window, IDisposable
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 UiGui.SetTooltip(retryEligibility.Summary);
             ImGui.EndDisabled();
-            DadUi.EndCard();
+            DadUi.EndCard(flat: true);
         }
 
         ImGui.EndTable();
@@ -2654,7 +2710,8 @@ public sealed partial class MainWindow : Window, IDisposable
         if (!string.IsNullOrWhiteSpace(skipBadges.HistoryNotice))
             DadUi.Badge(skipBadges.HistoryNotice, DadUiTone.Neutral);
 
-        using var tightScheduleRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
+        using var scheduleControls = MaterialTable.PushControls();
+        using var tightScheduleRows = MaterialTable.PushTightRows();
         if (!ImGui.BeginTable("dad-schedule-entries", 4, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
             return;
 
@@ -3397,7 +3454,8 @@ public sealed partial class MainWindow : Window, IDisposable
             return;
         }
 
-        using var tightAccountRows = DadPresentation.Compact ? MaterialTable.PushTightRows() : default;
+        using var accountControls = MaterialTable.PushControls();
+        using var tightAccountRows = MaterialTable.PushTightRows();
         if (!ImGui.BeginTable("dad-roster-account-tools", 6, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.Resizable | ImGuiTableFlags.SizingStretchProp))
         {
             DrawDeleteAccountPopup(catalog);
@@ -4310,6 +4368,123 @@ public sealed partial class MainWindow : Window, IDisposable
         var selectedGroup = plugin.GetSelectedPlannerGroup();
         var levelingEnabled = selectedGroup?.LevelingMode?.Enabled == true;
 
+        if (DadUi.Button("Open Batch Preset Wizard", DadUiTone.Accent))
+            plugin.TogglePresetBatchWizardUi();
+        if (ImGui.IsItemHovered())
+            UiGui.SetTooltip("Build a non-mutating rotating-account/anchor preview, then append generated Plans and Schedules atomically.");
+
+        if (plannerLocked)
+            DrawMutedNotice("Planner locked. Dad run active. Cancel or wait for final state before editing plan.");
+
+        ImGui.BeginDisabled(plannerLocked);
+        if (DadUi.BeginCard("dad-plan-identity-card", flat: true))
+        {
+            DrawPlannerGroupIdentityControls(plannerSnapshot, plannerPreview, plannerLocked, showMemberAssignments: false);
+            DadUi.EndCard(flat: true);
+        }
+        var editorRoot = ImGui.GetID("");
+        var rulesRoot = ImGui.GetID("dad-plan-rule-cards");
+        var identityRoot = ImGui.GetID("dad-plan-identity-card");
+        var renderedEditorPage = -1;
+        using var editorCaptions = MaterialText.PushLineHeight(new[] { "Activity", "Characters", "Rules", "Finish" }.Select(UiText.T).ToArray());
+        if (ImGui.BeginTabBar("dad-plan-editor-tabs", ImGuiTabBarFlags.FittingPolicyScroll))
+        {
+            if (UiGui.BeginTabItem("Activity", ImGuiTabItemFlags.NoPushId))
+            {
+                renderedEditorPage = 0;
+                ImGuiP.PushOverrideID(editorRoot);
+                DrawSectionHeader("Activity and content", "Choose the activity, submode, duty, and required modifiers.");
+                var activityFieldsShareRow = ImGui.GetContentRegionAvail().X >= ImGui.GetFontSize() * 36f;
+                ImGui.BeginDisabled(levelingEnabled);
+                DrawPlannerRunFamilySelector(plannerOptions);
+                if (activityFieldsShareRow)
+                    ImGui.SameLine();
+                DrawPlannerSubmodeSelector(plannerOptions, plannerPreview);
+                ImGui.EndDisabled();
+                if (levelingEnabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    UiGui.SetTooltip("Disable Leveling Mode before changing Run family or Submode.");
+                ImGui.BeginDisabled(levelingEnabled);
+                DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition, plannerSnapshot.SelectedDuty, debugUi: false);
+                ImGui.EndDisabled();
+                if (levelingEnabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    UiGui.SetTooltip("Leveling Mode selects duty from its ordered threshold table. The saved fixed duty and sync settings are preserved.");
+
+                if (plannerOptions.ActivityMode == DadPlannerActivityMode.GatherParty)
+                    DrawGatherPartyEditor(plannerOptions, plannerPreview, GetActiveRun(runState));
+
+                ImGui.PopID();
+                ImGui.EndTabItem();
+            }
+            if (UiGui.BeginTabItem("Characters", ImGuiTabItemFlags.NoPushId))
+            {
+                renderedEditorPage = 1;
+                ImGuiP.PushOverrideID(editorRoot);
+                DrawSectionHeader("Crew", "Every primary and substitute stays on one full-width row.");
+                DrawPlannerGroupCrewControls(plannerSnapshot, plannerPreview, debugUi: false);
+
+
+                ImGui.PopID();
+                ImGui.EndTabItem();
+            }
+            if (UiGui.BeginTabItem("Rules", ImGuiTabItemFlags.NoPushId))
+            {
+                renderedEditorPage = 2;
+                ImGuiP.PushOverrideID(rulesRoot);
+                ImGuiP.PushOverrideID(editorRoot);
+                if (plannerOptions.ActivityMode != DadPlannerActivityMode.GatherParty)
+                    DrawLevelingModeControls(plannerSnapshot, selectedGroup);
+                ImGui.PopID();
+                if (DadUi.BeginCard("dad-plan-stop-card", flat: true))
+                {
+                    DadUi.Heading("STOP", "Bound the run with one explicit stopping rule.");
+                    ImGui.BeginDisabled(levelingEnabled);
+                    if (plannerOptions.ActivityMode == DadPlannerActivityMode.GatherParty)
+                        UiGui.TextWrapped("Stops when all fixed gathering allocations and the combined carried-stock targets are complete.");
+                    else
+                        DrawPlannerStopPolicyControls(plannerOptions, plannerPreview, requestPreview);
+                    ImGui.EndDisabled();
+                    if (levelingEnabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                        UiGui.SetTooltip("Leveling Mode owns the plan goal and runs one frozen child at a time. The saved ordinary stop policy is preserved.");
+                    DadUi.EndCard(flat: true);
+                }
+                ImGui.PopID();
+                ImGui.EndTabItem();
+            }
+            if (UiGui.BeginTabItem("Finish", ImGuiTabItemFlags.NoPushId))
+            {
+                renderedEditorPage = 3;
+                ImGuiP.PushOverrideID(rulesRoot);
+                if (DadUi.BeginCard("dad-plan-finish-card", flat: true))
+                {
+                    DadUi.Heading("FINISH", "Choose the safe actions taken after successful completion.");
+                    DrawPlannerCompletionActionsControls(plannerOptions, requestPreview);
+                    DadUi.EndCard(flat: true);
+                }
+                ImGui.PopID();
+                if (plugin.GetSelectedPlannerGroup() is { } finishGroup)
+                {
+                    ImGuiP.PushOverrideID(identityRoot);
+                    DrawPlannerMemberAssignments(finishGroup, plannerLocked, render: true);
+                    ImGui.PopID();
+                }
+                ImGui.EndTabItem();
+            }
+            ImGui.EndTabBar();
+        }
+        PreparePlannerEditorState(plannerOptions, plannerPreview, plugin.GetSelectedPlannerGroup(), renderedEditorPage);
+        if (selectedGroup != null && DadUi.Button("Save activity and rules to selected preset", DadUiTone.Accent))
+        {
+            var saved = plugin.SaveCurrentPlannerGroup(
+                string.IsNullOrWhiteSpace(plannerGroupNameBuffer) ? selectedGroup.DisplayName : plannerGroupNameBuffer,
+                out _,
+                out var rejectionReason);
+            plugin.PrintStatus(saved == null
+                ? rejectionReason
+                : $"Saved activity and rules to preset '{saved.DisplayName}'.");
+        }
+        if (selectedGroup != null && ImGui.IsItemHovered())
+            UiGui.SetTooltip("Crew rows save through their inline controls. This saves the activity, duty, stop rule, and finish rule selected above.");
+        ImGui.EndDisabled();
         if (DadUi.BeginCard("dad-plan-crew-tools-card"))
         {
             DadUi.Heading(
@@ -4348,96 +4523,39 @@ public sealed partial class MainWindow : Window, IDisposable
             }
             DadUi.EndCard();
         }
-
-        if (DadUi.Button("Open Batch Preset Wizard", DadUiTone.Accent))
-            plugin.TogglePresetBatchWizardUi();
-        if (ImGui.IsItemHovered())
-            UiGui.SetTooltip("Build a non-mutating rotating-account/anchor preview, then append generated Plans and Schedules atomically.");
-
-        if (plannerLocked)
-            DrawMutedNotice("Planner locked. Dad run active. Cancel or wait for final state before editing plan.");
-
         if (DadUi.BeginCard("dad-plan-review-card"))
         {
             DadUi.Heading("REVIEW & RUN", "Check the first blocker, validate, then deliberately start or cancel.");
             DrawPlannerActionStrip(requestPreview, plannerSnapshot.SchedulerPreview, runState, plannerLocked, plannerSnapshot.Generation);
             DadUi.EndCard();
         }
+    }
 
-        ImGui.BeginDisabled(plannerLocked);
-        if (DadUi.BeginCard("dad-plan-identity-card"))
+    private void PreparePlannerEditorState(DadPresetPlannerOptions options, DadActivityPreset preview, DadPlannerGroup? group,
+        int renderedEditorPage)
+    {
+        // Retain owner synchronization and native normalization while editor sections are hidden.
+        if (renderedEditorPage != 1 && group != null)
+            group.Slots = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots);
+        if (options.ActivityMode == DadPlannerActivityMode.GatherParty)
         {
-            DrawPlannerGroupIdentityControls(plannerSnapshot, plannerPreview, plannerLocked);
-            DadUi.EndCard();
+            if (renderedEditorPage != 0 && !plugin.IsGatherPreviewFor(options.GatherParty, preview.SelectedCharacters))
+                plugin.ClearGatherPreview();
         }
-
-        DrawSectionHeader("Activity and content", "Choose the activity, submode, duty, and required modifiers.");
-        var activityFieldsShareRow = ImGui.GetContentRegionAvail().X >= ImGui.GetFontSize() * 36f;
-        ImGui.BeginDisabled(levelingEnabled);
-        DrawPlannerRunFamilySelector(plannerOptions);
-        if (activityFieldsShareRow)
-            ImGui.SameLine();
-        DrawPlannerSubmodeSelector(plannerOptions, plannerPreview);
-        ImGui.EndDisabled();
-        if (levelingEnabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            UiGui.SetTooltip("Disable Leveling Mode before changing Run family or Submode.");
-        ImGui.BeginDisabled(levelingEnabled);
-        DrawPlannerLaneInputs(plannerOptions, plannerPreview.LaneDefinition, plannerSnapshot.SelectedDuty, debugUi: false);
-        ImGui.EndDisabled();
-        if (levelingEnabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            UiGui.SetTooltip("Leveling Mode selects duty from its ordered threshold table. The saved fixed duty and sync settings are preserved.");
-        if (plannerOptions.ActivityMode != DadPlannerActivityMode.GatherParty)
-            DrawLevelingModeControls(plannerSnapshot, selectedGroup);
-
-        DrawSectionHeader("Crew", "Every primary and substitute stays on one full-width row.");
-        DrawPlannerGroupCrewControls(plannerSnapshot, plannerPreview, debugUi: false);
-        if (plannerOptions.ActivityMode == DadPlannerActivityMode.GatherParty)
-            DrawGatherPartyEditor(plannerOptions, plannerPreview, GetActiveRun(runState));
-
-        var useRuleColumns = ImGui.GetContentRegionAvail().X >= ImGui.GetFontSize() * 66f;
-        if (ImGui.BeginTable(
-                "dad-plan-rule-cards",
-                useRuleColumns ? 2 : 1,
-                ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.NoSavedSettings))
+        else if (renderedEditorPage != 2)
+            (options.StopPolicy ??= new DadRunStopPolicy()).Normalize();
+        if (renderedEditorPage == 3) return;
+        if (options.CompletionActions is not { } actions) return;
+        if (actions.RunCommands)
         {
-            ImGui.TableNextColumn();
-            if (DadUi.BeginCard("dad-plan-stop-card"))
+            var owner = BuildPlannerCompletionDraftOwner(options);
+            if (!string.Equals(plannerCompletionDraftOwner, owner, StringComparison.Ordinal))
             {
-                DadUi.Heading("STOP", "Bound the run with one explicit stopping rule.");
-                ImGui.BeginDisabled(levelingEnabled);
-                if (plannerOptions.ActivityMode == DadPlannerActivityMode.GatherParty)
-                    UiGui.TextWrapped("Stops when all fixed gathering allocations and the combined carried-stock targets are complete.");
-                else
-                    DrawPlannerStopPolicyControls(plannerOptions, plannerPreview, requestPreview);
-                ImGui.EndDisabled();
-                if (levelingEnabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                    UiGui.SetTooltip("Leveling Mode owns the plan goal and runs one frozen child at a time. The saved ordinary stop policy is preserved.");
-                DadUi.EndCard();
+                draftPlannerCompletionCommands = string.Join("\n", actions.Commands ?? []);
+                plannerCompletionDraftOwner = owner;
             }
-
-            ImGui.TableNextColumn();
-            if (DadUi.BeginCard("dad-plan-finish-card"))
-            {
-                DadUi.Heading("FINISH", "Choose the safe actions taken after successful completion.");
-                DrawPlannerCompletionActionsControls(plannerOptions, requestPreview);
-                DadUi.EndCard();
-            }
-            ImGui.EndTable();
         }
-
-        if (selectedGroup != null && DadUi.Button("Save activity and rules to selected preset", DadUiTone.Accent))
-        {
-            var saved = plugin.SaveCurrentPlannerGroup(
-                string.IsNullOrWhiteSpace(plannerGroupNameBuffer) ? selectedGroup.DisplayName : plannerGroupNameBuffer,
-                out _,
-                out var rejectionReason);
-            plugin.PrintStatus(saved == null
-                ? rejectionReason
-                : $"Saved activity and rules to preset '{saved.DisplayName}'.");
-        }
-        if (selectedGroup != null && ImGui.IsItemHovered())
-            UiGui.SetTooltip("Crew rows save through their inline controls. This saves the activity, duty, stop rule, and finish rule selected above.");
-        ImGui.EndDisabled();
+        actions.Utilities ??= new DadPostRunUtilities();
     }
 
     private static string FormatCrewFormationMode(DadCrewFormationMode mode)
@@ -7200,7 +7318,7 @@ public sealed partial class MainWindow : Window, IDisposable
     private void DrawPlannerGroupIdentityControls(
         DadPlannerUiSnapshot plannerSnapshot,
         DadActivityPreset plannerPreview,
-        bool plannerLocked)
+        bool plannerLocked, bool showMemberAssignments = true)
     {
         ImGui.BeginDisabled(plannerLocked);
         if (UiGui.BeginCombo("Built-in leveling preset", "Create a Duty Support preset..."))
@@ -7385,20 +7503,7 @@ public sealed partial class MainWindow : Window, IDisposable
         if (selectedGroup == null)
             return;
 
-        DrawMemberAssignmentsEditor(
-            DadShoppingAssociationOwnerKind.Plan,
-            selectedGroup.GroupId,
-            selectedGroup.DisplayName,
-            selectedGroup.ShoppingAssociation,
-            DadPlannerSlotRules.NormalizeGroupSlots(selectedGroup.Slots)
-                .Where(static slot =>
-                    !slot.IsSubstitute &&
-                    slot.SharedIdentity == null &&
-                    !slot.RequiredAccountKey.IsEmpty &&
-                    !slot.RequiredCharacterKey.IsEmpty)
-                .Select(static slot => DadSchedulerGroupCloneRules.CloneSlot(slot))
-                .ToList(),
-            ownerMutationLocked: plannerLocked || selectedGroup.IsTemplate);
+        DrawPlannerMemberAssignments(selectedGroup, plannerLocked, showMemberAssignments);
 
         // Feature batch B: a template can be instantiated against the live roster (auto-assign by role).
         if (selectedGroup.IsTemplate)
@@ -7415,6 +7520,24 @@ public sealed partial class MainWindow : Window, IDisposable
                 }
             }
         }
+    }
+
+    private void DrawPlannerMemberAssignments(DadPlannerGroup selectedGroup, bool plannerLocked, bool render)
+    {
+        var slots = DadPlannerSlotRules.NormalizeGroupSlots(selectedGroup.Slots)
+                .Where(static slot =>
+                    !slot.IsSubstitute &&
+                    slot.SharedIdentity == null &&
+                    !slot.RequiredAccountKey.IsEmpty &&
+                    !slot.RequiredCharacterKey.IsEmpty)
+                .Select(static slot => DadSchedulerGroupCloneRules.CloneSlot(slot))
+                .ToList();
+        if (render)
+            DrawMemberAssignmentsEditor(DadShoppingAssociationOwnerKind.Plan, selectedGroup.GroupId,
+                selectedGroup.DisplayName, selectedGroup.ShoppingAssociation, slots,
+                ownerMutationLocked: plannerLocked || selectedGroup.IsTemplate);
+        else
+            PrepareMemberAssignmentsDraft(DadShoppingAssociationOwnerKind.Plan, selectedGroup.GroupId, slots);
     }
 
     private void DrawPlannerGroupCrewControls(
@@ -7568,6 +7691,8 @@ public sealed partial class MainWindow : Window, IDisposable
         var removeIndex = -1;
         var moveFrom = -1;
         var moveTo = -1;
+        using var thresholdControls = MaterialTable.PushControls();
+        using var thresholdRows = MaterialTable.PushTightRows();
         if (ImGui.BeginTable(
                 "dad-leveling-thresholds",
                 4,

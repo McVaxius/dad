@@ -180,9 +180,12 @@ public sealed class SetupWizardWindow : Window, IDisposable
         DrawExpertButton(flow);
         ImGui.Spacing();
 
+        var railWidth = Math.Max(160 * MaterialTheme.Metrics.Scale,
+            steps.Max(step => MaterialText.Measure(UiText.T(step.Title)).X) + 44 * MaterialTheme.Metrics.Scale);
+        var sideBySide = ImGui.GetContentRegionAvail().X >= railWidth + 320 * MaterialTheme.Metrics.Scale;
         if (!ImGui.BeginTable(
                 "dad-guide-layout",
-                2,
+                sideBySide ? 2 : 1,
                 ImGuiTableFlags.SizingStretchProp |
                 ImGuiTableFlags.Resizable |
                 ImGuiTableFlags.NoSavedSettings))
@@ -190,8 +193,11 @@ public sealed class SetupWizardWindow : Window, IDisposable
             return;
         }
 
-        ImGui.TableSetupColumn("Steps", ImGuiTableColumnFlags.WidthFixed, 205f);
-        ImGui.TableSetupColumn("Current step", ImGuiTableColumnFlags.WidthStretch);
+        if (sideBySide)
+        {
+            ImGui.TableSetupColumn("Steps", ImGuiTableColumnFlags.WidthFixed, railWidth);
+            ImGui.TableSetupColumn("Current step", ImGuiTableColumnFlags.WidthStretch);
+        }
         ImGui.TableNextRow();
         ImGui.TableNextColumn();
         DrawStepRail(steps);
@@ -209,18 +215,6 @@ public sealed class SetupWizardWindow : Window, IDisposable
             DadUi.Badge("Connection role is already configured", DadUiTone.Warning);
             UiGui.TextWrapped(roleRestrictionMessage);
         }
-        ImGui.Spacing();
-
-        DadUi.Section("Quick start", "Save and Next saves each step. Back keeps completed work; Finish completes the guide.");
-        UiGui.TextWrapped("1. Setup: Use Name this DAD, then Set up a Coordinator on one instance and Connect a Client on the others. Match the endpoint and LAN shared secret. Use Build the Crew to refresh the roster, assign account ownership, and resolve stale rows.");
-        ImGui.Spacing();
-        UiGui.TextWrapped("2. Presets: To edit, use Plan below to select the existing preset before opening Create a Preset; leave Create a new preset unchecked. Check it only when creating a new preset. Choose the activity, name, crew, and stop/finish rules, then validate.");
-        ImGui.Spacing();
-        UiGui.TextWrapped("3. Schedules: Open Build a Schedule. Leave Create a new schedule unchecked to choose an Existing schedule, or check it to create one. Arrange saved presets and repeat counts, choose the cadence, then resolve blockers and use Run dry-run to validate.");
-        ImGui.Spacing();
-        UiGui.TextWrapped("4. Shopping: Open Shopping List Wizard above the /dad tabs, use Add shopping list or Edit shopping list beside a saved preset or schedule, or use /dad shopping. Choose the destination, ADS list, exact shopper and optional actions, then review and Save shopping list. ARR Zodiac and HW Anima Poetics orders are supplied by ADS. Targeted refill maintains ownership thresholds; Spend until currency/capacity follows repeat rules; Fill order over multiple runs remembers credited quantities until fulfilled. Shopping Next and Back keep an unsaved draft; cancel discards it. Preview only uses this client's current character and never purchases items.");
-        if (UiGui.Button("Shopping List Wizard"))
-            plugin.OpenShoppingWizard();
         ImGui.Spacing();
 
         var flows = new[]
@@ -242,7 +236,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 var restricted = DadGuideReadiness.TryGetConnectionFlowRestriction(plugin, candidate, out var restriction);
                 ImGui.TableNextColumn();
                 ImGui.BeginDisabled(restricted);
-                if (DadUi.BeginCard($"dad-guide-card-{candidate}", 132f))
+                if (DadUi.BeginCard($"dad-guide-card-{candidate}"))
                 {
                     DadUi.Badge(
                         progress.Ready ? "Ready" : $"{progress.Complete}/{progress.Total} ready",
@@ -258,6 +252,22 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 ImGui.EndDisabled();
             }
             ImGui.EndTable();
+        }
+
+        if (UiGui.CollapsingHeader("Quick start"))
+        {
+            UiGui.TextWrapped("Save and Next saves each step. Back keeps completed work; Finish completes the guide.");
+            UiGui.TextWrapped("1. Setup: Use Name this DAD, then Set up a Coordinator on one instance and Connect a Client on the others. Match the endpoint and LAN shared secret. Use Build the Crew to refresh the roster, assign account ownership, and resolve stale rows.");
+            ImGui.Spacing();
+            UiGui.TextWrapped("2. Presets: To edit, use Plan below to select the existing preset before opening Create a Preset; leave Create a new preset unchecked. Check it only when creating a new preset. Choose the activity, name, crew, and stop/finish rules, then validate.");
+            ImGui.Spacing();
+            UiGui.TextWrapped("3. Schedules: Open Build a Schedule. Leave Create a new schedule unchecked to choose an Existing schedule, or check it to create one. Arrange saved presets and repeat counts, choose the cadence, then resolve blockers and use Run dry-run to validate.");
+            ImGui.Spacing();
+            UiGui.TextWrapped("4. Shopping: Open Shopping List Wizard above the /dad tabs, use Add shopping list or Edit shopping list beside a saved preset or schedule, or use /dad shopping. Choose the destination, ADS list, exact shopper and optional actions, then review and Save shopping list. ARR Zodiac and HW Anima Poetics orders are supplied by ADS. Targeted refill maintains ownership thresholds; Spend until currency/capacity follows repeat rules; Fill order over multiple runs remembers credited quantities until fulfilled. Shopping Next and Back keep an unsaved draft; cancel discards it. Preview only uses this client's current character and never purchases items.");
+            if (UiGui.Button("Shopping List Wizard"))
+                plugin.OpenShoppingWizard();
+            ImGui.Spacing();
+
         }
 
         DadUi.Section("Expert workspaces", "Use these after the guided setup when you already know what needs changing.");
@@ -290,6 +300,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
                     ? DadUiTone.Accent
                     : DadUiTone.Neutral;
             DadUi.Badge($"{index + 1}. {UiText.T(steps[index].Title)}", tone);
+            DadUi.SameLineIfFits(MaterialText.Measure(UiText.T(state)).X / MaterialTheme.Metrics.Scale);
             UiGui.TextDisabled(state);
             if (index <= furthestStep && index != stepIndex)
             {
@@ -301,22 +312,20 @@ public sealed class SetupWizardWindow : Window, IDisposable
                     validationMessage = string.Empty;
                 }
             }
-            ImGui.Spacing();
         }
     }
 
     private void DrawStep(GuideStep step, IReadOnlyList<GuideStep> steps)
     {
         DadUi.Heading($"{stepIndex + 1}. {UiText.T(step.Title)}", step.Controls);
-        if (DadUi.BeginCard("dad-guide-explanation", 138f))
+        if (DadUi.BeginCard("dad-guide-explanation", flat: true))
         {
             DadUi.KeyValue("What it controls", step.Controls, 132f);
             DadUi.KeyValue("Why DAD needs it", step.Why, 132f);
             DadUi.KeyValue("Success looks like", step.Success, 132f);
             DadUi.KeyValue("Current blocker", step.Ready ? "None for this step." : step.Blocker, 132f);
-            DadUi.EndCard();
+            DadUi.EndCard(flat: true);
         }
-        ImGui.Spacing();
 
         DrawStepContent();
         if (!string.IsNullOrWhiteSpace(validationMessage))

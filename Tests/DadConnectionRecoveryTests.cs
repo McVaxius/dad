@@ -30,6 +30,82 @@ public sealed class DadConnectionRecoveryTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ActualOwnerProtectsBeforeFirstSessionIndependentlyOfAutomation(bool automationEnabled)
+    {
+        using var fixture = new RecoveryOwnerFixture();
+        fixture.Configuration.PluginEnabled = automationEnabled;
+        Assert.True(fixture.Protect(2002));
+        fixture.Tick();
+        Assert.Empty(fixture.Actions);
+        if (!automationEnabled) Assert.Contains("Lobby protection is enabled.", fixture.Owner.ConnectionRecoveryStatus);
+        fixture.Configuration.ConnectionRecoveryEnabled = false;
+        Assert.False(fixture.Protect(3102));
+        fixture.Configuration.ConnectionRecoveryEnabled = true;
+        Assert.True(fixture.Protect(90002));
+        fixture.Owner.Dispose();
+        Assert.False(fixture.Protect(2002));
+    }
+
+    [Theory]
+    [InlineData("disabled")]
+    [InlineData("stop")]
+    [InlineData("shift")]
+    [InlineData("owner")]
+    public void ActualOwnerKeepsProtectionWhileCancelledRecoveryCannotDispatch(string cancellation)
+    {
+        using var fixture = new RecoveryOwnerFixture();
+        fixture.Configuration.PluginEnabled = true;
+        fixture.Identity = Session;
+        fixture.Tick();
+        fixture.Identity = null;
+        switch (cancellation)
+        {
+            case "disabled": fixture.Configuration.PluginEnabled = false; break;
+            case "stop": fixture.Owner.CancelConnectionRecovery("Synthetic Stop All"); break;
+            case "shift": fixture.ShiftHeld = true; break;
+            case "owner": fixture.AnotherOwner = true; break;
+        }
+        Assert.True(fixture.Protect(2002));
+        fixture.Logout(0x3E80);
+        fixture.Tick();
+        Assert.Empty(fixture.Actions);
+        Assert.True(fixture.Protect(3102));
+    }
+
+    [Fact]
+    public void ActualOwnerDoesNotReviveAnErrorProtectedWhileAutomationWasDisabled()
+    {
+        using var fixture = new RecoveryOwnerFixture();
+        fixture.Configuration.PluginEnabled = true;
+        fixture.Identity = Session;
+        fixture.Tick();
+        fixture.Configuration.PluginEnabled = false;
+        Assert.True(fixture.Protect(90002));
+        fixture.Logout(0x3E80);
+        fixture.Identity = null;
+        fixture.Tick();
+        fixture.Configuration.PluginEnabled = true;
+        fixture.Tick();
+        Assert.Empty(fixture.Actions);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ActualOwnerReportsUnavailableNativeProtectionAndReleasesItsLogoutSubscription(bool initializationThrows)
+    {
+        using var fixture = new RecoveryOwnerFixture();
+        fixture.ConfigureUnavailableNativeHook(initializationThrows);
+        Assert.Contains(initializationThrows ? "could not initialize" : "is unavailable", fixture.Owner.ConnectionRecoveryStatus);
+        Assert.Equal(1, fixture.LogoutSubscriptions);
+        fixture.Owner.Dispose();
+        Assert.Equal(0, fixture.LogoutSubscriptions);
+        Assert.False(fixture.Protect(2002));
+    }
+
+    [Theory]
     [InlineData(3102)]
     [InlineData(2002)]
     [InlineData(0x332C)]
@@ -259,6 +335,85 @@ public sealed class DadConnectionRecoveryTests
         var result = new DadConnectionRecovery();
         Step(result, DadConnectionRecoverySurface.World, session: Session);
         return result;
+    }
+
+    private sealed class RecoveryOwnerFixture : IDisposable
+    {
+        private delegate bool ProtectNativeError(Span<byte> value);
+        private readonly ProtectNativeError protect;
+        private readonly MethodInfo update;
+        private readonly MethodInfo logout;
+        public RecoveryConfiguration Configuration { get; } = new() { ClientAccountId = Session.AccountId };
+        public RecoveryOwner Owner { get; }
+        public DadConnectionRecoveryIdentity? Identity { get; set; }
+        public bool ShiftHeld { get; set; }
+        public bool AnotherOwner { get; set; }
+        public int LogoutSubscriptions { get; private set; }
+        public List<DadConnectionRecoveryAction> Actions { get; } = [];
+
+        private static object Proxy(Type type, Func<MethodInfo, object?[]?, object?> handler)
+        {
+            var value = DispatchProxy.Create(type, typeof(DadQuestionableTestProxy));
+            ((DadQuestionableTestProxy)value).Handler = handler;
+            return value;
+        }
+
+        public RecoveryOwnerFixture()
+        {
+            var constructor = typeof(RecoveryOwner).GetConstructors().Single();
+            var parameters = constructor.GetParameters();
+            var framework = Proxy(parameters[0].ParameterType, (_, _) => null);
+            var clientState = Proxy(parameters[1].ParameterType, (method, _) =>
+            {
+                if (method.Name == "add_Logout") LogoutSubscriptions++;
+                if (method.Name == "remove_Logout") LogoutSubscriptions--;
+                return null;
+            });
+            var keys = Proxy(parameters[3].ParameterType, (method, _) => method.Name == "get_Item" ? ShiftHeld : null);
+            Owner = (RecoveryOwner)constructor.Invoke([framework, clientState, null, keys]);
+            var configure = typeof(RecoveryOwner).GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+                .Single(method => method.Name == "ConfigureConnectionRecovery" && method.GetParameters().Length == 5);
+            configure.Invoke(Owner, [Configuration, (Func<DadConnectionRecoveryIdentity?>)(() => Identity),
+                (Func<bool>)(() => AnotherOwner),
+                (Func<DadConnectionRecoveryObservation>)(() => new(DadConnectionRecoverySurface.Dialogue, true, 123)),
+                (Action<DadConnectionRecoveryAction, DadConnectionRecoveryIdentity, DadConnectionRecoveryObservation>)
+                    ((action, _, _) => Actions.Add(action))]);
+            update = typeof(RecoveryOwner).GetMethod("UpdateConnectionRecovery", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            logout = typeof(RecoveryOwner).GetMethod("OnRecoveryLogout", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            protect = typeof(RecoveryOwner).GetMethod("ProtectConnectionError", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .CreateDelegate<ProtectNativeError>(Owner);
+        }
+
+        public void ConfigureUnavailableNativeHook(bool initializationThrows)
+        {
+            var configure = typeof(RecoveryOwner).GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+                .Single(method => method.Name == "ConfigureConnectionRecovery" && method.GetParameters().Length == 6);
+            var parameters = configure.GetParameters();
+            var data = Proxy(parameters[3].ParameterType, (_, _) => null);
+            var interop = Proxy(parameters[4].ParameterType, (method, _) =>
+            {
+                if (initializationThrows && method.Name == "InitializeFromAttributes")
+                    throw new InvalidOperationException("Synthetic native hook initialization failure.");
+                return null;
+            });
+            var log = Proxy(parameters[5].ParameterType, (_, _) => null);
+            configure.Invoke(Owner, [Configuration, (Func<DadConnectionRecoveryIdentity?>)(() => Identity),
+                (Func<bool>)(() => AnotherOwner), data, interop, log]);
+        }
+
+        public bool Protect(int code)
+        {
+            var value = new byte[16];
+            value[0] = 3;
+            BinaryPrimitives.WriteInt32LittleEndian(value.AsSpan(8), code);
+            var protectedError = protect(value);
+            Assert.Equal(protectedError ? 0x3E80 : code, BinaryPrimitives.ReadInt64LittleEndian(value.AsSpan(8)));
+            return protectedError;
+        }
+
+        public void Tick() => update.Invoke(Owner, null);
+        public void Logout(int code) => logout.Invoke(Owner, [0, code]);
+        public void Dispose() => Owner.Dispose();
     }
 
     private static DadConnectionRecoveryAction Step(DadConnectionRecovery recovery,

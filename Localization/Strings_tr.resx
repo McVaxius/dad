@@ -8804,7 +8804,7 @@
   <data name="member_014" xml:space="preserve"><value>Her üye için isteğe bağlı ADS listesi ve son komut. Boş seçimler kapalıdır.</value></data>
   <data name="member_015" xml:space="preserve"><value>Üye atamaları kaydedildi.</value></data>
   <data name="recovery_001" xml:space="preserve"><value>Oyun bağlantısını otomatik kurtar</value></data>
-  <data name="recovery_002" xml:space="preserve"><value>DAD açıkken lobi hatalarından sonra oyunu açık tutar ve bağlantı kesilince aynı yerel karakterle yeniden bağlanır. Kurtarmayı durdurmak için Shift tuşunu basılı tutun veya Tümünü durdur seçeneğini kullanın. Hizmet hesabı elle seçilir.</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>Bu ayar açıkken, otomasyon durmuş olsa bile lobi hatalarından sonra oyunu açık tutar. Aynı yerel karaktere yalnızca DAD açıkken yeniden bağlanır. Yeniden bağlanmayı durdurmak için Shift tuşunu basılı tutun veya Tümünü durdur seçeneğini kullanın. Hizmet hesabı elle seçilir.</value></data>
   <data name="recovery_003" xml:space="preserve"><value>Bağlantı kurtarma</value></data>
   <data name="recovery_004" xml:space="preserve"><value>Yerel oturum bekleniyor.</value></data>
   <data name="recovery_005" xml:space="preserve"><value>Bağlantı kurtarma kapalı.</value></data>
@@ -8823,7 +8823,6 @@
   <data name="recovery_018" xml:space="preserve"><value>Normal şekilde çıkış yapıldı.</value></data>
   <data name="recovery_019" xml:space="preserve"><value>Lobi koruması kullanılamıyor; yüklü oyun sürümünü kontrol edin.</value></data>
   <data name="recovery_020" xml:space="preserve"><value>Lobi koruması başlatılamadı; eklenti günlüğünü kontrol edin.</value></data>
-  <data name="Auto" xml:space="preserve"><value>Otomatik</value></data>
   <data name="Picker" xml:space="preserve"><value>Seçici</value></data>
   <data name="Default" xml:space="preserve"><value>Varsayılan</value></data>
   <data name="Background, controls and text follow your theme." xml:space="preserve"><value>Arka plan, denetimler ve metin temanızı izler.</value></data>
@@ -8836,4 +8835,12 @@
   <data name="Control" xml:space="preserve"><value>Denetim</value></data>
   <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Her rengi ayarlamak için Seçici'ye geçin.</value></data>
   <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Otomatik temayı kullanmak için Otomatik'e dönün.</value></data>
+  <data name="recovery_021" xml:space="preserve"><value>Lobi koruması açık.</value></data>
+  <data name="ui_layout_manage" xml:space="preserve"><value>Y?netim</value></data>
+  <data name="ui_layout_rules" xml:space="preserve"><value>Kurallar</value></data>
+  <data name="ui_layout_theme_language" xml:space="preserve"><value>Tema ve dil</value></data>
+  <data name="ui_layout_main_controls" xml:space="preserve"><value>Ana pencere denetimleri</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>Pencere opakl???</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>Odak d???ndayken</value></data>
+  <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Kurulum, al??veri? ve yard?m</value></data>
 </root>

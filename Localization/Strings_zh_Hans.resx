@@ -8812,7 +8812,7 @@
   <data name="member_014" xml:space="preserve"><value>每位成员可选ADS列表和最终斜杠指令。空白选项为关闭。</value></data>
   <data name="member_015" xml:space="preserve"><value>成员分配已保存。</value></data>
   <data name="recovery_001" xml:space="preserve"><value>自动恢复游戏连接</value></data>
-  <data name="recovery_002" xml:space="preserve"><value>DAD启用时，发生大厅错误后保持游戏运行，并在断线后重新登录同一本地角色。按住Shift或使用全部停止来停止恢复。服务账号仍需手动选择。</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>启用此设置时，即使自动化已停止，发生大厅错误后也会保持游戏运行。仅在DAD启用时重新登录同一本地角色。按住Shift或使用全部停止来停止重新连接。服务账号仍需手动选择。</value></data>
   <data name="recovery_003" xml:space="preserve"><value>连接恢复</value></data>
   <data name="recovery_004" xml:space="preserve"><value>正在等待本地会话。</value></data>
   <data name="recovery_005" xml:space="preserve"><value>连接恢复已关闭。</value></data>
@@ -8831,7 +8831,6 @@
   <data name="recovery_018" xml:space="preserve"><value>已正常登出。</value></data>
   <data name="recovery_019" xml:space="preserve"><value>大厅保护不可用；请检查已安装的游戏版本。</value></data>
   <data name="recovery_020" xml:space="preserve"><value>大厅保护无法初始化；请检查插件日志。</value></data>
-  <data name="Auto" xml:space="preserve"><value>自动</value></data>
   <data name="Picker" xml:space="preserve"><value>选色器</value></data>
   <data name="Default" xml:space="preserve"><value>默认</value></data>
   <data name="Background, controls and text follow your theme." xml:space="preserve"><value>背景、控件和文本跟随主题。</value></data>
@@ -8844,4 +8843,12 @@
   <data name="Control" xml:space="preserve"><value>控件</value></data>
   <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>切换到选色器以自行设置每种颜色。</value></data>
   <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>切换回自动以使用自动主题。</value></data>
+  <data name="recovery_021" xml:space="preserve"><value>大厅错误保护已启用。</value></data>
+  <data name="ui_layout_manage" xml:space="preserve"><value>管理</value></data>
+  <data name="ui_layout_rules" xml:space="preserve"><value>规则</value></data>
+  <data name="ui_layout_theme_language" xml:space="preserve"><value>主题和语言</value></data>
+  <data name="ui_layout_main_controls" xml:space="preserve"><value>主窗口控件</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>窗口不透明度</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>失去焦点时</value></data>
+  <data name="ui_layout_home_setup_help" xml:space="preserve"><value>设置、购物与帮助</value></data>
 </root>

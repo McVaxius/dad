@@ -8849,7 +8849,7 @@ Bloqueador(es) de lista</value>
   <data name="member_014" xml:space="preserve"><value>Lista ADS y comando final opcionales por miembro. Los campos vacíos se desactivan.</value></data>
   <data name="member_015" xml:space="preserve"><value>Asignaciones guardadas.</value></data>
   <data name="recovery_001" xml:space="preserve"><value>Recuperar automáticamente la conexión al juego</value></data>
-  <data name="recovery_002" xml:space="preserve"><value>Con DAD activado, mantener el juego abierto tras errores del vestíbulo y reconectar el mismo personaje local tras una desconexión. Mantén Mayús o usa Detener todo para parar la recuperación. La cuenta de servicio se selecciona manualmente.</value></data>
+  <data name="recovery_002" xml:space="preserve"><value>Mantén el juego abierto tras errores del vestíbulo siempre que esta opción esté activada, incluso con la automatización detenida. Reconecta el mismo personaje local solo mientras DAD esté activado. Mantén Mayús o usa Detener todo para detener la reconexión. La cuenta de servicio se selecciona manualmente.</value></data>
   <data name="recovery_003" xml:space="preserve"><value>Recuperación de conexión</value></data>
   <data name="recovery_004" xml:space="preserve"><value>Esperando una sesión local.</value></data>
   <data name="recovery_005" xml:space="preserve"><value>La recuperación de conexión está desactivada.</value></data>
@@ -8868,7 +8868,6 @@ Bloqueador(es) de lista</value>
   <data name="recovery_018" xml:space="preserve"><value>Sesión cerrada normalmente.</value></data>
   <data name="recovery_019" xml:space="preserve"><value>La protección del vestíbulo no está disponible; comprueba la versión del juego instalada.</value></data>
   <data name="recovery_020" xml:space="preserve"><value>No se pudo iniciar la protección del vestíbulo; consulta el registro del plugin.</value></data>
-  <data name="Auto" xml:space="preserve"><value>Automático</value></data>
   <data name="Picker" xml:space="preserve"><value>Selector</value></data>
   <data name="Default" xml:space="preserve"><value>Predeterminado</value></data>
   <data name="Background, controls and text follow your theme." xml:space="preserve"><value>El fondo, los controles y el texto siguen el tema.</value></data>
@@ -8881,4 +8880,12 @@ Bloqueador(es) de lista</value>
   <data name="Control" xml:space="preserve"><value>Control</value></data>
   <data name="Switch to Picker to set each colour yourself." xml:space="preserve"><value>Cambia a Selector para definir cada color.</value></data>
   <data name="Switch back to Auto to use the automatic theme." xml:space="preserve"><value>Vuelve a Automático para usar el tema automático.</value></data>
+  <data name="recovery_021" xml:space="preserve"><value>La protección del vestíbulo está activada.</value></data>
+  <data name="ui_layout_manage" xml:space="preserve"><value>Gestionar</value></data>
+  <data name="ui_layout_rules" xml:space="preserve"><value>Reglas</value></data>
+  <data name="ui_layout_theme_language" xml:space="preserve"><value>Tema e idioma</value></data>
+  <data name="ui_layout_main_controls" xml:space="preserve"><value>Controles de la ventana principal</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>Opacidad de la ventana</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>Sin foco</value></data>
+  <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Configuraci?n, compras y ayuda</value></data>
 </root>

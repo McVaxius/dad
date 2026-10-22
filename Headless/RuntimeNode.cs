@@ -483,6 +483,7 @@ internal sealed class RuntimeNode : IDisposable
                 if (command.TryGetProperty("allianceUi", out var observedAlliance))
                     (allianceUi ?? throw new InvalidOperationException("Alliance UI is not configured.")).Observe(observedAlliance);
                 if (command.TryGetProperty("surface", out var surface)) automation.Surface = surface.GetString()!;
+                if (command.TryGetProperty("pluginEnabled", out var pluginEnabled)) configuration.PluginEnabled = pluginEnabled.GetBoolean();
                 if (command.TryGetProperty("recoveryShiftHeld", out var recoveryShift)) automation.RecoveryShiftHeld = recoveryShift.GetBoolean();
                 if (command.TryGetProperty("recoveryOtherOwner", out var recoveryOwner)) automation.RecoveryOtherOwner = recoveryOwner.GetBoolean();
                 if (command.TryGetProperty("connectionRecoveryEnabled", out var recoveryEnabled))

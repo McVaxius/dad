@@ -127,12 +127,20 @@ public sealed class DadAutoPartyFleetMatrixWindow : Window
     private void DrawBlueprints()
     {
         UiGui.TextWrapped("A blueprint generates one canonical Plan per selected Crew Set and, optionally, one Schedule containing those Plans in stable Crew Set order.");
-        UiGui.InputText("Blueprint name", ref blueprintName, DadAutoPartyFleetLimits.MaxTextLength);
-        UiGui.InputText("Duty name", ref dutyName, DadAutoPartyFleetLimits.MaxTextLength);
-        UiGui.InputInt("Content Finder condition ID", ref dutyId);
-        UiGui.InputInt("Repeat count", ref repeatCount);
-        UiGui.Checkbox("Daily-reset Schedule", ref dailyReset);
-        UiGui.Checkbox("Unsynced duty", ref dutyUnsynced);
+        using var controls = MaterialControls.Push(MaterialControlContext.Dense);
+        var minimumColumn = Math.Max(280 * MaterialTheme.Metrics.Scale,
+            MaterialText.Measure(UiText.T("Content Finder condition ID")).X + 100 * MaterialTheme.Metrics.Scale);
+        MaterialSettings.Columns("dad-fleet-blueprint-fields", minimumColumn, () =>
+        {
+            UiGui.InputText("Blueprint name", ref blueprintName, DadAutoPartyFleetLimits.MaxTextLength);
+            UiGui.InputText("Duty name", ref dutyName, DadAutoPartyFleetLimits.MaxTextLength);
+            UiGui.InputInt("Content Finder condition ID", ref dutyId);
+        }, () =>
+        {
+            UiGui.InputInt("Repeat count", ref repeatCount);
+            UiGui.Checkbox("Daily-reset Schedule", ref dailyReset);
+            UiGui.Checkbox("Unsynced duty", ref dutyUnsynced);
+        });
         if (UiGui.Button("Add blueprint for all Crew Sets"))
             AddBlueprint();
 
@@ -140,14 +148,16 @@ public sealed class DadAutoPartyFleetMatrixWindow : Window
         foreach (var blueprint in plugin.Configuration.AutoPartyFleet.Blueprints.ToList())
         {
             ImGui.PushID(blueprint.BlueprintId);
-            DadUi.Section(blueprint.DisplayName);
-            UiGui.TextWrapped($"{blueprint.DutyDisplayName} ({blueprint.DutyContentFinderConditionId}) | {blueprint.CrewSetIds.Count} Crew Set(s) | repeat {blueprint.RepeatCount} | {blueprint.ScheduleCadence}");
+            ImGui.Separator();
+            using (UiText.Font(UiFontRole.BodyStrong)) MaterialText.Text(blueprint.DisplayName);
+            DadUi.SameLineIfFits((MaterialText.Measure(UiText.T("Delete blueprint")).X + 2 * ImGui.GetStyle().FramePadding.X) / MaterialTheme.Metrics.Scale);
             if (UiGui.Button("Delete blueprint"))
             {
                 var result = plugin.AutoPartyFleetMatrixService.RemoveBlueprint(blueprint.BlueprintId);
                 status = result.Summary;
                 preview = plugin.AutoPartyFleetMatrixService.BuildPreview();
             }
+            UiGui.TextWrapped($"{blueprint.DutyDisplayName} ({blueprint.DutyContentFinderConditionId}) | {blueprint.CrewSetIds.Count} Crew Set(s) | repeat {blueprint.RepeatCount} | {blueprint.ScheduleCadence}");
             ImGui.PopID();
         }
     }

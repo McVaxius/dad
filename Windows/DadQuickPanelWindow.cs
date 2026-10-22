@@ -98,10 +98,12 @@ public sealed class DadQuickPanelWindow : Window, IDisposable
         if (DadUi.IconButton($"Send to all ({targets.Count})",MaterialIcon.Send,DadUiTone.Accent,new Vector2(split?sendWidth:-1,0),sendLabel)) SendToTargets(targets,submittedCommand);
         ImGui.EndDisabled();
         if (!string.IsNullOrWhiteSpace(validation)) UiGui.TextDisabled(validation);
-        if (DadUi.BeginCard("dad-quick-targets"))
+        if (DadUi.BeginCard("dad-quick-targets", flat: true))
         {
             DadUi.Heading("Connected Client DADs",string.Empty);
             if (targets.Count==0) UiGui.TextDisabled("No connected Client DADs.");
+            using var targetControls = MaterialTable.PushControls();
+            using var targetRows = MaterialTable.PushTightRows();
             var targetWidth=targets.Select(target=>MaterialText.Measure(FormatTarget(target)).X).DefaultIfEmpty(0).Max()+2*ImGui.GetStyle().CellPadding.X;
             var actionWidth=UiGui.IconButtonWidth("Send")+2*ImGui.GetStyle().CellPadding.X;
             var targetHeight=targets.Count*(ImGui.GetFrameHeight()+2*ImGui.GetStyle().CellPadding.Y)+ImGui.GetStyle().ScrollbarSize;
@@ -122,7 +124,7 @@ public sealed class DadQuickPanelWindow : Window, IDisposable
                 }
                 ImGui.EndTable();
             }
-            DadUi.EndCard();
+            DadUi.EndCard(flat: true);
         }
         DadUi.Section("Session status");
         DadUi.KeyValue("Dispatch", $"{queuedCount} queued | {acceptedCount} accepted | {rejectedCount} rejected", 84f);

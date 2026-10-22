@@ -29,8 +29,11 @@ public sealed unsafe partial class DadTitleMenuReadinessService
     private bool recoveryLogoutSubscribed;
     private string recoveryProtectionIssue = string.Empty;
 
-    public string ConnectionRecoveryStatus => string.IsNullOrEmpty(recoveryProtectionIssue)
-        ? connectionRecovery.Status : $"{recoveryProtectionIssue} {connectionRecovery.Status}";
+    public string ConnectionRecoveryStatus => !string.IsNullOrEmpty(recoveryProtectionIssue)
+        ? $"{recoveryProtectionIssue} {connectionRecovery.Status}"
+        : LobbyProtectionEnabled && !ReconnectEnabled
+            ? $"Lobby protection is enabled. {connectionRecovery.Status}"
+            : connectionRecovery.Status;
 
     internal void ConfigureConnectionRecovery(Configuration configuration,
         Func<DadConnectionRecoveryIdentity?> identity, Func<bool> loginOwnedElsewhere,
@@ -49,10 +52,13 @@ public sealed unsafe partial class DadTitleMenuReadinessService
                 recoveryProtectionIssue = "Lobby protection is unavailable; check the installed game version.";
                 log.Warning("[dad] Connection recovery's lobby protection signature is unavailable.");
             }
+            else UpdateLobbyProtection();
         }
         catch (Exception exception)
         {
             recoveryProtectionIssue = "Lobby protection could not initialize; check the plugin log.";
+            lobbyErrorHook?.Dispose();
+            lobbyErrorHook = null;
             log.Warning(exception, "[dad] Connection recovery's lobby protection could not initialize.");
         }
     }
@@ -84,13 +90,15 @@ public sealed unsafe partial class DadTitleMenuReadinessService
         lock (recoveryGate)
         {
             recoveryLoginPromptExpected = false;
-            if (RecoveryEnabled) connectionRecovery.ObserveLogout(code);
+            if (ReconnectEnabled) connectionRecovery.ObserveLogout(code);
             else CancelConnectionRecovery("Connection recovery is off.");
         }
     }
 
-    private bool RecoveryEnabled => !disposed && recoveryConfiguration is
-        { PluginEnabled: true, ConnectionRecoveryEnabled: true };
+    private bool LobbyProtectionEnabled => !disposed && recoveryConfiguration is
+        { ConnectionRecoveryEnabled: true };
+
+    private bool ReconnectEnabled => LobbyProtectionEnabled && recoveryConfiguration is { PluginEnabled: true };
 
     private byte HandleLobbyError(nint owner, nint context, nint value)
     {
@@ -100,8 +108,8 @@ public sealed unsafe partial class DadTitleMenuReadinessService
 
     internal bool ProtectConnectionError(Span<byte> value)
     {
-        var protectedError = DadConnectionRecovery.ProtectLobbyError(value, RecoveryEnabled, out var code);
-        if (protectedError) connectionRecovery.ObserveError(code);
+        var protectedError = DadConnectionRecovery.ProtectLobbyError(value, LobbyProtectionEnabled, out var code);
+        if (protectedError && ReconnectEnabled) connectionRecovery.ObserveError(code);
         return protectedError;
     }
 
@@ -113,12 +121,8 @@ public sealed unsafe partial class DadTitleMenuReadinessService
     private void UpdateOwnedConnectionRecovery()
     {
         if (recoveryConfiguration == null) return;
-        var enabled = RecoveryEnabled;
-        if (lobbyErrorHook != null && lobbyErrorHook.IsEnabled != enabled)
-        {
-            if (enabled) lobbyErrorHook.Enable();
-            else lobbyErrorHook.Disable();
-        }
+        UpdateLobbyProtection();
+        var enabled = ReconnectEnabled;
         var identity = enabled ? recoveryIdentity!() : null;
         var checkingLogin = enabled && identity == null && connectionRecovery.RequiresLoginOwnershipCheck;
         var observation = checkingLogin ? observeRecovery!() : default;
@@ -129,13 +133,20 @@ public sealed unsafe partial class DadTitleMenuReadinessService
         if (action == DadConnectionRecoveryAction.None || connectionRecovery.Target is not { } target) return;
 
         // Recheck both ownership and the exact native surface at the callback boundary.
-        if (connectionRecovery.Target != target || !RecoveryEnabled || keyState[0x10] ||
+        if (connectionRecovery.Target != target || !ReconnectEnabled || keyState[0x10] ||
             anotherLoginOwner!() || observeRecovery!() != observation)
         {
             CancelConnectionRecovery("Connection recovery lost its exact action boundary.");
             return;
         }
         executeRecovery!(action, target, observation);
+    }
+
+    private void UpdateLobbyProtection()
+    {
+        if (lobbyErrorHook == null || lobbyErrorHook.IsEnabled == LobbyProtectionEnabled) return;
+        if (LobbyProtectionEnabled) lobbyErrorHook.Enable();
+        else lobbyErrorHook.Disable();
     }
 
     private DadConnectionRecoveryObservation CaptureRecoverySurface()
