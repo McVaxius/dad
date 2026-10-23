@@ -74,6 +74,7 @@ public sealed class DadWorkerExecutionService
             var hasRecordedStatus = commandStatuses.TryGetValue(
                 command.CommandId,
                 out var recordedStatus);
+            var liveRuntime = hasRecordedStatus ? null : presenceService.BuildLiveSafetySnapshot();
             string validationBlocker;
             var commandValid = hasRecordedStatus
                 ? DadWorkerRecordedCommandValidationRules.TryValidate(
@@ -81,10 +82,12 @@ public sealed class DadWorkerExecutionService
                     out validationBlocker)
                 : DadWorkerCommandValidationRules.TryValidate(
                     command,
-                    presenceService.BuildLiveSafetySnapshot(),
+                    liveRuntime!,
                     out _,
                     out validationBlocker);
-            if (!commandValid)
+            var readinessDeferred = !commandValid && !hasRecordedStatus &&
+                DadWorkerCommandValidationRules.IsReadinessOnlyFailure(command, liveRuntime!);
+            if (!commandValid && !readinessDeferred)
             {
                 return BuildAck(false, command, $"Worker assignment rejected: {validationBlocker}");
             }
@@ -117,6 +120,25 @@ public sealed class DadWorkerExecutionService
 
             if (!cancelledRuns.CanAccept(command.RunId))
                 return BuildAck(false, command, $"Cancelled run {command.RunId} cannot accept later worker mutation.");
+
+            if (readinessDeferred)
+            {
+                // Retain the immutable fingerprint, but do not enqueue, reserve work,
+                // create an accepted status, or invoke any native/repair executor.
+                if (!string.IsNullOrWhiteSpace(pendingCommands.OwnedRunId) &&
+                    !string.Equals(pendingCommands.OwnedRunId, command.RunId, StringComparison.OrdinalIgnoreCase))
+                    return BuildAck(false, command, $"Worker already owns run {pendingCommands.OwnedRunId}.");
+                var summary = "Worker admission is waiting for fresh post-AR/world safety; the exact command was not accepted or executed.";
+                var deferred = BuildAck(false, command, summary, new DadWorkerExecutionStatus
+                {
+                    CommandId = command.CommandId, RunId = command.RunId,
+                    WorkerSessionId = presenceService.WorkerSessionId, Role = command.Role,
+                    ModuleId = ResolveModule(command)!.ModuleId, State = DadWorkerExecutionState.Idle,
+                    Summary = summary, UpdatedAtUtc = DadClock.UtcNow,
+                });
+                deferred.RuntimeReadinessDeferred = true;
+                return deferred;
+            }
 
             if (registration.Disposition == DadImmutableCommandDisposition.Duplicate &&
                 recordedStatus != null)

@@ -2,6 +2,27 @@ namespace dad.Models;
 
 public static class DadWorkerStatusPollingRules
 {
+    internal static bool ReadinessWaitExpired(string originalCommandId, string currentCommandId,
+        DateTime startedAtUtc, DateTime nowUtc, TimeSpan timeout)
+        => !string.Equals(originalCommandId, currentCommandId, StringComparison.Ordinal) ||
+           nowUtc < startedAtUtc || nowUtc - startedAtUtc >= timeout;
+
+    internal static bool IsExactReadinessDeferral(
+        DadParticipantSnapshot participant,
+        DadWorkerExecutionCommand command,
+        DadWorkerExecutionAck acknowledgement,
+        DateTime receivedAtUtc)
+        => !acknowledgement.Accepted && acknowledgement.RuntimeReadinessDeferred &&
+           Same(acknowledgement.CommandId, command.CommandId) &&
+           Same(acknowledgement.RunId, command.RunId) &&
+           Same(acknowledgement.WorkerSessionId.Value, participant.WorkerSessionId.Value) &&
+           acknowledgement.Status is { State: DadWorkerExecutionState.Idle, IsTerminal: false,
+               Success: false, EnteredDuty: false } status &&
+           status.UpdatedAtUtc.Kind == DateTimeKind.Utc && status.UpdatedAtUtc <= receivedAtUtc &&
+           receivedAtUtc - status.UpdatedAtUtc <= TimeSpan.FromSeconds(10) &&
+           string.IsNullOrWhiteSpace(status.FailureReason) &&
+           DadDroppedPeerContinuationRules.MatchesExactCommand(participant, command, status);
+
     internal static DadWorkerExecutionAck? SelectCommandAcknowledgement(
         DadWorkerExecutionAck? acknowledgement,
         DadWorkerExecutionCommand command)

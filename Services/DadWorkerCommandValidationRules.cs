@@ -4,6 +4,12 @@ namespace dad.Services;
 
 internal static class DadWorkerCommandValidationRules
 {
+    internal static bool IsReadinessOnlyFailure(
+        DadWorkerExecutionCommand command,
+        DadParticipantSnapshot localRuntime)
+        => !localRuntime.PostArReady && command?.Plan?.Orchestration.RequirePostArReady == true &&
+           TryValidateMutationIdentity(command, localRuntime, out _, out _);
+
     public static bool TryValidateMutationIdentity(
         DadWorkerExecutionCommand command,
         DadParticipantSnapshot localRuntime,

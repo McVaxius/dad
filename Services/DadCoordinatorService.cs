@@ -48,6 +48,8 @@ public sealed partial class DadCoordinatorService
     private readonly Dictionary<string, DadWorkerExecutionCommand> workerCommands = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> consumedShoppingResults = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTime> missingWorkerSinceUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, WorkerReadinessWait> workerReadinessWaits = new(StringComparer.OrdinalIgnoreCase);
+    private sealed record WorkerReadinessWait(string CommandId, DateTime StartedAtUtc, DateTime NextAttemptUtc);
     private List<DadParticipantSnapshot>? finalizationCancellationScopeOverride;
     private readonly Dictionary<string, string> slotResolutionTransitions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> assignmentTransitions = new(StringComparer.OrdinalIgnoreCase);
@@ -493,6 +495,7 @@ public sealed partial class DadCoordinatorService
         workerCommands.Clear();
         consumedShoppingResults.Clear();
         missingWorkerSinceUtc.Clear();
+        workerReadinessWaits.Clear();
         groupReadyFrenRiderActivatedSlots.Clear();
         finalizationCancellationScopeOverride = null;
         partyInviteGateway.Reset();
@@ -2064,6 +2067,7 @@ public sealed partial class DadCoordinatorService
         workerCommands.Clear();
         workerStatuses.Clear();
         missingWorkerSinceUtc.Clear();
+        workerReadinessWaits.Clear();
         activeModuleCompleted = false;
         finalizationCancellationScopeOverride = null;
         activeStepResultIndex = -1;
@@ -2420,12 +2424,32 @@ public sealed partial class DadCoordinatorService
             participant.RunId = activePlan.Request.RequestId;
             var targetRuntime = participant.Clone();
             targetRuntime.IsLocalClient = true;
-            if (!DadWorkerCommandValidationRules.TryValidate(command, targetRuntime, out _, out var validationBlocker))
+            // Cached readiness cannot authorize native execution. Validate exact
+            // identity/job/role here; the worker proves fresh safety at admission
+            // and again before any native preparation.
+            if (!DadWorkerCommandValidationRules.TryValidateMutationIdentity(command, targetRuntime, out _, out var validationBlocker))
             {
                 failures.Add(DadWorkerPrequeueBarrierRules.AttributeFailure(
                     participant,
                     $"worker command rejected before dispatch: {validationBlocker}"));
                 continue;
+            }
+
+            if (workerReadinessWaits.TryGetValue(participant.WorkerSessionId.Value, out var readinessWait))
+            {
+                var now = DadClock.UtcNow;
+                if (DadWorkerStatusPollingRules.ReadinessWaitExpired(readinessWait.CommandId, command.CommandId,
+                    readinessWait.StartedAtUtc, now, activePlan.Orchestration.WaitPolicy.GetParticipantReadyTimeout()))
+                {
+                    failures.Add(DadWorkerPrequeueBarrierRules.AttributeFailure(participant,
+                        "Exact worker admission readiness wait expired or its command/clock changed; no command was accepted."));
+                    continue;
+                }
+                if (now < readinessWait.NextAttemptUtc)
+                {
+                    pending.Add($"{participant.AssignedSlotId} is waiting for fresh worker admission readiness; original command retained.");
+                    continue;
+                }
             }
 
             DadWorkerExecutionAck? ack = participant.IsLocalClient
@@ -2464,9 +2488,19 @@ public sealed partial class DadCoordinatorService
             missingWorkerSinceUtc.Remove(participant.WorkerSessionId.Value);
             if (!ack.Accepted)
             {
+                if (DadWorkerStatusPollingRules.IsExactReadinessDeferral(participant, command, ack, DadClock.UtcNow))
+                {
+                    var now = DadClock.UtcNow;
+                    workerReadinessWaits[participant.WorkerSessionId.Value] = new(command.CommandId,
+                        readinessWait?.StartedAtUtc ?? now, now + ParticipantPollInterval);
+                    var waiting = DadWorkerPrequeueBarrierRules.AttributeFailure(participant, ack.Summary);
+                    pending.Add(waiting);
+                    LogWorkerCommandTransition(activePlan, module, participant, "admission-readiness-pending", waiting);
+                    continue;
+                }
                 var failure = ack.Summary;
                 var attributedFailure = DadWorkerPrequeueBarrierRules.AttributeFailure(participant, failure);
-                if (!persistentStartup ||
+                if (ack.RuntimeReadinessDeferred || !persistentStartup ||
                     role == DadWorkerExecutionRole.QueueLeader && barrierRequired ||
                     failure.Contains("immutable", StringComparison.OrdinalIgnoreCase) ||
                     failure.Contains("collision", StringComparison.OrdinalIgnoreCase))
@@ -2493,6 +2527,7 @@ public sealed partial class DadCoordinatorService
             }
 
             workerStatuses[participant.WorkerSessionId.Value] = ack.Status.Clone();
+            workerReadinessWaits.Remove(participant.WorkerSessionId.Value);
             participant.State = DadParticipantState.QueuePending;
             participant.StatusText = ack.Summary;
             LogWorkerCommandTransition(activePlan, module, participant, "accepted-or-queued", ack.Summary);
@@ -2860,6 +2895,7 @@ public sealed partial class DadCoordinatorService
             workerStatuses.Clear();
             workerCommands.Clear();
             missingWorkerSinceUtc.Clear();
+            workerReadinessWaits.Clear();
             return;
         }
 
@@ -3333,6 +3369,7 @@ public sealed partial class DadCoordinatorService
         workerCommands.Clear();
         consumedShoppingResults.Clear();
         missingWorkerSinceUtc.Clear();
+        workerReadinessWaits.Clear();
         finalizationCancellationScopeOverride = null;
         partyInviteGateway.Reset();
         claimService.ReleaseClaims(nextPlan.Request.RequestId);
@@ -4980,6 +5017,7 @@ public sealed partial class DadCoordinatorService
         workerCommands.Clear();
         consumedShoppingResults.Clear();
         missingWorkerSinceUtc.Clear();
+        workerReadinessWaits.Clear();
         groupReadyFrenRiderActivatedSlots.Clear();
         finalizationCancellationScopeOverride = null;
         nextWorkerStatusPollUtc = DateTime.MinValue;

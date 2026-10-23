@@ -248,6 +248,15 @@ public sealed class DadWorkerCommandValidationRulesTests
         runtime.PostArReady = false;
 
         AssertRejected(BuildCommand(), runtime, "not post-AR ready");
+        Assert.True(DadWorkerCommandValidationRules.IsReadinessOnlyFailure(BuildCommand(), runtime));
+    }
+
+    [Fact]
+    public void ReadinessLossCannotHideMissingRequestedJobProof()
+    {
+        var runtime = RuntimeForX();
+        runtime.PostArReady = false;
+        Assert.False(DadWorkerCommandValidationRules.IsReadinessOnlyFailure(BuildCommandWithRequestedJob(), runtime));
     }
 
     [Fact]

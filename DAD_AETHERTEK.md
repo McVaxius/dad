@@ -95,6 +95,12 @@ A schedule chains saved presets in an exact order. Each entry can repeat from 1 
 
 DAD validates each entry before it starts. A satisfied Level-seek entry is recorded as skipped and the schedule moves on. Successful party entries tear down every exact worker at the appropriate boundary so the next preset can form a fresh verified party. Dry-run validation is available before relying on a live schedule.
 
+If an exact worker temporarily loses post-AR/world readiness at command admission (for example during an overlapping
+utility interaction), it can explicitly defer without accepting or executing work. DAD keeps the original immutable
+command and accepted followers, retries admission every two seconds, and preserves the first participant-ready deadline
+(normally five minutes). Fresh native safety is still mandatory before execution. Identity/job/role contradictions,
+cancelled runs, payload collisions and old or untyped responses cannot use this wait path; timeout remains a visible failure.
+
 **Cancel schedule** also cancels the exact accepted planner run. For an already assigned LAN multibox party,
 ordinary Cancel first stops run-owned executors, retains the original run/slot assignments for guarded Slot1
 disband and each follower's leave/solo proof, and only then releases client run contexts. Scheduler requested-job

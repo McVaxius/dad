@@ -684,6 +684,13 @@ ID to distinguish the running DLL from an older build. Review reports for person
 
 ## Operator status and cancellation
 
+- A worker that temporarily loses post-AR/world readiness just before queue-leader admission can now return an exact
+  **not accepted** readiness deferral. The Coordinator retains the same immutable command and already-accepted workers,
+  rechecks at two-second intervals and waits only until the original participant-ready deadline (normally 300 seconds).
+  Admission and native preparation still require fresh safety; no repair, queue or executor action is replayed while
+  waiting. Wrong identities/jobs/roles, cancelled runs, payload collisions, contradictory/old acknowledgements and legacy
+  untyped rejections remain failures. This handles the readiness race, not an unverified claim that NPC repair itself failed.
+
 - New-run account binding excludes remote sessions explicitly marked Stale, even when an old plugin socket still
   routes. A current session is not made ambiguous by old heartbeat-timed-out instances of the same account. Two
   genuinely current sessions still block admission. Existing frozen-run discovery and exact cancellation retain

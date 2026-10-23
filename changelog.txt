@@ -1,3 +1,8 @@
+2026-10-23 - Wait for exact worker readiness at queue admission
+
+- Treat an exact, fresh, explicitly unaccepted post-AR readiness response as a bounded wait rather than failing the queue leader immediately. Retain immutable command identity, accepted followers and the original participant-ready deadline; recheck every two seconds without repair/queue/executor actions while deferred.
+- Keep frozen identity/job/role checks, cancellation, payload collisions, acknowledgement freshness and native safety gates strict. Legacy/untyped rejection remains a failure. Add actual worker/coordinator wait/resume regressions and negative proof/deadline coverage.
+
 2026-10-23 - Stale connected sessions cannot block fresh run admission
 
 - Exclude explicitly Stale remote participants from new-run online discovery and manifest account binding, even when old plugin sockets remain routable. Keep genuine fresh-session ambiguity blocking and retain exact frozen-session context for active-run safety/cleanup. No connection-wide cleanup, cancellation bypass, history reset or release-version change.
