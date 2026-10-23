@@ -27,6 +27,7 @@ public sealed class DadWorkerExecutionService
     private DadWorkerExecutionCommand? activeCommand;
     private DadWorkerExecutionStatus status = new();
     private DateTime startedAtUtc = DateTime.MinValue;
+    private DateTime? participantDutyCompletedAtUtc;
     private bool enteredDuty;
     private DadLocalDutyResolvedContent? participantQueueContent;
     private string lastParticipantQueueTransition = string.Empty;
@@ -546,6 +547,7 @@ public sealed class DadWorkerExecutionService
         ClearPendingCancellation();
         activeCommand = command;
         startedAtUtc = DadClock.UtcNow;
+        participantDutyCompletedAtUtc = null;
         enteredDuty = condition[ConditionFlag.BoundByDuty];
         participantQueueContent = null;
         lastParticipantQueueTransition = string.Empty;
@@ -850,6 +852,10 @@ public sealed class DadWorkerExecutionService
             if (!TryValidateActiveMutationBoundary())
                 return;
 
+            if (enteredDuty && participantDutyCompletedAtUtc == null &&
+                queueExecutionService.HasParticipantDutyCompleted(participantQueueContent, startedAtUtc))
+                participantDutyCompletedAtUtc = DadClock.UtcNow;
+
             if (enteredDuty && !condition[ConditionFlag.BoundByDuty])
             {
                 CompleteParticipant();
@@ -1020,6 +1026,8 @@ public sealed class DadWorkerExecutionService
                 Phase = DadRunPhase.Finalizing,
                 Status = DadRunStatus.Completed,
                 CanStart = true,
+                StartedAtUtc = startedAtUtc,
+                DutyCompletedAtUtc = participantDutyCompletedAtUtc,
                 CompletedAtUtc = DadClock.UtcNow,
                 UpdatedAtUtc = DadClock.UtcNow,
                 Summary = $"Participant completed {status.ModuleId} and exited duty.",

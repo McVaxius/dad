@@ -96,6 +96,7 @@ public sealed class Configuration : IPluginConfiguration
     public List<DadPlannerGroup> PlannerGroups { get; set; } = [];
     public List<DadLaunchProfile> LaunchProfiles { get; set; } = [];
     public List<DadRunResult> RunHistory { get; set; } = [];
+    public List<DadDailyRouletteCompletion> DailyRouletteCompletions { get; set; } = [];
     public DadRunResult? PersistedActiveRun { get; set; }
     public DadCharacterLoadInstruction CharacterLoadInstruction { get; set; } = new();
     public DadRosterCatalogConfiguration RosterCatalog { get; set; } = new();

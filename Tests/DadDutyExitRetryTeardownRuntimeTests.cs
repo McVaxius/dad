@@ -62,7 +62,7 @@ public sealed class DadDutyExitRetryTeardownRuntimeTests
         Assert.False((bool)Get(coordinator, "successfulPartyBoundarySettled")!);
     }
 
-    private static Coordinator Fixture(bool allTeardownsSucceeded)
+    internal static Coordinator Fixture(bool allTeardownsSucceeded)
     {
         var config = new DadRuntime::dad.Configuration { RunAsServerDad = true };
         var presence = (Presence)RuntimeHelpers.GetUninitializedObject(typeof(Presence));

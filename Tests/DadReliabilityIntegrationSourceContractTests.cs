@@ -25,7 +25,7 @@ public sealed class DadReliabilityIntegrationSourceContractTests
     }
 
     [Fact]
-    public void RelogRecoveryReusesForcedSafetyAndDoesNotCancelOrReplayTitleLogin()
+    public void RelogRecoveryReusesForcedSafetyAndStaysSeparateFromTitleLoginRecovery()
     {
         var wake = ReadRepositorySource("Services", "DadWakeTakeoverService.cs");
         Assert.Contains("ExecuteRelog(operation, retry: true)", wake);
@@ -48,6 +48,29 @@ public sealed class DadReliabilityIntegrationSourceContractTests
         Assert.Contains("presenceService.BuildLiveSafetySnapshot()", target);
         Assert.Contains("AutoRetainerBusy = ar.IsBusy", target);
         Assert.Contains("LifestreamBusy = lifestreamState.IsBusy", target);
+    }
+
+    [Fact]
+    public void AcceptedTitleLoginRecoveryReentersFinalForcedSafetyWithoutCancellingTravel()
+    {
+        var wake = ReadRepositorySource("Services", "DadWakeTakeoverService.cs");
+        var start = wake.IndexOf("private void VerifyDestination(", StringComparison.Ordinal);
+        var end = wake.IndexOf("private static string BuildLiveDestinationWaitSummary(", start, StringComparison.Ordinal);
+        var verify = wake[start..end];
+        Assert.Contains("if (operation.TitleIdleRelogCommandAttempted)", verify);
+        Assert.Contains("CanRetryAcceptedTitleLogin(operation, snapshot)", verify);
+        Assert.Contains("PrepareAutoRetainerTitleIdleLogin(operation, snapshot, retryAccepted: true)", verify);
+        start = wake.IndexOf("private DadWakeTakeoverResultDto? PrepareAutoRetainerTitleIdleLogin(", StringComparison.Ordinal);
+        end = wake.IndexOf("private bool CanRetryAcceptedTitleLogin(", start, StringComparison.Ordinal);
+        var prepare = wake[start..end];
+        var forcedCapture = prepare.IndexOf("snapshot = Capture(operation, forceExternalRefresh: true)", StringComparison.Ordinal);
+        var retry = prepare.IndexOf("if (retryAccepted)", forcedCapture, StringComparison.Ordinal);
+        var finalProof = prepare.IndexOf("CanRetryAcceptedTitleLogin(operation, snapshot)", retry, StringComparison.Ordinal);
+        var clearLatch = prepare.IndexOf("operation.TitleIdleRelogCommandAttempted = false;", finalProof, StringComparison.Ordinal);
+        var dispatch = prepare.IndexOf("target.ConnectAndLogin(operation.ActiveRequest)", clearLatch, StringComparison.Ordinal);
+        Assert.True(forcedCapture >= 0 && retry > forcedCapture && finalProof > retry && clearLatch > finalProof && dispatch > clearLatch);
+        Assert.DoesNotContain("lifestream.Cancel", wake, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("title-login IPC outcome {Outcome}", ReadRepositorySource("Services", "DadWakeTakeoverTarget.cs"));
     }
 
     [Fact]
@@ -269,7 +292,7 @@ public sealed class DadReliabilityIntegrationSourceContractTests
     {
         var source = ReadRepositorySource("Services", "DadSchedulerService.cs");
         var initialDailyPreflight = source.IndexOf(
-            "if (frozenLevelSeekGroup == null &&",
+            "if (TryBeginDailyRewardPreflight(effectiveGroup))",
             StringComparison.Ordinal);
         var initialLevelSeekSkip = source.IndexOf(
             "if (levelSeek.ShouldSkip)",
@@ -293,6 +316,8 @@ public sealed class DadReliabilityIntegrationSourceContractTests
         Assert.True(initialDailyPreflight >= 0);
         Assert.True(initialLevelSeekSkip >= 0);
         Assert.True(initialDailyPreflight > initialLevelSeekSkip);
+        Assert.DoesNotContain("frozenLevelSeekGroup == null",
+            source[..source.IndexOf("private DadSchedulerPresetState StartLevelingOperation(", StringComparison.Ordinal)], StringComparison.Ordinal);
         Assert.True(acknowledgement >= 0);
         Assert.True(postWakeCheck > acknowledgement);
         Assert.True(deferredDailyPreflight > postWakeCheck);

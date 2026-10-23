@@ -4,6 +4,13 @@ namespace dad.Services;
 
 internal static class DadRuntimeHandlers
 {
+    internal static void ConfigureScheduledRunCancellation(DadSchedulerService scheduler, DadCoordinatorService coordinator)
+        => scheduler.ConfigureScheduledRunCancellation(runId =>
+        {
+            if (string.Equals(coordinator.CurrentResult.RequestId, runId, StringComparison.Ordinal))
+                coordinator.CancelActiveRun();
+        }, coordinator.RetainsCancellationContext);
+
     internal static void ConfigureGathering(DadTransportService transport, IDadGatherClientService gathering)
         => transport.ConfigureGatherStockHandler(gathering.Probe);
 

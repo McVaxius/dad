@@ -6,6 +6,28 @@ namespace dad.Tests;
 
 public sealed class DadRouletteRewardProbeRulesTests
 {
+    [Theory]
+    [InlineData(DadRouletteRewardProbeOperation.Inspect, DadRouletteRewardProbeOutcome.Pending)]
+    [InlineData(DadRouletteRewardProbeOperation.Inspect, DadRouletteRewardProbeOutcome.Received)]
+    [InlineData(DadRouletteRewardProbeOperation.Inspect, DadRouletteRewardProbeOutcome.NotReceived)]
+    [InlineData(DadRouletteRewardProbeOperation.Cancel, DadRouletteRewardProbeOutcome.Unknown)]
+    public void ImmediateLocalReplyIsFreshAtReceiveTimeNotAtTheEarlierDispatchTime(
+        DadRouletteRewardProbeOperation operation, DadRouletteRewardProbeOutcome outcome)
+    {
+        var request = Request();
+        request.Operation = operation;
+        var beforeDispatch = request.RequestedAtUtc.AddSeconds(1);
+        var responseTime = beforeDispatch.AddMilliseconds(1);
+        var result = DadRouletteRewardProbeResultDto.FromRequest(request, outcome, "reply", responseTime,
+            outcome == DadRouletteRewardProbeOutcome.Received ? 1 : 0, 1);
+        Assert.False(DadRouletteRewardProbeIdentityRules.TryValidateResponse(request, result, beforeDispatch, out _));
+        Assert.True(DadRouletteRewardProbeIdentityRules.TryValidateResponse(request, result, responseTime.AddMilliseconds(1), out var reason), reason);
+        if (operation == DadRouletteRewardProbeOperation.Cancel)
+            Assert.True(DadSchedulerRoutingRules.IsRewardProbeCancellationAcknowledged(request, result, responseTime.AddMilliseconds(1)));
+        Assert.False(DadRouletteRewardProbeIdentityRules.TryValidateResponse(request, result,
+            responseTime + DadRouletteRewardProbeIdentityRules.MaximumResponseAge + TimeSpan.FromTicks(1), out _));
+    }
+
     [Fact]
     public void ExactFreshIdentityAndReceivedCountsAreAccepted()
     {
@@ -259,7 +281,7 @@ public sealed class DadRouletteRewardProbeRulesTests
     }
 
     [Fact]
-    public void PreflightEligibilityIsDailyResetDailyRouletteWithCheckedRowsOnly()
+    public void PreflightEligibilityIncludesManualDailyRouletteWithCheckedRowsOnly()
     {
         var target = new DadQueueTarget
         {
@@ -275,7 +297,7 @@ public sealed class DadRouletteRewardProbeRulesTests
             "entry",
             target,
             1));
-        Assert.False(DadDailyRewardPreflightRules.IsEligible(
+        Assert.True(DadDailyRewardPreflightRules.IsEligible(
             DadPlannerActivityMode.DailyRoulette,
             DadScheduleCadence.Manual,
             "schedule",
@@ -309,6 +331,44 @@ public sealed class DadRouletteRewardProbeRulesTests
             "entry",
             target,
             1));
+    }
+
+    [Fact]
+    public void StandalonePresetHasExactProbeIdentityWithoutInventedScheduleIds()
+    {
+        var request = Request();
+        request.ScheduleId = request.ScheduleRunId = request.ScheduleEntryId = string.Empty;
+        Assert.True(DadRouletteRewardProbeIdentityRules.IsValid(request));
+        Assert.True(DadDailyRewardPreflightRules.IsEligible(
+            DadPlannerActivityMode.DailyRoulette, DadScheduleCadence.Manual,
+            "", "", "", new() { Kind = DadQueueTargetKind.Roulette, RouletteId = 1, Key = "ContentRoulette:1" }, 1));
+        var response = DadRouletteRewardProbeResultDto.FromRequest(request,
+            DadRouletteRewardProbeOutcome.Received, "Exact remote client received daily.", request.RequestedAtUtc.AddSeconds(1), 1, 1);
+        Assert.True(DadRouletteRewardProbeIdentityRules.TryValidateResponse(request, response,
+            request.RequestedAtUtc.AddSeconds(2), out _));
+        response.RouteWorkerSessionId = new("wrong-worker");
+        Assert.False(DadRouletteRewardProbeIdentityRules.TryValidateResponse(request, response,
+            request.RequestedAtUtc.AddSeconds(2), out _));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(6)]
+    public void PartialScheduleContextCannotMasqueradeAsAStandaloneProbe(int mask)
+    {
+        var request = Request();
+        request.ScheduleId = (mask & 1) != 0 ? "schedule" : "";
+        request.ScheduleRunId = (mask & 2) != 0 ? "run" : "";
+        request.ScheduleEntryId = (mask & 4) != 0 ? "entry" : "";
+        Assert.False(DadRouletteRewardProbeIdentityRules.IsValid(request));
+        Assert.False(DadDailyRewardPreflightRules.IsEligible(
+            DadPlannerActivityMode.DailyRoulette, DadScheduleCadence.Manual,
+            request.ScheduleId, request.ScheduleRunId, request.ScheduleEntryId,
+            new() { Kind = DadQueueTargetKind.Roulette, RouletteId = 1, Key = "ContentRoulette:1" }, 1));
     }
 
     [Theory]

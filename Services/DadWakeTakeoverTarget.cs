@@ -241,7 +241,11 @@ public sealed class DadWakeTakeoverTarget :
                 "The frozen title-login character key is invalid.");
         }
 
-        return lifestream.ConnectAndLogin(characterKey[..separator], characterKey[(separator + 1)..]);
+        var result = lifestream.ConnectAndLogin(characterKey[..separator], characterKey[(separator + 1)..]);
+        log.Information(
+            "[dad] Wake takeover {SchedulerRunId}/{SlotId}: title-login IPC outcome {Outcome} for {CharacterKey}.",
+            request.SchedulerRunId, request.SlotId, result.Outcome, characterKey);
+        return result;
     }
 
     public DadWakeTakeoverActionResult ExecuteCommand(

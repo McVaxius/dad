@@ -9,6 +9,137 @@ public sealed class DadPresetBatchWizardServiceTests
     private static readonly DateTime PreviewTime = new(2026, 7, 19, 5, 0, 0, DateTimeKind.Utc);
 
     [Fact]
+    public void AutomaticCountsUseSelectedPoolMinimumAndCombinedScheduleUsesEveryCrew()
+    {
+        var fixture = BuildSyntheticFixture();
+        foreach (var pool in fixture.Draft.Pools)
+        {
+            pool.UseAllMatchingCharacters = true;
+            pool.CrewCount = 1; // Manual input must not truncate the automatic preview.
+        }
+        fixture.Draft.RotatingLanes[1].Characters.RemoveAt(0); // Explicit exclusion, not reusable filler.
+        var preview = new DadPresetBatchWizardService(fixture.Configuration, () => string.Empty, () => { })
+            .BuildPreview(fixture.Draft, fixture.Catalog, PreviewTime);
+        Assert.True(preview.CanApply, preview.Summary);
+        Assert.Equal(158, preview.Crews.Count);
+        Assert.Equal(316, preview.Schedules[2].Entries.Count);
+        Assert.Equal(1, preview.UnusedCounts.Sum(count => count.UnusedCount));
+        Assert.All(fixture.Draft.Pools, pool => Assert.Equal(1, pool.CrewCount));
+        Assert.All(preview.Crews, crew => Assert.Equal(4, crew.Characters.Select(character => character.AccountKey.Value).Distinct().Count()));
+    }
+
+    [Fact]
+    public void AutomaticCountWithoutAnyCandidateOnOneAccountBlocksRatherThanReusingCharacters()
+    {
+        var fixture = BuildSyntheticFixture();
+        fixture.Draft.Pools[0].UseAllMatchingCharacters = true;
+        var excluded = fixture.Catalog.Characters.Where(character => character.AccountKey.Value == "rotating-two"
+            && character.DataCenterId == 101).Select(DadRosterIdentity.BuildKey).ToHashSet();
+        fixture.Draft.RotatingLanes[1].Characters.RemoveAll(character => excluded.Contains(DadRosterIdentity.BuildKey(character)));
+        var preview = new DadPresetBatchWizardService(fixture.Configuration, () => string.Empty, () => { })
+            .BuildPreview(fixture.Draft, fixture.Catalog, PreviewTime);
+        Assert.False(preview.CanApply);
+        Assert.Contains(preview.Issues, issue => issue.SafeCode == "dad-batch-pool-shortage");
+        Assert.Empty(preview.PlannerGroups);
+    }
+
+    [Fact]
+    public void ExactTemplateAccountsKeepJobsRolesAndSlotsWhenLanesAreSelectedInAnotherOrder()
+    {
+        var fixture = BuildSyntheticFixture();
+        var source = fixture.Configuration.PlannerGroups[0];
+        var accounts = new[] { "anchor-two", "rotating-two", "anchor-one", "rotating-one" };
+        for (var index = 0; index < accounts.Length; index++)
+        {
+            source.Slots[index].RequiredAccountKey = new(accounts[index]);
+            source.Slots[index].RequiredJobId = (uint)(20 + index);
+            source.Slots[index].RequiredRole = index == 0 ? DadPartyRole.Tank : DadPartyRole.Any;
+        }
+        fixture.Draft.Templates[0].PreserveAccountSlots = true;
+        var preview = new DadPresetBatchWizardService(fixture.Configuration, () => string.Empty, () => { })
+            .BuildPreview(fixture.Draft, fixture.Catalog, PreviewTime);
+        Assert.True(preview.CanApply, preview.Summary);
+        Assert.All(preview.PlannerGroups.Take(158), plan =>
+        {
+            Assert.Equal(accounts, plan.Slots.Select(slot => slot.RequiredAccountKey.Value));
+            Assert.Equal(new uint?[] { 20, 21, 22, 23 }, plan.Slots.Select(slot => slot.RequiredJobId));
+            Assert.Equal(DadPartyRole.Tank, plan.Slots[0].RequiredRole);
+        });
+        Assert.Equal("anchor-two", source.Slots[0].RequiredAccountKey.Value);
+        Assert.True(source.Slots[0].RequiredCharacterKey.IsEmpty);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("duplicate")]
+    [InlineData("different")]
+    public void RequestedAccountMappingRejectsAmbiguousOrDifferentTemplateAccounts(string scenario)
+    {
+        var fixture = BuildSyntheticFixture();
+        var accounts = new[] { "rotating-one", "rotating-two", "anchor-one", "anchor-two" };
+        for (var index = 0; index < accounts.Length; index++)
+            fixture.Configuration.PlannerGroups[0].Slots[index].RequiredAccountKey = new(accounts[index]);
+        fixture.Configuration.PlannerGroups[0].Slots[0].RequiredAccountKey = new(scenario switch
+        {
+            "missing" => "", "duplicate" => "anchor-one", _ => "unselected-account",
+        });
+        fixture.Draft.Templates[0].PreserveAccountSlots = true;
+        var preview = new DadPresetBatchWizardService(fixture.Configuration, () => string.Empty, () => { })
+            .BuildPreview(fixture.Draft, fixture.Catalog, PreviewTime);
+        Assert.False(preview.CanApply);
+        Assert.Contains(preview.Issues, issue => issue.SafeCode == "dad-batch-template-account-map");
+    }
+
+    [Fact]
+    public void AutomaticPreviewRemainsDeterministicAndKeepsExactAnchorsWithinEachPool()
+    {
+        var fixture = BuildSyntheticFixture();
+        fixture.Draft.Pools.ForEach(pool => pool.UseAllMatchingCharacters = true);
+        var service = new DadPresetBatchWizardService(fixture.Configuration, () => string.Empty, () => { });
+        var first = service.BuildPreview(fixture.Draft, fixture.Catalog, PreviewTime);
+        var second = service.BuildPreview(fixture.Draft, fixture.Catalog, PreviewTime);
+        Assert.True(first.CanApply);
+        Assert.Equal(159, first.Crews.Count);
+        Assert.Equal(first.Fingerprint, second.Fingerprint);
+        foreach (var pool in fixture.Draft.Pools)
+        {
+            var crews = first.Crews.Where(crew => crew.PoolId == pool.PoolId).ToList();
+            foreach (var lane in fixture.Draft.RotatingLanes)
+                Assert.Equal(crews.Count, crews.Select(crew => DadRosterIdentity.BuildKey(
+                    crew.Characters.Single(character => DadRosterIdentity.SameAccount(character.AccountKey, lane.AccountKey)))).Distinct().Count());
+            foreach (var anchor in fixture.Draft.AnchorLanes)
+            {
+                var expected = anchor.Assignments.Single(assignment => assignment.PoolId == pool.PoolId).Character;
+                Assert.All(crews, crew => Assert.Equal(DadRosterIdentity.BuildKey(expected), DadRosterIdentity.BuildKey(
+                    crew.Characters.Single(character => DadRosterIdentity.SameAccount(character.AccountKey, anchor.AccountKey)))));
+            }
+        }
+        var applied = service.Apply(first);
+        Assert.True(applied.Succeeded);
+        Assert.True(service.Undo(applied.UndoToken).Succeeded);
+        Assert.Equal(2, fixture.Configuration.PlannerGroups.Count);
+        Assert.Empty(fixture.Configuration.Schedules);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FourAccountMappingAvailabilityRequiresExactUniqueAccounts(bool duplicateLane)
+    {
+        var fixture = BuildSyntheticFixture();
+        var source = fixture.Configuration.PlannerGroups[0];
+        var accounts = new[] { "rotating-one", "rotating-two", "anchor-one", "anchor-two" };
+        for (var index = 0; index < accounts.Length; index++)
+            source.Slots[index].RequiredAccountKey = new(" " + accounts[index].ToUpperInvariant() + " ");
+        Assert.True(DadPresetBatchWizardService.CanPreserveAccountSlots(source, fixture.Draft));
+        if (duplicateLane)
+            fixture.Draft.AnchorLanes[0].AccountKey = fixture.Draft.RotatingLanes[0].AccountKey;
+        else
+            fixture.Draft.AnchorLanes[0].AccountKey = default;
+        Assert.False(DadPresetBatchWizardService.CanPreserveAccountSlots(source, fixture.Draft));
+    }
+
+    [Fact]
     public void Synthetic15915944FixtureBuilds158Crews316PlansAndExpectedSchedules()
     {
         var fixture = BuildSyntheticFixture();

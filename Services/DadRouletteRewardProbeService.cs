@@ -1,5 +1,7 @@
 using dad.Models;
+using Dalamud.Memory;
 using Dalamud.Plugin.Services;
+using ExcelContentRoulette = Lumina.Excel.Sheets.ContentRoulette;
 using FFXIVClientStructs.FFXIV.Client.Enums;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -11,7 +13,7 @@ namespace dad.Services;
 /// <summary>
 /// Runs local Duty Finder reward inspection exclusively on the framework thread. Scheduled probes
 /// and the debug all-roulette diagnostic share the same exact-row hydration, mapping, selection,
-/// and stable native-read path. Only an operation that opened Duty Finder may navigate or close it.
+/// and stable exact JournalDetail reward-indicator path. Only an operation that opened Duty Finder may navigate or close it.
 /// </summary>
 public sealed unsafe class DadRouletteRewardProbeService : IDisposable
 {
@@ -502,14 +504,18 @@ public sealed unsafe class DadRouletteRewardProbeService : IDisposable
             received,
             maximum,
             active.OpenedByDad);
+        if (active.Inspection?.Result?.Outcome == outcome &&
+            outcome is DadRouletteRewardProbeOutcome.Received or DadRouletteRewardProbeOutcome.NotReceived)
+            active.TerminalResult.RewardTextProofVersion = DadRouletteRewardProbeIdentityRules.CurrentRewardTextProofVersion;
         log.Information(
-            "[dad] UI-hydrated Daily Roulette reward probe operation={OperationId} slot={SlotId} outcome={Outcome} rewards={Received}/{Maximum} openedByDad={OpenedByDad}: {Summary}",
+            "[dad] UI-hydrated Daily Roulette reward probe operation={OperationId} slot={SlotId} outcome={Outcome} rewards={Received}/{Maximum} openedByDad={OpenedByDad} textProofVersion={TextProofVersion}: {Summary}",
             active.Request.OperationId,
             active.Request.SlotId,
             outcome,
             received,
             maximum,
             active.OpenedByDad,
+            active.TerminalResult.RewardTextProofVersion,
             summary);
     }
 
@@ -930,6 +936,8 @@ public sealed unsafe class DadRouletteRewardProbeService : IDisposable
 
         if (!DadDutyFinderLiveEntryScanner.TryCapture(agent, addon, out var snapshot, out failure))
         {
+            active.RewardGate.Reset();
+            active.FirstRawCandidate = null;
             active.Summary = failure;
             return;
         }
@@ -941,6 +949,8 @@ public sealed unsafe class DadRouletteRewardProbeService : IDisposable
                 active.RouletteId));
         if (!mapping.IsReady)
         {
+            active.RewardGate.Reset();
+            active.FirstRawCandidate = null;
             if (mapping.Status is DadDutyFinderMappingStatus.Absent or
                 DadDutyFinderMappingStatus.Disabled or
                 DadDutyFinderMappingStatus.Ambiguous or
@@ -1002,6 +1012,8 @@ public sealed unsafe class DadRouletteRewardProbeService : IDisposable
                 selectedType,
                 agent->SelectedDuty.Id))
         {
+            active.RewardGate.Reset();
+            active.FirstRawCandidate = null;
             if (agent->HasRouletteSelected)
             {
                 FailRewardInspection(
@@ -1015,30 +1027,27 @@ public sealed unsafe class DadRouletteRewardProbeService : IDisposable
             return;
         }
 
-        var instanceContent = InstanceContent.Instance();
-        if (instanceContent == null)
+        if (!TryCaptureRewardDetail(active, resolved, now, out var detail, out failure) ||
+            !DadRouletteRewardDetailRules.TryCreateObservation(
+                detail, active.CharacterContentId, active.RouletteId, out var observation, out failure))
         {
-            FailRewardInspection(active, "InstanceContent reward state is unavailable.");
+            active.RewardGate.Reset();
+            active.FirstRawCandidate = null;
+            active.Summary = failure;
             return;
         }
 
-        var rawIsComplete =
-            instanceContent->IsRouletteComplete(checked((byte)active.RouletteId));
-        var received = rawIsComplete ? 1 : 0;
-        var observation = new DadRouletteRewardObservation(
-            Plugin.PlayerState.ContentId,
-            active.RouletteId,
-            resolved.SelectionToken.ListFingerprint,
-            ExactRouletteSelected: true,
-            received,
-            MaxRewardCount: 1,
-            now);
+        // Exact localized status text is authoritative. Visibility alone cannot distinguish the two states.
+        var instanceContent = InstanceContent.Instance();
+        bool? rawIsComplete = instanceContent == null
+            ? null
+            : instanceContent->IsRouletteComplete(checked((byte)active.RouletteId));
         var status = active.RewardGate.Observe(
             observation,
             active.CharacterContentId,
             active.RouletteId,
             out var observationReason);
-        active.FirstRawCandidate = rawIsComplete;
+        active.FirstRawCandidate ??= rawIsComplete;
         active.Summary = observationReason;
         if (status == DadRouletteRewardObservationStatus.Invalid)
         {
@@ -1048,20 +1057,80 @@ public sealed unsafe class DadRouletteRewardProbeService : IDisposable
         {
             active.Result = new RewardInspectionResult(
                 DadRouletteRewardProbeOutcome.Received,
+                active.FirstRawCandidate,
                 rawIsComplete,
-                rawIsComplete,
-                "Two stable UI-hydrated native reads report the exact roulette reward already received.");
+                $"Two stable exact JournalDetail observations match the localized RECEIVED status: '{detail.MarkerText}'.");
             active.State = RewardInspectionState.Terminal;
         }
         else if (status == DadRouletteRewardObservationStatus.NotReceived)
         {
             active.Result = new RewardInspectionResult(
                 DadRouletteRewardProbeOutcome.NotReceived,
+                active.FirstRawCandidate,
                 rawIsComplete,
-                rawIsComplete,
-                "Two stable UI-hydrated native reads report the exact roulette reward unclaimed.");
+                $"Two stable exact JournalDetail observations match the localized UNCLAIMED status: '{detail.MarkerText}'.");
             active.State = RewardInspectionState.Terminal;
         }
+    }
+
+    private static bool TryCaptureRewardDetail(
+        RewardInspection active,
+        DadDutyFinderResolvedEntry resolved,
+        DateTime now,
+        out DadRouletteRewardDetailSnapshot detail,
+        out string reason)
+    {
+        detail = default;
+        reason = "Waiting for visible, ready JournalDetail reward nodes for the exact roulette.";
+        var manager = RaptureAtkUnitManager.Instance();
+        var addon = manager == null ? null : manager->GetAddonByName("JournalDetail");
+        if (addon == null || !addon->IsVisible || !addon->IsReady)
+            return false;
+        var journal = (AddonJournalDetail*)addon;
+        if (journal->DutyNameTextNode == null || journal->RewardsReceivedResNode == null ||
+            journal->RewardsReceivedTextNode == null ||
+            !TryReadEffectiveVisibility(journal->RewardsReceivedResNode, out var markerVisible) ||
+            !TryReadEffectiveVisibility((AtkResNode*)journal->RewardsReceivedTextNode, out var textVisible))
+            return false;
+
+        // ContentRoulette.Name is the localized detail title, not the shortened list label.
+        var expectedTitle = Plugin.DataManager.GetExcelSheet<ExcelContentRoulette>()
+            .GetRow(active.RouletteId).Name.ToString();
+        var characterContentId = Plugin.PlayerState.ContentId;
+        var displayedTitle = MemoryHelper.ReadSeStringNullTerminated(
+            (nint)journal->DutyNameTextNode->NodeText.StringPtr.Value).TextValue;
+        var markerText = MemoryHelper.ReadSeStringNullTerminated(
+            (nint)journal->RewardsReceivedTextNode->NodeText.StringPtr.Value).TextValue;
+        var labels = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Addon>();
+        var receivedLabel = labels.GetRowOrDefault(DadRouletteRewardDetailRules.ReceivedLabelRowId)?.Text.ToString() ?? string.Empty;
+        var unclaimedLabel = labels.GetRowOrDefault(DadRouletteRewardDetailRules.UnclaimedLabelRowId)?.Text.ToString() ?? string.Empty;
+        if (Plugin.PlayerState.ContentId != characterContentId ||
+            !addon->IsVisible || !addon->IsReady)
+            return false;
+        detail = new DadRouletteRewardDetailSnapshot(
+            characterContentId, active.RouletteId, resolved.SelectionToken.ListFingerprint,
+            (nuint)addon, DetailsReady: true, expectedTitle, displayedTitle,
+            MarkerNodesAvailable: true, markerVisible, textVisible, markerText, now, receivedLabel, unclaimedLabel);
+        return true;
+    }
+
+    private static bool TryReadEffectiveVisibility(AtkResNode* node, out bool visible)
+    {
+        visible = false;
+        if (node == null)
+            return false;
+        for (var depth = 0; depth < 32; depth++)
+        {
+            if (!node->IsVisible())
+                return true;
+            node = node->ParentNode;
+            if (node == null)
+            {
+                visible = true;
+                return true;
+            }
+        }
+        return false; // Cyclic or unexpected hierarchy is not evidence of a reward.
     }
 
     private static void FailRewardInspection(RewardInspection active, string failure)
