@@ -8,7 +8,11 @@ public static class DadCoordinatorRuntimeProjectionRules
         Func<DadWorkerSessionId, bool> isWorkerOnline)
     {
         var participants = new List<DadParticipantSnapshot> { localPresence.Clone() };
-        participants.AddRange(FilterRemoteProjections(localPresence, peerProjections, isWorkerOnline));
+        // An open authenticated socket is not fresh participant truth. Old plugin instances may
+        // keep routing after their framework heartbeat stopped; they must not compete for a new run.
+        // Frozen-run discovery below deliberately retains its exact stale context for safe cleanup.
+        participants.AddRange(FilterRemoteProjections(localPresence, peerProjections, isWorkerOnline)
+            .Where(static participant => participant.State != DadParticipantState.Stale));
         return participants;
     }
 

@@ -327,6 +327,7 @@ internal sealed class RuntimeNode : IDisposable
             partyInvite, partyTeardown, queue, worker, planner, log,
             () => configuration.AutoParty.RemoteBindings, autoParty?.Bridge);
         scheduler.ConfigureLevelingMode(BuildLevelingChild, () => coordinator.CancelActiveRun());
+        DadRuntimeHandlers.ConfigureScheduledRunCancellation(scheduler, coordinator);
         if (autoParty != null)
         {
             autoParty.Service.ConfigureOwnerStop(_ => coordinator.CancelActiveRun());

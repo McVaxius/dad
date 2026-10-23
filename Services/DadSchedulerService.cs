@@ -52,6 +52,8 @@ public sealed class DadSchedulerService
     private Action? cancelActiveLevelingChild;
     private Func<DadRunRequest, DadAutoPartyAuthorizationDecision>? autoPartyAuthorizationGate;
     private Func<string>? admissionBlockerProvider;
+    private Action<string>? cancelScheduledPlannerRun;
+    private Func<string, bool>? retainsPlannerCancellationContext;
     private Func<string>? localDutySupportAdmissionBlockerProvider;
     private Func<DadRunRequest, DadRunResult>? startCrewRegularParty;
     private Func<string, DadPlannerGroup, DadActivityPreset, DadAlliancePartyFinderStatus>? createCrewAllianceParty;
@@ -63,6 +65,7 @@ public sealed class DadSchedulerService
 
     private sealed class PendingTakeoverCancellation
     {
+        public string PlannerRunId { get; init; } = string.Empty;
         public string SchedulerRunId { get; init; } = string.Empty;
         public DadScheduledCrewJob Job { get; init; } = new();
         public DadSchedulerSlotState Slot { get; init; } = new();
@@ -92,6 +95,7 @@ public sealed class DadSchedulerService
         public int CurrentSlotIndex { get; set; }
         public int ReceivedSlotCount { get; set; }
         public DateTime SlotDeadlineUtc { get; set; }
+        public DateTime ResetBoundaryUtc { get; init; }
         public DadRouletteRewardProbeRequestDto? ActiveRequest { get; set; }
         public List<string> Evidence { get; } = [];
     }
@@ -817,8 +821,14 @@ public sealed class DadSchedulerService
         }
 
         var jobId = configuration.ActiveScheduleRun.ActiveSchedulerJobId;
-        if (!string.IsNullOrWhiteSpace(jobId))
+        var plannerRunId = configuration.ActiveScheduleRun.ActivePlannerRequestId;
+        if (string.IsNullOrWhiteSpace(plannerRunId) &&
+            string.Equals(currentState.JobId, jobId, StringComparison.OrdinalIgnoreCase))
+            plannerRunId = currentState.PlannerRequestId;
+        var jobCancelled = !string.IsNullOrWhiteSpace(jobId) &&
             CancelScheduledJob(jobId, string.IsNullOrWhiteSpace(reason) ? "Schedule cancelled." : reason);
+        if (!jobCancelled && !string.IsNullOrWhiteSpace(plannerRunId))
+            cancelScheduledPlannerRun?.Invoke(plannerRunId);
 
         configuration.ActiveScheduleRun = DadScheduleRules.CancelRun(
             configuration.ActiveScheduleRun,
@@ -834,6 +844,12 @@ public sealed class DadSchedulerService
         DadScheduleRetryRequest request,
         bool dadWorkActive)
         => EvaluateFailedEntryRetryCore(request, dadWorkActive, startRetry: false);
+
+    internal void ConfigureScheduledRunCancellation(Action<string> cancelRun, Func<string, bool> retainsContext)
+    {
+        cancelScheduledPlannerRun = cancelRun ?? throw new ArgumentNullException(nameof(cancelRun));
+        retainsPlannerCancellationContext = retainsContext ?? throw new ArgumentNullException(nameof(retainsContext));
+    }
 
     public DadScheduleRetryResult RetryFailedEntry(
         DadScheduleRetryRequest request,
@@ -1035,7 +1051,7 @@ public sealed class DadSchedulerService
 
         if (activeJob != null &&
             string.Equals(activeJob.JobId, jobId, StringComparison.OrdinalIgnoreCase) &&
-            currentState.IsActive)
+            (currentState.IsActive || currentState.Phase == DadSchedulerPresetPhase.StartedPlanner))
         {
             Cancel(string.IsNullOrWhiteSpace(reason) ? $"Scheduler job {jobId} cancelled." : reason);
             MarkPlannerUiRevisionDirty();
@@ -1520,8 +1536,11 @@ public sealed class DadSchedulerService
             return CurrentState;
         }
 
-        if (frozenLevelSeekGroup == null &&
-            TryBeginDailyRewardPreflight(effectiveGroup))
+        // Proven offline level targets already skipped above. Otherwise inspect only
+        // checked Daily rows before waking/assigning the rest of the party, even when
+        // the preset also has level targets. Unclaimed/unknown truth resumes the full
+        // ordinary path, including its post-wake level re-evaluation.
+        if (TryBeginDailyRewardPreflight(effectiveGroup))
         {
             return CurrentState;
         }
@@ -1783,20 +1802,35 @@ public sealed class DadSchedulerService
             .Select(static slot => slot.SlotId)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         frozenOrdinarySlots = currentState.Slots.Select(static slot => slot.Clone()).ToList();
+        var now = DadClock.UtcNow;
+        var cachedSlots = currentState.Slots.Where(slot => checkedSlotIds.Contains(slot.SlotId) &&
+            configuration.DailyRouletteCompletions is { Count: > 0 } &&
+            DadDailyRouletteCompletionRules.HasCurrentProof(configuration.DailyRouletteCompletions,
+                slot.RequiredAccountKey, slot.RequiredCharacterKey, ResolveFrozenSlotContentId(slot), rouletteTarget!, now))
+            .Select(static slot => slot.SlotId).ToHashSet(StringComparer.OrdinalIgnoreCase);
         currentState.Slots = currentState.Slots
-            .Where(slot => checkedSlotIds.Contains(slot.SlotId))
+            .Where(slot => checkedSlotIds.Contains(slot.SlotId) && !cachedSlots.Contains(slot.SlotId))
             .Select(static slot => slot.Clone())
             .ToList();
         dailyRewardPreflight = new DailyRewardPreflightSession
         {
             Target = rouletteTarget!.Clone(),
             CheckedSlotCount = currentState.Slots.Count,
+            ResetBoundaryUtc = DadScheduleRules.GetDailyResetBoundaryUtc(now),
             SlotDeadlineUtc = DadClock.UtcNow + ResolveDailyRewardPreflightTimeout(),
         };
         dailyRewardPreflightAttempted = true;
+        foreach (var slotId in cachedSlots)
+            dailyRewardPreflight.Evidence.Add($"{slotId} persisted exact-character receipt for current reset");
+        if (cachedSlots.Count == checkedRows.Count)
+        {
+            log.Information("[dad] Daily completion ledger proves all {Count} checked row(s); skipping before wake, party assembly or queue.", cachedSlots.Count);
+            SkipForDailyReward(dailyRewardPreflight);
+            return true;
+        }
         InitializeWakeTimestamps(currentState.Slots, currentState.StartedAtUtc);
         currentState.Phase = DadSchedulerPresetPhase.DailyRewardPreflight;
-        currentState.Summary = $"DailyReset reward preflight will inspect {currentState.Slots.Count} checked effective row(s) before ordinary execution.";
+        currentState.Summary = $"Daily reward preflight will prepare {currentState.Slots.Count} checked effective row(s) on independent clients in parallel, then inspect each exact client's reward before ordinary execution.";
         currentState.UpdatedAtUtc = DadClock.UtcNow;
         LogSchedulerPhaseTransition();
         return true;
@@ -2681,10 +2715,12 @@ public sealed class DadSchedulerService
         MarkPlannerUiRevisionDirty();
 
         var now = DadClock.UtcNow;
-        var participants = BuildParticipantSet(characterIntelligenceService.CurrentPool);
+        IReadOnlyList<DadParticipantSnapshot>? participants = null;
         foreach (var pair in pendingTakeoverCancellations.ToList())
         {
             var pending = pair.Value;
+            if (retainsPlannerCancellationContext?.Invoke(pending.PlannerRunId) == true)
+                continue;
             if (now >= pending.CancellationDeadlineUtc && !pending.DeadlineLogged)
             {
                 pending.DeadlineLogged = true;
@@ -2699,6 +2735,14 @@ public sealed class DadSchedulerService
             if (now < pending.NextAttemptUtc)
                 continue;
 
+            if (transportService.HasWorkerProcessExited(pending.Slot.MatchedWorkerSessionId))
+            {
+                pendingTakeoverCancellations.Remove(pair.Key);
+                log.Information("[dad] Retired wake cleanup for OS-confirmed exited worker process: request={RequestId}, slot={SlotId}, worker={WorkerSessionId}. No acknowledgement was fabricated and no replacement was mutated.",
+                    pending.SchedulerRunId, pending.Slot.SlotId, pending.Slot.MatchedWorkerSessionId);
+                continue;
+            }
+            participants ??= BuildParticipantSet(characterIntelligenceService.CurrentPool);
             pending.NextAttemptUtc = now + RefreshInterval;
             var slot = pending.Slot;
             var participant = slot.MatchedWorkerSessionId.IsEmpty
@@ -2757,10 +2801,12 @@ public sealed class DadSchedulerService
         MarkPlannerUiRevisionDirty();
 
         var now = DadClock.UtcNow;
-        var participants = BuildParticipantSet(characterIntelligenceService.CurrentPool);
+        IReadOnlyList<DadParticipantSnapshot>? participants = null;
         foreach (var pair in pendingEarlyAssignmentCancellations.ToList())
         {
             var pending = pair.Value;
+            if (retainsPlannerCancellationContext?.Invoke(pending.RunId) == true)
+                continue;
             if (now >= pending.CancellationDeadlineUtc && !pending.DeadlineLogged)
             {
                 pending.DeadlineLogged = true;
@@ -2775,6 +2821,14 @@ public sealed class DadSchedulerService
             if (now < pending.NextAttemptUtc)
                 continue;
 
+            if (transportService.HasWorkerProcessExited(pending.WorkerSessionId))
+            {
+                pendingEarlyAssignmentCancellations.Remove(pair.Key);
+                log.Information("[dad] Retired requested-job cleanup for OS-confirmed exited worker process: request={RequestId}, slot={SlotId}, worker={WorkerSessionId}.",
+                    pending.RunId, pending.SlotId, pending.WorkerSessionId);
+                continue;
+            }
+            participants ??= BuildParticipantSet(characterIntelligenceService.CurrentPool);
             pending.NextAttemptUtc = now + RefreshInterval;
             var participant = participants.FirstOrDefault(candidate =>
                 string.Equals(
@@ -2835,13 +2889,22 @@ public sealed class DadSchedulerService
             if (now < pending.NextAttemptUtc)
                 continue;
 
+            if (transportService.HasWorkerProcessExited(pending.Request.RouteWorkerSessionId))
+            {
+                pendingRewardProbeCancellations.Remove(pair.Key);
+                log.Information("[dad] Retired reward-probe cleanup for OS-confirmed exited worker process: operation={OperationId}, worker={WorkerSessionId}.",
+                    pending.Request.OperationId, pending.Request.RouteWorkerSessionId);
+                continue;
+            }
             pending.NextAttemptUtc = now + RefreshInterval;
             var participant = new DadParticipantSnapshot
             {
                 WorkerSessionId = pending.Request.RouteWorkerSessionId,
             };
             var result = transportService.SendRouletteRewardProbe(participant, pending.Request);
-            if (!DadSchedulerRoutingRules.IsRewardProbeCancellationAcknowledged(pending.Request, result, now))
+            // A local reply is stamped inside the call, after the loop's earlier `now`.
+            var responseReceivedAtUtc = DadClock.UtcNow;
+            if (!DadSchedulerRoutingRules.IsRewardProbeCancellationAcknowledged(pending.Request, result, responseReceivedAtUtc))
                 continue;
 
             pendingRewardProbeCancellations.Remove(pair.Key);
@@ -3041,9 +3104,11 @@ public sealed class DadSchedulerService
             CancelLevelingOperation(string.IsNullOrWhiteSpace(reason) ? "Leveling Mode cancelled." : reason);
             return;
         }
-        if (!currentState.IsActive)
+        if (!currentState.IsActive && currentState.Phase != DadSchedulerPresetPhase.StartedPlanner)
             return;
 
+        if (!string.IsNullOrWhiteSpace(currentState.PlannerRequestId))
+            cancelScheduledPlannerRun?.Invoke(currentState.PlannerRequestId);
         CancelNonTerminalTakeovers(reason);
         currentState.Phase = DadSchedulerPresetPhase.Cancelled;
         currentState.Summary = string.IsNullOrWhiteSpace(reason) ? "Scheduler cancelled." : reason;
@@ -3709,6 +3774,21 @@ public sealed class DadSchedulerService
         return rebuilt;
     }
 
+    private static IReadOnlyList<DadSchedulerSlotState> SelectDailyRewardWakeSlots(
+        IReadOnlyList<DadSchedulerSlotState> checkedSlots,
+        int currentSlotIndex)
+    {
+        if (currentSlotIndex < 0 || currentSlotIndex >= checkedSlots.Count)
+            return [];
+
+        // Never relog a second character on the worker whose ready character is
+        // still being inspected. Already-proved rows no longer need wake updates.
+        var workers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return checkedSlots.Skip(currentSlotIndex)
+            .Where(slot => slot.MatchedWorkerSessionId.IsEmpty || workers.Add(slot.MatchedWorkerSessionId.Value))
+            .ToList();
+    }
+
     private void UpdateDailyRewardPreflight()
     {
         var active = dailyRewardPreflight;
@@ -3719,6 +3799,11 @@ public sealed class DadSchedulerService
         }
 
         var now = DadClock.UtcNow;
+        if (active.ResetBoundaryUtc != default && active.ResetBoundaryUtc != DadScheduleRules.GetDailyResetBoundaryUtc(now))
+        {
+            ContinueAfterDailyRewardPreflight("Daily reset crossed during reward preflight; old-period evidence cannot skip this preset.");
+            return;
+        }
         if (now >= active.SlotDeadlineUtc)
         {
             ContinueAfterDailyRewardPreflight("Daily reward preflight timed out; running the preset normally.");
@@ -3740,15 +3825,16 @@ public sealed class DadSchedulerService
             return;
         }
 
-        if (!AdvanceWakeTakeoverPipelines([slot], out var takeoverBlocker))
+        var wakeSlots = SelectDailyRewardWakeSlots(currentState.Slots, active.CurrentSlotIndex);
+        if (!AdvanceWakeTakeoverPipelines(wakeSlots, out var takeoverBlocker))
         {
-            ContinueAfterDailyRewardPreflight($"Daily reward preflight wake was uncertain for {slot.SlotId}: {takeoverBlocker} Running the preset normally.");
+            ContinueAfterDailyRewardPreflight($"Daily reward preflight checked-row preparation was uncertain: {takeoverBlocker} Running the preset normally.");
             return;
         }
 
         if (!slot.Ready)
         {
-            currentState.Summary = $"DailyReset reward preflight is waking checked row {active.CurrentSlotIndex + 1}/{active.CheckedSlotCount} ({slot.SlotId}) without touching unchecked rows.";
+            currentState.Summary = $"Daily reward preflight is preparing checked rows on independent clients in parallel ({currentState.Slots.Count(static row => row.Ready)}/{active.CheckedSlotCount} ready); waiting for row {active.CurrentSlotIndex + 1} ({slot.SlotId}) without touching unchecked rows.";
             return;
         }
 
@@ -3806,13 +3892,21 @@ public sealed class DadSchedulerService
         }
 
         var response = transportService.SendRouletteRewardProbe(participant, request);
+        // Validate against receipt, not the pre-dispatch instant: local synchronous replies
+        // legitimately have a later timestamp even on the same machine.
+        var responseReceivedAtUtc = DadClock.UtcNow;
+        if (active.ResetBoundaryUtc != default && active.ResetBoundaryUtc != DadScheduleRules.GetDailyResetBoundaryUtc(responseReceivedAtUtc))
+        {
+            ContinueAfterDailyRewardPreflight("Daily reset crossed while receiving reward proof; old-period evidence cannot skip this preset.");
+            return;
+        }
         if (response == null)
         {
-            currentState.Summary = $"DailyReset reward preflight is waiting for exact reward truth from {slot.SlotId} ({active.CurrentSlotIndex + 1}/{active.CheckedSlotCount}).";
+            currentState.Summary = $"Daily reward preflight is waiting for exact reward truth from {slot.SlotId} ({active.CurrentSlotIndex + 1}/{active.CheckedSlotCount}).";
             return;
         }
 
-        if (!DadRouletteRewardProbeIdentityRules.TryValidateResponse(request, response, now, out var responseFailure))
+        if (!DadRouletteRewardProbeIdentityRules.TryValidateResponse(request, response, responseReceivedAtUtc, out var responseFailure))
         {
             ContinueAfterDailyRewardPreflight($"Daily reward preflight discarded a stale or contradictory reply for {slot.SlotId}: {responseFailure} Running the preset normally.");
             return;
@@ -3820,8 +3914,24 @@ public sealed class DadSchedulerService
 
         if (response.Outcome == DadRouletteRewardProbeOutcome.Pending)
         {
-            currentState.Summary = $"DailyReset reward preflight is waiting for stable exact roulette identity and reward counts from {slot.SlotId}.";
+            currentState.Summary = $"Daily reward preflight is waiting for stable exact roulette identity and reward evidence from {slot.SlotId}.";
             return;
+        }
+
+        if (response.Outcome == DadRouletteRewardProbeOutcome.Received &&
+            !DadRouletteRewardProbeIdentityRules.HasCurrentReceivedTextProof(response))
+        {
+            ContinueAfterDailyRewardPreflight($"Daily reward reply for {slot.SlotId} lacks current localized status-text proof (old client); running the preset normally.");
+            return;
+        }
+
+        configuration.DailyRouletteCompletions ??= [];
+        if (DadDailyRouletteCompletionRules.RecordReward(configuration.DailyRouletteCompletions, request, response, responseReceivedAtUtc))
+        {
+            if (configuration.TryPersistNow())
+                log.Information("[dad] Daily completion ledger persisted exact received-reward proof slot={SlotId} roulette={RouletteId}; expires at next Daily reset.", slot.SlotId, request.RouletteId);
+            else
+                log.Warning("[dad] Daily completion ledger could not confirm durable save for {SlotId}; restart reuse is not guaranteed.", slot.SlotId);
         }
 
         var receivedCount = active.ReceivedSlotCount +
@@ -3853,7 +3963,7 @@ public sealed class DadSchedulerService
             active.CurrentSlotIndex++;
             active.ActiveRequest = null;
             active.SlotDeadlineUtc = now + ResolveDailyRewardPreflightTimeout();
-            currentState.Summary = $"DailyReset reward preflight proved {active.ReceivedSlotCount}/{active.CheckedSlotCount} checked row(s) received; advancing to the next checked row.";
+            currentState.Summary = $"Daily reward preflight proved {active.ReceivedSlotCount}/{active.CheckedSlotCount} checked row(s) received; advancing to the next checked row.";
         }
     }
 
@@ -3861,7 +3971,28 @@ public sealed class DadSchedulerService
     {
         CancelActiveDailyRewardProbe();
         dailyRewardPreflight = null;
-        currentState.Slots = frozenOrdinarySlots.Select(static slot => slot.Clone()).ToList();
+        var checkedSlots = currentState.Slots;
+        currentState.Slots = frozenOrdinarySlots.Select(original =>
+        {
+            var restored = original.Clone();
+            var prepared = checkedSlots.FirstOrDefault(row =>
+                string.Equals(row.SlotId, original.SlotId, StringComparison.OrdinalIgnoreCase) &&
+                DadRosterIdentity.SameAccount(row.RequiredAccountKey, original.RequiredAccountKey) &&
+                string.Equals(row.RequiredCharacterKey.Value, original.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase) &&
+                row.RequiredJobId == original.RequiredJobId &&
+                row.WakePolicy == original.WakePolicy &&
+                string.Equals(row.LaunchProfileId, original.LaunchProfileId, StringComparison.OrdinalIgnoreCase) &&
+                row.IsRegisteredIsland == original.IsRegisteredIsland &&
+                string.Equals(row.SharedIdentityToken, original.SharedIdentityToken, StringComparison.Ordinal) &&
+                (string.IsNullOrWhiteSpace(row.OperationToken) ||
+                 string.Equals(row.OperationToken, currentState.SchedulerRunId, StringComparison.Ordinal)));
+            // A fail-open result must not forget a second client's already-issued
+            // relog or reset. Carry only exact-row runtime state; keep frozen plan
+            // settings and let ordinary readiness revalidate every row next tick.
+            if (prepared != null)
+                CopyWakeRuntimeState(prepared, restored);
+            return restored;
+        }).ToList();
         frozenOrdinarySlots = [];
         InitializeWakeTimestamps(currentState.Slots, currentState.StartedAtUtc);
         dependencyGateCommitted = false;
@@ -3875,7 +4006,7 @@ public sealed class DadSchedulerService
 
     private void SkipForDailyReward(DailyRewardPreflightSession active)
     {
-        const string cleanupReason = "DailyReset entry skipped after exact received roulette reward preflight.";
+        const string cleanupReason = "Preset skipped after exact received roulette reward preflight.";
         CancelNonTerminalTakeovers(cleanupReason);
         currentState.Phase = DadSchedulerPresetPhase.Skipped;
         currentState.SkipKind = DadSchedulerSkipKind.DailyRouletteReward;
@@ -5120,6 +5251,7 @@ public sealed class DadSchedulerService
             var key = $"{currentState.SchedulerRunId}|{slot.SlotId}";
             pendingTakeoverCancellations.TryAdd(key, new PendingTakeoverCancellation
             {
+                PlannerRunId = currentState.PlannerRequestId,
                 SchedulerRunId = currentState.SchedulerRunId,
                 Job = cleanupJob.Clone(),
                 Slot = slot.Clone(),

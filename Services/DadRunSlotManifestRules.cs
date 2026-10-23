@@ -285,6 +285,7 @@ internal static class DadRunSlotManifestRules
             var matches = onlineParticipants
                 .Where(participant =>
                     !participant.WorkerSessionId.IsEmpty &&
+                    participant.State != DadParticipantState.Stale &&
                     Same(participant.ManagedAccountKey.Value, slot.AccountKey.Value))
                 .DistinctBy(static participant => Normalize(participant.WorkerSessionId.Value), StringComparer.OrdinalIgnoreCase)
                 .ToList();

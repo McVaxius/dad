@@ -5,6 +5,62 @@ namespace dad.Tests;
 
 public sealed class DadWorkerStatusPollingRulesTests
 {
+    [Theory]
+    [InlineData("valid", true)]
+    [InlineData("legacy", false)]
+    [InlineData("accepted", false)]
+    [InlineData("command", false)]
+    [InlineData("run", false)]
+    [InlineData("worker", false)]
+    [InlineData("role", false)]
+    [InlineData("module", false)]
+    [InlineData("queued", false)]
+    [InlineData("terminal", false)]
+    [InlineData("entered", false)]
+    [InlineData("old", false)]
+    [InlineData("future", false)]
+    public void OnlyExactFreshUnacceptedIdleProofCanDeferAdmission(string fault, bool expected)
+    {
+        var participant = Participant();
+        var command = Command(participant);
+        var now = DateTime.UtcNow;
+        var reply = Acknowledgement(participant, command);
+        reply.Accepted = false;
+        reply.RuntimeReadinessDeferred = true;
+        reply.Status.State = DadWorkerExecutionState.Idle;
+        reply.Status.UpdatedAtUtc = now;
+        switch (fault)
+        {
+            case "legacy": reply.RuntimeReadinessDeferred = false; break;
+            case "accepted": reply.Accepted = true; break;
+            case "command": reply.CommandId = "other"; break;
+            case "run": reply.RunId = "other"; break;
+            case "worker": reply.WorkerSessionId = new("other"); break;
+            case "role": reply.Status.Role = DadWorkerExecutionRole.QueueLeader; break;
+            case "module": reply.Status.ModuleId = DadModuleId.PremadeDuty; break;
+            case "queued": reply.Status.State = DadWorkerExecutionState.Accepted; break;
+            case "terminal": reply.Status.IsTerminal = true; break;
+            case "entered": reply.Status.EnteredDuty = true; break;
+            case "old": reply.Status.UpdatedAtUtc = now.AddSeconds(-11); break;
+            case "future": reply.Status.UpdatedAtUtc = now.AddTicks(1); break;
+        }
+        Assert.Equal(expected, DadWorkerStatusPollingRules.IsExactReadinessDeferral(participant, command, reply, now));
+    }
+
+    [Theory]
+    [InlineData(0, "command", false)]
+    [InlineData(299, "command", false)]
+    [InlineData(300, "command", true)]
+    [InlineData(301, "command", true)]
+    [InlineData(-1, "command", true)]
+    [InlineData(0, "changed", true)]
+    public void ReadinessWaitKeepsOriginalDeadlineAndFailsClosedOnClockOrCommandDrift(int seconds, string command, bool expired)
+    {
+        var start = DateTime.UtcNow;
+        Assert.Equal(expired, DadWorkerStatusPollingRules.ReadinessWaitExpired("command", command,
+            start, start.AddSeconds(seconds), TimeSpan.FromSeconds(300)));
+    }
+
     [Fact]
     public void MissingAcknowledgementRemainsPendingWithoutSubstitute()
     {

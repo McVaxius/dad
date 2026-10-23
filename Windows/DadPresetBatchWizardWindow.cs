@@ -5,6 +5,7 @@ using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using dad.Models;
+using dad.Services;
 
 namespace dad.Windows;
 
@@ -21,6 +22,7 @@ public sealed class DadPresetBatchWizardWindow : Window
     private string status = "Nothing is written until Preview is valid and Apply is pressed.";
     private string newPoolName = "Data-center pool";
     private int newPoolCrewCount = 1;
+    private bool newPoolUseAllMatchingCharacters;
     private readonly HashSet<uint> newPoolDataCenters = [];
 
     public DadPresetBatchWizardWindow(Plugin plugin)
@@ -104,7 +106,8 @@ public sealed class DadPresetBatchWizardWindow : Window
     private void DrawAccountsStep()
     {
         DadUi.Heading("ACCOUNTS AND CHARACTERS", "Rotating lanes contribute one ordered character per crew. Anchor lanes contribute one configured character per pool.");
-        UiGui.TextWrapped("Selecting Rotating initially selects every Active character on that account; expand the lane to remove characters. Lane order is slot order.");
+        UiGui.TextWrapped("Selecting Rotating initially selects every Active character on that account; expand the lane to remove characters. Lane order assigns slots unless the template keeps exact account slots.");
+        UiGui.TextWrapped("For a four-account roulette crew, choose two Rotating accounts and two Anchor accounts. Each crew uses one different account per slot; choose exact anchors for every pool in step 2.");
 
         var accounts = GetAccountKeys();
         var root = ImGui.GetID("");
@@ -222,13 +225,16 @@ public sealed class DadPresetBatchWizardWindow : Window
     private void DrawPoolsStep()
     {
         using var controls = MaterialControls.Push(MaterialControlContext.Dense);
-        DadUi.Heading("NAMED DC POOLS AND ANCHORS", "Each selected DC can belong to only one pool. Every rotating lane must supply the requested count in every pool.");
+        DadUi.Heading("NAMED DC POOLS AND ANCHORS", "Each selected DC can belong to only one pool. Choose a crew count or use every complete crew across the selected rotating characters.");
         MaterialSettings.Columns("dad-batch-new-pool-fields", 300 * MaterialTheme.Metrics.Scale, () =>
         {
             ImGui.SetNextItemWidth(260f);
             UiGui.InputText("New pool name", ref newPoolName, DadPresetBatchLimits.MaxTextLength);
-            ImGui.SetNextItemWidth(140f);
+            UiGui.Checkbox("Use all matching characters##new-pool", ref newPoolUseAllMatchingCharacters);
+            ImGui.BeginDisabled(newPoolUseAllMatchingCharacters);
+            ImGui.SetNextItemWidth(90f);
             UiGui.InputInt("Crew count", ref newPoolCrewCount);
+            ImGui.EndDisabled();
         }, () =>
         {
             DrawDataCenterChecklist(newPoolDataCenters, "new-pool");
@@ -242,6 +248,7 @@ public sealed class DadPresetBatchWizardWindow : Window
                 DisplayName = newPoolName,
                 DataCenterIds = newPoolDataCenters.Order().ToList(),
                 CrewCount = Math.Max(1, newPoolCrewCount),
+                UseAllMatchingCharacters = newPoolUseAllMatchingCharacters,
             });
             newPoolDataCenters.Clear();
             InvalidatePreview();
@@ -251,10 +258,11 @@ public sealed class DadPresetBatchWizardWindow : Window
         foreach (var pool in draft.Pools.ToList())
         {
             ImGui.PushID(pool.PoolId);
-            if (UiGui.CollapsingHeader($"{pool.DisplayName} | {pool.CrewCount} crews | {pool.DataCenterIds.Count} DC(s)##pool", ImGuiTreeNodeFlags.DefaultOpen))
+            if (UiGui.CollapsingHeader($"{pool.DisplayName} | {(pool.UseAllMatchingCharacters ? "automatic crew count" : $"{pool.CrewCount} crews")} | {pool.DataCenterIds.Count} DC(s)##pool", ImGuiTreeNodeFlags.DefaultOpen))
             {
                 var name = pool.DisplayName;
                 var count = pool.CrewCount;
+                var useAll = pool.UseAllMatchingCharacters;
                 MaterialSettings.Columns("dad-batch-pool-fields", 300 * MaterialTheme.Metrics.Scale, () =>
                 {
                     ImGui.SetNextItemWidth(260f);
@@ -263,12 +271,20 @@ public sealed class DadPresetBatchWizardWindow : Window
                         pool.DisplayName = name;
                         InvalidatePreview();
                     }
-                    ImGui.SetNextItemWidth(140f);
+                    if (UiGui.Checkbox("Use all matching characters", ref useAll))
+                    {
+                        pool.UseAllMatchingCharacters = useAll;
+                        InvalidatePreview();
+                    }
+                    UiGui.TextWrapped("Automatic count uses the smallest selected rotating-account pool. Extra characters are reported as unused; anchors are never guessed.");
+                    ImGui.BeginDisabled(useAll);
+                    ImGui.SetNextItemWidth(90f);
                     if (UiGui.InputInt("Crews", ref count))
                     {
                         pool.CrewCount = Math.Max(1, count);
                         InvalidatePreview();
                     }
+                    ImGui.EndDisabled();
                 }, () =>
                 {
                     var selectedDataCenters = pool.DataCenterIds.ToHashSet();
@@ -315,6 +331,7 @@ public sealed class DadPresetBatchWizardWindow : Window
                         ActivityLabel = group.DisplayName,
                         PlanNameFormat = "{Activity} {Pool} {Index:00}",
                         ScheduleName = $"{group.DisplayName} Batch",
+                        PreserveAccountSlots = DadPresetBatchWizardService.CanPreserveAccountSlots(group, draft),
                     });
                 }
                 else
@@ -340,6 +357,15 @@ public sealed class DadPresetBatchWizardWindow : Window
                 StringComparison.OrdinalIgnoreCase));
             ImGui.PushID(template.PlannerGroupId);
             DadUi.Section(source?.DisplayName ?? template.PlannerGroupId);
+            var preserveAccounts = template.PreserveAccountSlots;
+            if (UiGui.Checkbox("Keep template account slots", ref preserveAccounts))
+            {
+                template.PreserveAccountSlots = preserveAccounts;
+                InvalidatePreview();
+            }
+            UiGui.TextWrapped(preserveAccounts
+                ? "Each account keeps its template slot, job and role, regardless of lane order. Preview blocks missing or different accounts."
+                : "Lane order assigns rotating accounts first, then anchors. Review jobs and roles in the generated Plans.");
             var activity = template.ActivityLabel;
             var format = template.PlanNameFormat;
             var schedule = template.ScheduleName;
@@ -446,7 +472,13 @@ public sealed class DadPresetBatchWizardWindow : Window
         foreach (var schedule in preview.Schedules)
             UiGui.BulletText($"Schedule: {schedule.DisplayName} | {schedule.Entries.Count} entries | {schedule.Cadence}");
         foreach (var plan in preview.PlannerGroups.Take(12))
-            UiGui.BulletText($"Plan: {plan.DisplayName} | {DadPlannerSlotRules.CountPrimarySlots(plan.Slots)} primary rows");
+        {
+            if (!UiGui.TreeNode($"Plan: {plan.DisplayName} | {DadPlannerSlotRules.CountPrimarySlots(plan.Slots)} primary rows##{plan.GroupId}"))
+                continue;
+            foreach (var slot in DadPlannerSlotRules.GetPrimaryRows(plan.Slots))
+                UiGui.BulletText($"{slot.SlotId}: {slot.RequiredCharacterKey.Value} | Job {slot.RequiredJobId?.ToString() ?? "Any"} | {slot.RequiredRole}");
+            ImGui.TreePop();
+        }
         if (preview.PlannerGroups.Count > 12)
             UiGui.TextDisabled($"...and {preview.PlannerGroups.Count - 12} more Plans in the frozen preview.");
 
@@ -601,6 +633,7 @@ public sealed class DadPresetBatchWizardWindow : Window
         status = "Draft reset. Nothing was written.";
         newPoolName = "Data-center pool";
         newPoolCrewCount = 1;
+        newPoolUseAllMatchingCharacters = false;
         newPoolDataCenters.Clear();
     }
 }

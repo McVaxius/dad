@@ -1,3 +1,42 @@
+2026-10-23 - Wait for exact worker readiness at queue admission
+
+- Treat an exact, fresh, explicitly unaccepted post-AR readiness response as a bounded wait rather than failing the queue leader immediately. Retain immutable command identity, accepted followers and the original participant-ready deadline; recheck every two seconds without repair/queue/executor actions while deferred.
+- Keep frozen identity/job/role checks, cancellation, payload collisions, acknowledgement freshness and native safety gates strict. Legacy/untyped rejection remains a failure. Add actual worker/coordinator wait/resume regressions and negative proof/deadline coverage.
+
+2026-10-23 - Stale connected sessions cannot block fresh run admission
+
+- Exclude explicitly Stale remote participants from new-run online discovery and manifest account binding, even when old plugin sockets remain routable. Keep genuine fresh-session ambiguity blocking and retain exact frozen-session context for active-run safety/cleanup. No connection-wide cleanup, cancellation bypass, history reset or release-version change.
+
+2026-10-23 - Four-account roulette batch assistance
+
+- Add optional automatic complete-crew counts from selected rotating characters per DC pool, preserving exact anchor choices, manual counts, exclusions and leftover diagnostics.
+- Let matching account-bound templates keep each account's slot/job/role independent of rotating/anchor lane order; block ambiguous mappings and expose generated character/job/role details in Preview. Preserve generic positional templates, append-only Apply and exact Undo. Session drafts only; no live preset/config rewrite or release-version change.
+
+2026-10-23 - Exact per-client Daily reward proof and wake readiness
+
+- Apply the per-character Daily checkbox to direct starts and manual schedules as well as DailyReset. Inspect the exact localized roulette reward status on each checked character's own client; skip only when every checked row has current proof. Missing, unclaimed, mismatched or old visibility-only proof runs the ordinary preset.
+- Persist bounded exact-character current-reset completion receipts, prepare checked rows concurrently on independent clients, and preserve their exact wake tokens on fail-open continuation. Validate responses at receipt time. Re-read completed wake safety without replaying its reset/relog actions.
+- Retry an accepted title login only after a fresh continuous safe idle-title window for the same authorized operation and route. Active loading, uncertain results, changed identities and unavailable owners cannot authorize replay. No automatic cancelled-schedule resume or new disconnect-recovery mechanism.
+
+2026-10-22 - Client process restart cancellation and truthful Stop All
+
+- Retire old local worker process-owned scheduler/coordinator cleanup only after exact observed PID/start identity, offline route and OS-confirmed process termination. Never treat a timeout/disconnect as completion, fabricate old-worker acknowledgements or mutate a replacement. Native party teardown still requires guarded roster proof.
+- Stop All now includes retained scheduler/coordinator cancellation in completion and polls cleanup idempotently instead of falsely acknowledging success from current sessions alone. No automatic schedule restart, persisted format changes, release-version bump or deployment.
+
+2026-10-22 - Reviewed current development SDK pairing
+
+- Accept the exact reviewed Dalamud 15.0.3.9 / ClientStructs dd57986b8287e7c6ed9c27198f8c76cb04a81dfe pair after checking its official submodule binding and changes since the reviewed 15.0.3.8 pair. Keep all prior reviewed pairs and native offset/enum assertions; other pairs still fail.
+
+2026-10-22 - Orderly LAN schedule cancellation
+
+- Route Schedule Cancel and direct scheduler cancellation to the exact accepted planner run. Stop run-owned workers before guarded Slot1 disband and follower leave/solo proof, retaining authenticated run assignments until teardown and exact cleanup acknowledgements finish.
+- Defer scheduler early-assignment cancellation and wake restoration while that exact planner cancellation owns the party boundary. Keep new work blocked, repeated Cancel idempotent and cancelled runs free of successful-round completion actions. Preserve missing/unsafe/contradictory identity blockers rather than force an exit or rebind a client.
+- Share scheduler cancellation wiring between plugin and headless runtime. Emergency Stop All, registered-island and solo cleanup keep their existing semantics. No release-version change; live four-client acceptance remains pending.
+
+2026-10-23 - UI initialization regression coverage
+
+- Check exact English lookup uniqueness and all supported language catalogs, retaining upstream's Auto translation repair. Validate appearance before configuration normalization can perform native work as well as before acquiring callbacks or transport owners.
+
 2026-10-22
  - i farted really loud and it woke me up
 

@@ -344,6 +344,57 @@ public sealed class DadSchedulerRoutingRulesTests
     }
 
     [Fact]
+    public void CompletedWakeWithoutCurrentReadyProofStillPollsStatusOnly()
+    {
+        var slot = SafeTakeoverSlot(DadWakeTakeoverPhase.Ready);
+        slot.Ready = false;
+        var decision = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slot, DateTime.UtcNow);
+        Assert.True(decision.CanDispatch);
+        Assert.Equal(DadWakeTakeoverMessageKind.Status, decision.MessageKind);
+        Assert.Equal(DadWakeCommitKind.None, decision.CommitKind);
+        Assert.Null(decision.ExecutionTimeUtc);
+    }
+
+    [Theory]
+    [InlineData("external-hold")]
+    [InlineData("world-unstable")]
+    [InlineData("wrong-character")]
+    [InlineData("multi-mode")]
+    public void PreviouslyReadyWakeWithUnsafeHeartbeatPollsWithoutGo(string unsafeEvidence)
+    {
+        var slot = SafeTakeoverSlot(DadWakeTakeoverPhase.Ready);
+        slot.Ready = true;
+        slot.CorrectCharacter = true;
+        switch (unsafeEvidence)
+        {
+            case "external-hold": slot.ExternalAutomationHeld = true; break;
+            case "world-unstable": slot.BasePostArReady = false; break;
+            case "wrong-character": slot.CorrectCharacter = false; break;
+            case "multi-mode": slot.MultiModeEnabled = true; break;
+        }
+        var decision = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slot, DateTime.UtcNow);
+        Assert.True(decision.CanDispatch);
+        Assert.Equal(DadWakeTakeoverMessageKind.Status, decision.MessageKind);
+        Assert.Equal(DadWakeCommitKind.None, decision.CommitKind);
+        Assert.Null(decision.ExecutionTimeUtc);
+    }
+
+    [Theory]
+    [InlineData(DadWakeTakeoverPhase.Ready, true, true)]
+    [InlineData(DadWakeTakeoverPhase.Ready, false, false)]
+    [InlineData(DadWakeTakeoverPhase.Blocked, false, true)]
+    [InlineData(DadWakeTakeoverPhase.Cancelled, false, true)]
+    public void ConfirmedReadyOfflineAndFailedTerminalSlotsDoNotDispatch(
+        DadWakeTakeoverPhase phase, bool ready, bool connected)
+    {
+        var slot = SafeTakeoverSlot(phase);
+        slot.Ready = ready;
+        slot.CorrectCharacter = true;
+        slot.ClientConnected = connected;
+        Assert.False(DadSchedulerRoutingRules.ResolveNextTakeoverAction(slot, DateTime.UtcNow).CanDispatch);
+    }
+
+    [Fact]
     public void ReadyAcknowledgementUsesExactWorldTruthNotSuppressionSensitivePostAr()
     {
         var slot = new DadSchedulerSlotState

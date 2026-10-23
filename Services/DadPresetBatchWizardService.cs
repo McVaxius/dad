@@ -47,6 +47,18 @@ public sealed class DadPresetBatchWizardService
         }
     }
 
+    public static bool CanPreserveAccountSlots(DadPlannerGroup source, DadPresetBatchDraft draft)
+    {
+        var accounts = draft.RotatingLanes.Select(lane => lane.AccountKey)
+            .Concat(draft.AnchorLanes.Select(lane => lane.AccountKey)).ToList();
+        var slots = DadPlannerSlotRules.GetPrimaryRows(source.Slots);
+        var selected = accounts.Select(account => (account.Value ?? string.Empty).Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return accounts.Count > 0 && accounts.All(account => !account.IsEmpty) &&
+               selected.Count == accounts.Count && slots.Count == accounts.Count &&
+               slots.All(slot => !slot.RequiredAccountKey.IsEmpty && selected.Contains(slot.RequiredAccountKey.Value.Trim())) &&
+               slots.Select(slot => slot.RequiredAccountKey.Value.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).Count() == slots.Count;
+    }
+
     public DadPresetBatchPreview BuildPreview(
         DadPresetBatchDraft? draft,
         DadAccountRosterCatalog? catalog,
@@ -342,7 +354,7 @@ public sealed class DadPresetBatchWizardService
                 if (!assignedDataCenters.Add(dataCenterId))
                     issues.Add(Block("dad-batch-pool-dc-overlap", $"Data center {dataCenterId} belongs to more than one pool."));
             }
-            if (source.CrewCount <= 0 || source.CrewCount > DadPresetBatchLimits.MaxPlannerGroups)
+            if (!source.UseAllMatchingCharacters && (source.CrewCount <= 0 || source.CrewCount > DadPresetBatchLimits.MaxPlannerGroups))
                 issues.Add(Block("dad-batch-pool-count-invalid", $"Pool '{displayName}' has an invalid crew count."));
             pools.Add(new ResolvedPool(source, poolId, displayName));
         }
@@ -466,6 +478,8 @@ public sealed class DadPresetBatchWizardService
             var primarySlots = normalizedSlots.Where(static slot => !slot.IsSubstitute).ToList();
             if (primarySlots.Count != requiredPrimaryCount)
                 issues.Add(Block("dad-batch-template-slot-count", $"Template '{source.DisplayName}' requires exactly {requiredPrimaryCount} primary slots; it has {primarySlots.Count}."));
+            if (selection.PreserveAccountSlots && !CanPreserveAccountSlots(source, draft))
+                issues.Add(Block("dad-batch-template-account-map", $"Template '{source.DisplayName}' must contain each selected account exactly once to preserve account slots. Review the accounts or explicitly use lane order."));
             if (normalizedSlots.Any(static slot => slot.IsSubstitute))
                 issues.Add(Block("dad-batch-template-substitutes", $"Template '{source.DisplayName}' contains substitutes. Batch generation accepts ordinary primary rows only."));
             if (!string.IsNullOrWhiteSpace(source.AutoPartyProposalId) || source.AutoPartyFormationOnly)
@@ -508,6 +522,17 @@ public sealed class DadPresetBatchWizardService
                     .ThenBy(static character => character.CharacterKey.Value, StringComparer.OrdinalIgnoreCase)
                     .ToList();
                 rotatingByPool[(pool.PoolId, lane.AccountKey.Value.Trim())] = ordered;
+            }
+            if (pool.Source.UseAllMatchingCharacters)
+            {
+                // Source belongs to BuildPreview's deep-cloned draft. Never edit the operator's draft or templates.
+                pool.Source.CrewCount = rotating.Min(lane => rotatingByPool[(pool.PoolId, lane.AccountKey.Value.Trim())].Count);
+                if (pool.Source.CrewCount == 0)
+                    issues.Add(Block("dad-batch-pool-shortage", $"Pool '{pool.DisplayName}' has no complete crew across all selected rotating accounts."));
+            }
+            foreach (var lane in rotating)
+            {
+                var ordered = rotatingByPool[(pool.PoolId, lane.AccountKey.Value.Trim())];
                 unusedCounts.Add(new DadPresetBatchUnusedCount(
                     pool.PoolId,
                     lane.AccountKey,
@@ -553,7 +578,9 @@ public sealed class DadPresetBatchWizardService
         var slots = primarySlots.Select((slot, index) =>
         {
             var clone = DadSchedulerGroupCloneRules.CloneSlot(slot);
-            var character = crew.Characters[index];
+            var character = selection.PreserveAccountSlots
+                ? crew.Characters.Single(candidate => DadRosterIdentity.SameAccount(candidate.AccountKey, slot.RequiredAccountKey))
+                : crew.Characters[index];
             clone.RequiredAccountKey = character.AccountKey;
             clone.RequiredCharacterKey = character.CharacterKey;
             clone.SharedIdentity = null;

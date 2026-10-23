@@ -79,6 +79,7 @@ public sealed class DadPresetBatchPool
     public string DisplayName { get; set; } = "Data-center pool";
     public List<uint> DataCenterIds { get; set; } = [];
     public int CrewCount { get; set; } = 1;
+    public bool UseAllMatchingCharacters { get; set; }
 
     public DadPresetBatchPool Clone()
         => new()
@@ -87,6 +88,7 @@ public sealed class DadPresetBatchPool
             DisplayName = DisplayName,
             DataCenterIds = [.. DataCenterIds],
             CrewCount = CrewCount,
+            UseAllMatchingCharacters = UseAllMatchingCharacters,
         };
 }
 
@@ -99,6 +101,7 @@ public sealed class DadPresetBatchTemplate
     public DadScheduleCadence ScheduleCadence { get; set; } = DadScheduleCadence.Manual;
     public int RepeatCount { get; set; } = 1;
     public bool SetDailyRewardChecksForAllPrimary { get; set; }
+    public bool PreserveAccountSlots { get; set; }
 
     public DadPresetBatchTemplate Clone()
         => new()
@@ -110,6 +113,7 @@ public sealed class DadPresetBatchTemplate
             ScheduleCadence = ScheduleCadence,
             RepeatCount = RepeatCount,
             SetDailyRewardChecksForAllPrimary = SetDailyRewardChecksForAllPrimary,
+            PreserveAccountSlots = PreserveAccountSlots,
         };
 }
 

@@ -18,6 +18,7 @@ public interface IDadLocalDutyQueueGateway
     void ResetRun(string runId);
     bool IsInRequestedDuty(DadLocalDutyResolvedContent content);
     bool HasDutyCompleted(DadLocalDutyResolvedContent content, DateTime runStartedAtUtc);
+    bool HasParticipantDutyCompleted(DadLocalDutyResolvedContent content, DateTime runStartedAtUtc) => false;
     bool IsQueued();
 }
 

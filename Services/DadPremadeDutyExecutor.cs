@@ -141,7 +141,10 @@ public sealed class DadPremadeDutyExecutor : IDadModuleExecutor
             dutyCompleted,
             freshCompletionEvidence);
         if (freshCompletionEvidence)
+        {
+            status.DutyCompletedAtUtc = now;
             combatRotationService.ReleaseDungeonRsrAggro(status.RunId);
+        }
         var exitedRequestedDuty = enteredDuty && HasExitedRequestedDuty();
         var exitDecision = DadDutyLifecycleRules.EvaluateExit(
             enteredDuty,

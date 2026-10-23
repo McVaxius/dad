@@ -115,15 +115,13 @@ public sealed class DadWakeTakeoverServiceTests
         Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.GetActiveStatus()!.Phase);
     }
 
-    [Theory]
-    [InlineData(DadLifestreamLoginOutcome.Accepted)]
-    [InlineData(DadLifestreamLoginOutcome.Uncertain)]
-    public void AcceptedOrUncertainTitleLoginNeverReplays(DadLifestreamLoginOutcome outcome)
+    [Fact]
+    public void UncertainTitleLoginNeverReplays()
     {
         var clock = new TestClock();
         var target = FakeTarget.Valid(wrongCharacter: true);
         ConfigureTitleIdle(target);
-        target.TitleLoginOutcomes.Enqueue(outcome);
+        target.TitleLoginOutcomes.Enqueue(DadLifestreamLoginOutcome.Uncertain);
         var service = new DadWakeTakeoverService(target, clock.UtcNow);
 
         service.Handle(Request());
@@ -133,6 +131,318 @@ public sealed class DadWakeTakeoverServiceTests
         service.Update();
 
         Assert.Single(target.TitleLoginCaptureCounts);
+    }
+
+    [Fact]
+    public void AcceptedTitleLoginReturningToSafeIdleTitleRetriesAfterFiveSeconds()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        ConfigureTitleIdle(target);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        service.Handle(Request());
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+        target.Snapshot.LifestreamBusy = true;
+        clock.Advance(TimeSpan.FromMinutes(1));
+        service.Update();
+        target.Snapshot.LifestreamBusy = false;
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(4));
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        service.Update();
+        Assert.Equal(2, target.TitleLoginCaptureCounts.Count);
+        Assert.Single(target.Actions, action => action == "SetMultiMode:False");
+    }
+
+    [Fact]
+    public void AcceptedTitleLoginRetriesWithoutAttemptCapAndStopsOnArrival()
+    {
+        var (clock, target, service) = StartAcceptedTitleLogin();
+        for (var attempt = 2; attempt <= 201; attempt++)
+        {
+            service.Update();
+            clock.Advance(TimeSpan.FromSeconds(5));
+            service.Update();
+            Assert.Equal(attempt, target.TitleLoginCaptureCounts.Count);
+        }
+        Assert.Single(target.Actions, action => action == "SetMultiMode:False");
+        Assert.Equal(0, target.ReserveCount);
+        Assert.DoesNotContain("ResetAutoRetainer", target.Actions);
+        Assert.All(target.Actions.Where(action => action.StartsWith("ConnectAndLogin:")),
+            action => Assert.Equal("ConnectAndLogin:Target Character@World", action));
+        ActivateTargetCharacter(target);
+        service.Update();
+        clock.Advance(TimeSpan.FromDays(1));
+        service.Update();
+        Assert.Equal(201, target.TitleLoginCaptureCounts.Count);
+        Assert.Equal(DadWakeTakeoverPhase.Ready, service.GetActiveStatus()!.Phase);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(6)]
+    [InlineData(7)]
+    [InlineData(8)]
+    [InlineData(9)]
+    [InlineData(10)]
+    [InlineData(11)]
+    [InlineData(12)]
+    [InlineData(13)]
+    [InlineData(14)]
+    [InlineData(15)]
+    [InlineData(16)]
+    [InlineData(17)]
+    [InlineData(18)]
+    [InlineData(19)]
+    [InlineData(20)]
+    [InlineData(21)]
+    [InlineData(22)]
+    [InlineData(23)]
+    public void AcceptedTitleLoginUnsafeObservationResetsEntireIdleWindow(int gate)
+    {
+        var (clock, target, service) = StartAcceptedTitleLogin();
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(4));
+        service.Update();
+        MakeTitleLoginUnsafe(target, gate);
+        service.Update();
+        clock.Advance(TimeSpan.FromDays(1));
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+
+        ConfigureTitleIdle(target);
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.Idle);
+        target.Snapshot.MultiModeEnabled = false;
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(4));
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        service.Update();
+        Assert.Equal(2, target.TitleLoginCaptureCounts.Count);
+        Assert.Single(target.Actions, action => action == "SetMultiMode:False");
+        Assert.DoesNotContain("DismissTitleMovie", target.Actions);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void AcceptedTitleLoginFinalForcedReadCannotReplayDuringNewLoginTransition(int gate)
+    {
+        var (clock, target, service) = StartAcceptedTitleLogin();
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(5));
+        var captures = 0;
+        target.OnCapture = force =>
+        {
+            Assert.True(force);
+            if (++captures == 2)
+                MakeTitleLoginUnsafe(target, gate);
+        };
+        service.Update();
+        Assert.Equal(2, captures);
+        Assert.Single(target.TitleLoginCaptureCounts);
+        target.OnCapture = null;
+        ConfigureTitleIdle(target);
+        target.Snapshot.MultiModeEnabled = false;
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+        Assert.Equal(2, target.TitleLoginCaptureCounts.Count);
+    }
+
+    [Fact]
+    public void AcceptedTitleLoginFinalForcedReadArrivalWinsOverRetry()
+    {
+        var (clock, target, service) = StartAcceptedTitleLogin();
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(5));
+        var captures = 0;
+        target.OnCapture = _ =>
+        {
+            if (++captures == 2)
+                ActivateTargetCharacter(target);
+        };
+        service.Update();
+        target.OnCapture = null;
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+        Assert.Equal(DadWakeTakeoverPhase.Ready, service.GetActiveStatus()!.Phase);
+    }
+
+    [Fact]
+    public void AcceptedTitleLoginSettlingOnWrongLiveCharacterFailsClosed()
+    {
+        var (clock, target, service) = StartAcceptedTitleLogin();
+        target.Snapshot.Participant.IsAvailable = true;
+        target.Snapshot.Participant.WorldReadyStable = true;
+        target.Snapshot.Participant.ActiveCharacterKey = new DadCharacterKey("Other Character@World");
+        service.Update();
+        Assert.Equal(DadWakeTakeoverStatus.Blocked, service.GetActiveStatus()!.Status);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AcceptedTitleLoginRetryKeepsFrozenWorkerAccountRoute(bool changeAccount)
+    {
+        var (clock, target, service) = StartAcceptedTitleLogin();
+        if (changeAccount)
+            target.Snapshot.Participant.ManagedAccountKey = new DadAccountKey("different-account");
+        else
+            target.Snapshot.Participant.WorkerSessionId = new DadWorkerSessionId("different-worker");
+        service.Update();
+        Assert.Equal(DadWakeTakeoverStatus.Blocked, service.GetActiveStatus()!.Status);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+    }
+
+    [Fact]
+    public void AcceptedThenExplicitFalseTitleLoginReturnsToFiveSecondRetryCadence()
+    {
+        var (clock, target, service) = StartAcceptedTitleLogin();
+        target.TitleLoginOutcomes.Enqueue(DadLifestreamLoginOutcome.ExplicitFalse);
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+        Assert.Equal(2, target.TitleLoginCaptureCounts.Count);
+        clock.Advance(TimeSpan.FromSeconds(4));
+        service.Update();
+        Assert.Equal(2, target.TitleLoginCaptureCounts.Count);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        service.Update();
+        Assert.Equal(3, target.TitleLoginCaptureCounts.Count);
+        Assert.Equal(DadWakeTakeoverPhase.WaitingForCharacter, service.GetActiveStatus()!.Phase);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UncertainOrThrowingAcceptedTitleLoginRetryFailsClosed(bool throws)
+    {
+        var (clock, target, service) = StartAcceptedTitleLogin();
+        target.ThrowOnTitleLogin = throws;
+        target.TitleLoginOutcomes.Enqueue(DadLifestreamLoginOutcome.Uncertain);
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+        Assert.Equal(2, target.TitleLoginCaptureCounts.Count);
+        Assert.Equal(DadWakeTakeoverStatus.Blocked, service.GetActiveStatus()!.Status);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        service.Update();
+        Assert.Equal(2, target.TitleLoginCaptureCounts.Count);
+    }
+
+    [Fact]
+    public void AcceptedTitleLoginCoordinatorLossRequiresNewIdleWindowAfterReconnect()
+    {
+        var (clock, target, service) = StartAcceptedTitleLogin();
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(4));
+        service.OnCoordinatorDisconnected();
+        clock.Advance(TimeSpan.FromMinutes(1));
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+        service.Handle(StatusRequest());
+        clock.Advance(TimeSpan.FromSeconds(4));
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        service.Update();
+        Assert.Equal(2, target.TitleLoginCaptureCounts.Count);
+    }
+
+    [Fact]
+    public void AcceptedTitleLoginCancellationStopsPendingRetries()
+    {
+        var (clock, target, service) = StartAcceptedTitleLogin();
+        service.Update();
+        var cancel = Request();
+        cancel.MessageKind = DadWakeTakeoverMessageKind.Cancel;
+        service.Handle(cancel);
+        clock.Advance(TimeSpan.FromMinutes(1));
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+    }
+
+    [Theory]
+    [InlineData(-10)]
+    [InlineData(16)]
+    public void AcceptedTitleLoginClockRollbackOrObservationGapRestartsIdleProof(int seconds)
+    {
+        var (clock, target, service) = StartAcceptedTitleLogin();
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(4));
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(seconds));
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+        clock.Advance(TimeSpan.FromSeconds(4));
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        service.Update();
+        Assert.Equal(2, target.TitleLoginCaptureCounts.Count);
+    }
+
+    private static (TestClock Clock, FakeTarget Target, DadWakeTakeoverService Service) StartAcceptedTitleLogin()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        ConfigureTitleIdle(target);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        service.Handle(Request());
+        service.Update();
+        Assert.Single(target.TitleLoginCaptureCounts);
+        return (clock, target, service);
+    }
+
+    private static void MakeTitleLoginUnsafe(FakeTarget target, int gate)
+    {
+        switch (gate)
+        {
+            case 0: target.Snapshot.LifestreamBusy = true; break;
+            case 1: target.Snapshot.TitleSurface = DadTitleSurface.CharacterSelect; break;
+            case 2: target.Snapshot.TitleSurface = DadTitleSurface.ConnectingToDataCenter; break;
+            case 3: target.Snapshot.TitleSurface = DadTitleSurface.TitleMovie; break;
+            case 4: target.Snapshot.TitleSurface = DadTitleSurface.Ambiguous; break;
+            case 5: target.Snapshot.TitleSurface = DadTitleSurface.None; break;
+            case 6: target.Snapshot.TitleSurfaceEvidenceFresh = false; break;
+            case 7: target.Snapshot.TitleMenuReady = false; break;
+            case 8: target.Snapshot.TitleClientLoggedOut = false; break;
+            case 9: target.Snapshot.TitleNoActiveConditionFlags = false; break;
+            case 10: target.Snapshot.TitleNavigationOverlayVisible = true; break;
+            case 11: target.Snapshot.TitleConnectionOverlayVisible = true; break;
+            case 12: target.Snapshot.TitleErrorOverlayVisible = true; break;
+            case 13: target.Snapshot.AutoRetainerAvailable = false; break;
+            case 14: target.Snapshot.AutoRetainerBusy = true; break;
+            case 15: target.Snapshot.SuppressionReadable = false; break;
+            case 16: target.Snapshot.AutoRetainerSuppressed = true; break;
+            case 17: target.Snapshot.VermaxionStatusEvidenceFresh = false; break;
+            case 18: target.Snapshot.LifestreamAvailable = false; break;
+            case 19: target.Snapshot.LifestreamCanAutoLogin = false; break;
+            case 20: target.Snapshot.MultiModeEnabled = true; break;
+            case 21: target.Snapshot.DadOwnsCharacterPostprocess = true; break;
+            case 22: target.Snapshot.DadOwnsSuppression = true; break;
+            case 23:
+                target.Snapshot.VermaxionStatusKind = DadVermaxionReadinessKind.Busy;
+                target.LegacyStatus = Legacy(DadVermaxionReadinessKind.Busy);
+                break;
+            default: throw new ArgumentOutOfRangeException(nameof(gate));
+        }
     }
 
     [Theory]
@@ -1149,6 +1459,211 @@ public sealed class DadWakeTakeoverServiceTests
         Assert.True(ready.Snapshot.WorldReadyStable);
         Assert.Equal(1, target.Actions.Count(static action => action == "RelogCharacter"));
     }
+
+    [Fact]
+    public void CompletedWakeRefreshesTransientExternalHoldWithoutRepeatingTakeover()
+    {
+        var (service, target, clock) = CompletedWakeWithFreshSnapshots(holdAtCompletion: true);
+        var held = service.Handle(StatusRequest());
+        Assert.True(held.ExternalAutomationHeld);
+        Assert.False(DadSchedulerRoutingRules.CanAcceptReadyAcknowledgement(ReadySlot(), held));
+        var actions = target.Actions.ToArray();
+        var captures = target.CaptureForceFlags.Count;
+
+        ReplaceLiveReadySnapshot(target);
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.Idle);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var slot = ReadySlot();
+        slot.ClientConnected = true;
+        slot.TakeoverPhase = held.Phase;
+        slot.Ready = false;
+        var next = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slot, clock.Now);
+        Assert.True(next.CanDispatch);
+        Assert.Equal(DadWakeTakeoverMessageKind.Status, next.MessageKind);
+        Assert.Equal(DadWakeCommitKind.None, next.CommitKind);
+        var poll = Request();
+        poll.MessageKind = next.MessageKind;
+        var ready = service.Handle(poll);
+
+        Assert.True(target.CaptureForceFlags.Count > captures);
+        Assert.True(target.CaptureForceFlags[^1]);
+        Assert.True(DadSchedulerRoutingRules.CanAcceptReadyAcknowledgement(ReadySlot(), ready));
+        Assert.True(ready.PostArReady);
+        Assert.False(ready.ExternalAutomationHeld);
+        Assert.True(held.ExternalAutomationHeld); // Prior wire response remains a historical value.
+        Assert.Equal(held.ReadyUtc, ready.ReadyUtc);
+        Assert.Equal(held.ResetIssuedUtc, ready.ResetIssuedUtc);
+        Assert.Equal(held.RelogIssuedUtc, ready.RelogIssuedUtc);
+        Assert.Equal(actions, target.Actions);
+    }
+
+    [Fact]
+    public void CompletedWakeActiveStatusAlsoRefreshesWithoutReplayingMutations()
+    {
+        var (service, target, _) = CompletedWakeWithFreshSnapshots(holdAtCompletion: true);
+        Assert.True(service.GetActiveStatus()!.ExternalAutomationHeld);
+        ReplaceLiveReadySnapshot(target);
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.Idle);
+        var actions = target.Actions.ToArray();
+        Assert.True(DadSchedulerRoutingRules.CanAcceptReadyAcknowledgement(ReadySlot(), service.GetActiveStatus()!));
+        Assert.Equal(actions, target.Actions);
+    }
+
+    [Theory]
+    [InlineData("external-hold")]
+    [InlineData("ar-busy")]
+    [InlineData("ar-missing")]
+    [InlineData("multi-mode")]
+    [InlineData("offline")]
+    [InlineData("world-unstable")]
+    [InlineData("wrong-character")]
+    [InlineData("wrong-account")]
+    [InlineData("wrong-worker")]
+    [InlineData("route-lost")]
+    [InlineData("account-mismatch")]
+    [InlineData("character-unknown")]
+    [InlineData("dad-disabled")]
+    [InlineData("mutation-disabled")]
+    [InlineData("capture-failed")]
+    public void CompletedWakeCannotReuseOldSafeProofAfterLiveSafetyChanges(string change)
+    {
+        var (service, target, _) = CompletedWakeWithFreshSnapshots();
+        Assert.True(DadSchedulerRoutingRules.CanAcceptReadyAcknowledgement(ReadySlot(), service.Handle(StatusRequest())));
+        var actions = target.Actions.ToArray();
+        ReplaceLiveReadySnapshot(target);
+        switch (change)
+        {
+            case "external-hold": target.LegacyStatus = Legacy(DadVermaxionReadinessKind.Busy); break;
+            case "ar-busy": target.Snapshot.AutoRetainerBusy = true; break;
+            case "ar-missing": target.Snapshot.AutoRetainerAvailable = false; break;
+            case "multi-mode": target.Snapshot.MultiModeEnabled = true; break;
+            case "offline": target.Snapshot.Participant.IsAvailable = false; break;
+            case "world-unstable": target.Snapshot.Participant.WorldReadyStable = false; break;
+            case "wrong-character": target.Snapshot.Participant.ActiveCharacterKey = new("Other Character@World"); break;
+            case "wrong-account": target.Snapshot.Participant.ManagedAccountKey = new("other-account"); break;
+            case "wrong-worker": target.Snapshot.Participant.WorkerSessionId = new("other-worker"); break;
+            case "route-lost": target.Snapshot.ClientRouteConnected = false; break;
+            case "account-mismatch": target.Snapshot.AccountMatches = false; break;
+            case "character-unknown": target.Snapshot.CharacterKnownToAccount = false; break;
+            case "dad-disabled": target.Snapshot.DadEnabled = false; break;
+            case "mutation-disabled": target.Snapshot.RemoteMutationAllowed = false; break;
+            case "capture-failed": target.OnCapture = _ => throw new InvalidOperationException("Read failed."); break;
+        }
+
+        var unsafeResult = service.Handle(StatusRequest());
+
+        Assert.False(DadSchedulerRoutingRules.CanAcceptReadyAcknowledgement(ReadySlot(), unsafeResult));
+        Assert.Equal(DadWakeTakeoverPhase.Ready, unsafeResult.Phase); // No replay of a completed operation.
+        Assert.Equal(actions, target.Actions);
+        target.OnCapture = null;
+        ReplaceLiveReadySnapshot(target);
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.Idle);
+        Assert.True(DadSchedulerRoutingRules.CanAcceptReadyAcknowledgement(ReadySlot(), service.Handle(StatusRequest())));
+        Assert.Equal(actions, target.Actions);
+    }
+
+    [Fact]
+    public void CompletedWakeLatePrepareAndGoOnlyRefreshAndDoNotRearm()
+    {
+        var (service, target, clock) = CompletedWakeWithFreshSnapshots();
+        var actions = target.Actions.ToArray();
+        var captures = target.CaptureForceFlags.Count;
+        foreach (var request in new[] { Request(), Go(DadWakeCommitKind.Reset, clock.Now), Go(DadWakeCommitKind.Relog, clock.Now) })
+            Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(request).Phase);
+        Assert.True(target.CaptureForceFlags.Count >= captures + 3);
+        Assert.Equal(actions, target.Actions);
+    }
+
+    [Fact]
+    public void CancelledCompletedWakeCannotRefreshOrRearmOnLateMessages()
+    {
+        var (service, target, clock) = CompletedWakeWithFreshSnapshots();
+        var cancel = Request();
+        cancel.MessageKind = DadWakeTakeoverMessageKind.Cancel;
+        Assert.Equal(DadWakeTakeoverPhase.Cancelled, service.Handle(cancel).Phase);
+        var captures = target.CaptureForceFlags.Count;
+        var actions = target.Actions.ToArray();
+        target.OnCapture = _ => throw new InvalidOperationException("Cancelled token must not inspect again.");
+        foreach (var request in new[] { StatusRequest(), Request(), Go(DadWakeCommitKind.Relog, clock.Now) })
+            Assert.Equal(DadWakeTakeoverPhase.Cancelled, service.Handle(request).Phase);
+        Assert.Equal(captures, target.CaptureForceFlags.Count);
+        Assert.Equal(actions, target.Actions);
+    }
+
+    [Fact]
+    public void OldCompletedWakeReadCannotReleaseNewerTakeoverOwnership()
+    {
+        // A mutating wake retains its restoration lease until Cancel; use an
+        // already-online completion here so a second token can legitimately own it.
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: false);
+        target.Snapshot.MultiModeEnabled = false;
+        target.Snapshot.Participant.ManagedAccountKey = new("account-a");
+        target.Snapshot.Participant.WorkerSessionId = new("worker-a");
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.NotLoaded);
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, service.Handle(Request()).Phase);
+        ExecuteGo(service, clock, DadWakeCommitKind.Reset);
+        ExecuteGo(service, clock, DadWakeCommitKind.Relog);
+        Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
+        Assert.DoesNotContain(target.Actions, IsMutation);
+        ReplaceLiveReadySnapshot(target);
+        target.Snapshot.CorrectCharacter = false;
+        target.Snapshot.Participant.ActiveCharacterKey = new("Other Character@World");
+        target.LegacyStatus = Legacy(DadVermaxionReadinessKind.NotLoaded);
+        var newer = Request();
+        newer.OperationToken = "new-operation";
+        newer.SchedulerRunId = "new-run";
+        Assert.Equal(DadWakeTakeoverPhase.Prepared, service.Handle(newer).Phase);
+        Assert.True(target.Snapshot.DadOwnsSuppression);
+        var actions = target.Actions.ToArray();
+        var reservations = target.ReserveCount;
+        var releases = target.ReleaseTokens.ToArray();
+
+        var old = service.Handle(StatusRequest());
+
+        Assert.False(DadSchedulerRoutingRules.CanAcceptReadyAcknowledgement(ReadySlot(), old));
+        Assert.True(target.Snapshot.DadOwnsSuppression);
+        Assert.Equal(actions, target.Actions);
+        Assert.Equal(reservations, target.ReserveCount);
+        Assert.Equal(releases, target.ReleaseTokens);
+        Assert.Equal("new-operation", service.GetActiveStatus()!.OperationToken);
+    }
+
+    private static (DadWakeTakeoverService Service, FakeTarget Target, TestClock Clock) CompletedWakeWithFreshSnapshots(
+        bool holdAtCompletion = false)
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        target.Snapshot.MultiModeEnabled = false;
+        target.Snapshot.Participant.ManagedAccountKey = new("account-a");
+        target.Snapshot.Participant.WorkerSessionId = new("worker-a");
+        var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        ActivateTargetCharacter(target);
+        if (holdAtCompletion)
+            target.OnSuppressionReleased = () => target.LegacyStatus = Legacy(DadVermaxionReadinessKind.Busy);
+        service.Update();
+        Assert.Equal(DadWakeTakeoverPhase.Ready, service.Handle(StatusRequest()).Phase);
+        return (service, target, clock);
+    }
+
+    private static void ReplaceLiveReadySnapshot(FakeTarget target)
+    {
+        // The real target allocates a new snapshot on each Capture. Replacing this fake's
+        // backing snapshot reproduces the stale-cache bug instead of mutating its cache in place.
+        target.Snapshot = FakeTarget.Valid(wrongCharacter: false).Snapshot;
+        target.Snapshot.MultiModeEnabled = false;
+        target.Snapshot.Participant.ManagedAccountKey = new("account-a");
+        target.Snapshot.Participant.WorkerSessionId = new("worker-a");
+    }
+
+    private static DadSchedulerSlotState ReadySlot() => new()
+    {
+        RequiredAccountKey = new("account-a"),
+        RequiredCharacterKey = new("Target Character@World"),
+        MatchedWorkerSessionId = new("worker-a"),
+    };
 
     [Fact]
     public void DestinationWaitsForCallbackCleanupThatFailedAtResetBoundary()
@@ -2379,7 +2894,7 @@ public sealed class DadWakeTakeoverServiceTests
 
     private sealed class FakeTarget : IDadWakeTakeoverTarget, IDadTitleMovieDismissalTarget
     {
-        public DadWakeTakeoverTargetSnapshot Snapshot { get; } = new();
+        public DadWakeTakeoverTargetSnapshot Snapshot { get; set; } = new();
         public DadVermaxionReservationStatus Reservation { get; } = new()
         {
             State = DadVermaxionReservationState.NotLoaded,
