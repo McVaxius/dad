@@ -362,6 +362,74 @@ public sealed class DadQuestionableRuntimeTests
         Assert.Equal(3, calls.Count(call => call == "/fr on"));
     }
 
+    [Fact]
+    public void PublishedSoloDutyIpcConvertsThroughDalamudAndPreservesPausedNormalQuestOwnership()
+    {
+        ProviderSoloDutyFixture? snapshot = new();
+        var available = true;
+        var calls = 0;
+        var channelType = typeof(IDalamudPluginInterface).Assembly.GetType("Dalamud.Plugin.Ipc.Internal.CallGateChannel", true)!;
+        var channel = Activator.CreateInstance(channelType, ["WigglyQuest.Run.GetExpectedSoloDuty"])!;
+        channelType.GetProperty("Func")!.SetValue(channel, (Func<ProviderSoloDutyFixture?>)(() => snapshot));
+        var pi = Proxy<IDalamudPluginInterface>((method, args) =>
+        {
+            if (method.Name is "add_ActivePluginsChanged" or "remove_ActivePluginsChanged")
+                return null;
+            Assert.Equal("GetIpcSubscriber", method.Name);
+            Assert.Equal("WigglyQuest.Run.GetExpectedSoloDuty", args![0]);
+            return Proxy(method.ReturnType, (call, _) => call.Name switch
+            {
+                "get_HasFunction" => available,
+                "InvokeFunc" => ConvertSnapshot(),
+                _ => throw new InvalidOperationException(call.Name),
+            });
+
+            object? ConvertSnapshot()
+            {
+                calls++;
+                return channelType.GetMethod("InvokeFunc", PrivateInstance)!
+                    .MakeGenericMethod(method.ReturnType.GenericTypeArguments[0]).Invoke(channel, [null]);
+            }
+        });
+        using var bridge = NewBridge(pi);
+        var controller = new SoloControllerFixture();
+        bool Matches(uint territory = 404, uint content = 90)
+            => (bool)Invoke(bridge, "MatchesExpectedSoloDutyIpc", controller, territory, content)!;
+        Assert.True(Matches()); // IsRunning=false is valid for the paused owning quest.
+        Assert.False(Matches(405));
+        Assert.False(Matches(content: 91));
+        snapshot!.QuestId = "other-quest";
+        Assert.False(Matches());
+        snapshot = new() { Ordinal = null };
+        Assert.False(Matches());
+        snapshot = new() { Status = "NoSoloDutyStep" };
+        Assert.False(Matches());
+        snapshot = new();
+        controller.CurrentQuest = new();
+        var before = calls;
+        Assert.False(Matches()); // A simulated/next/gathering quest cannot claim this duty.
+        Assert.Equal(before, calls);
+        controller.CurrentQuest = controller.StartedQuest;
+        snapshot = null;
+        var missing = Assert.Throws<TargetInvocationException>(() => Matches());
+        Assert.Contains("unavailable state", missing.InnerException!.Message);
+        available = false;
+        var unregistered = Assert.Throws<TargetInvocationException>(() => Matches());
+        Assert.Contains("is unavailable", unregistered.InnerException!.Message);
+    }
+
+    public sealed class ProviderSoloDutyFixture
+    {
+        public string Status { get; set; } = "Expected";
+        public bool IsRunning { get; set; }
+        public string QuestId { get; set; } = "126";
+        public byte? Sequence { get; set; } = 1;
+        public int? Step { get; set; } = 0;
+        public byte? Ordinal { get; set; } = 0;
+        public uint? ContentFinderConditionId { get; set; } = 90;
+        public uint? TerritoryId { get; set; } = 404;
+    }
+
     public sealed class SoloControllerFixture
     {
         public SoloProgressFixture StartedQuest { get; } = new();
@@ -420,9 +488,10 @@ public sealed class DadQuestionableRuntimeTests
     }
 
     [Theory]
-    [InlineData("")]
-    [InlineData("Meta.")]
-    public void WigglyQuestCheckedSettingsAndLootHandshakeDoNotDispatchWork(string prefix)
+    [InlineData("", "")]
+    [InlineData("Meta.", "Meta.")]
+    [InlineData("Meta.", "DutyConfig.")]
+    public void WigglyQuestCheckedSettingsAndLootHandshakeDoNotDispatchWork(string prefix, string dutyPrefix)
     {
         var handlers = new Dictionary<string, Delegate>();
         var outbound = new List<string>();
@@ -472,8 +541,8 @@ public sealed class DadQuestionableRuntimeTests
             set(" dutyModeEnum ", " Regular ");
             set(" leveling ", " Support ");
             set(" AutoDutyModeEnum ", " Once ");
-            // WigglyQuest 7.5.26 writes and immediately reads these names
-            // before it will request a duty. Both naming generations must
+            // WigglyQuest writes and immediately reads these names
+            // before it will request a duty. All naming generations must
             // address the same session values without starting any work.
             foreach (var (key, value) in new[] { ("AutoDutyModeEnum", "Looping"), ("Unsynced", "True"), ("DutyModeEnum", "Regular") })
             {
@@ -482,6 +551,8 @@ public sealed class DadQuestionableRuntimeTests
                 Assert.Equal(value, get(key));
                 Assert.Equal(value, get("Meta." + key));
             }
+            Assert.Equal("True", get(dutyPrefix + "AutoManageRotationPluginState"));
+            Assert.Equal("True", get(dutyPrefix + "AutoManageBossModAISettings"));
             var existingKeys = new[] { "Unsynced", "dutyModeEnum", "leveling", "AutoDutyModeEnum",
                 "AutoManageRotationPluginState", "AutoManageBossModAISettings", "UnknownKey" };
             var existingResponses = existingKeys.ToDictionary(key => key, get);
@@ -493,7 +564,7 @@ public sealed class DadQuestionableRuntimeTests
             var loot = new[] { (Key: "LootTreasure", Expected: "True", Opposite: "False"),
                 (Key: "LootBossTreasureOnly", Expected: "False", Opposite: "True"),
                 (Key: "LootMethodEnum", Expected: "AutoDuty", Opposite: "None") };
-            var original = loot.ToDictionary(item => item.Key, item => get(prefix + item.Key));
+            var original = loot.ToDictionary(item => item.Key, item => get(dutyPrefix + item.Key));
             Assert.True(stopped());
             Assert.Empty(outbound);
             foreach (var item in loot)
@@ -504,11 +575,11 @@ public sealed class DadQuestionableRuntimeTests
             foreach (var item in loot)
             {
                 var value = phase == "force" ? item.Expected : phase == "opposite" ? item.Opposite : original[item.Key];
-                set(phase == "force" ? prefix + item.Key : $" \t{prefix}{item.Key.ToUpperInvariant()} ", $" {value} ");
+                set(phase == "force" ? dutyPrefix + item.Key : $" \t{dutyPrefix}{item.Key.ToUpperInvariant()} ", $" {value} ");
                 foreach (var expected in loot)
                 {
                     Assert.Equal(expected.Expected, get(expected.Key));
-                    Assert.Equal(expected.Expected, get(prefix + expected.Key));
+                    Assert.Equal(expected.Expected, get(dutyPrefix + expected.Key));
                     Assert.Equal(expected.Expected, get($" \t{expected.Key.ToLowerInvariant()} "));
                 }
                 foreach (var (key, response) in existingResponses)
@@ -526,6 +597,153 @@ public sealed class DadQuestionableRuntimeTests
             foreach (var (name, value) in previous)
                 pluginType.GetProperty(name)!.SetValue(null, value);
         }
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public void CurrentDutyRecommendationAndPriorListRestoreOnlyWhileOwned(bool singleRequirement, bool externalReplacement)
+    {
+        var exposed = Exposed("WigglyQuest", wrapperType: CreateWrapperType(singleRequirement: singleRequirement));
+        var instance = typeof(Bridge).GetMethod("ResolveQuestionableInstance", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [exposed])!;
+        var assembly = instance.GetType().Assembly;
+        var componentType = assembly.GetType("Questionable.Windows.ConfigComponents.PluginConfigComponent")!;
+        var providerType = componentType.GetNestedType("PluginProvider")!;
+        var requirementType = componentType.GetNestedType("PluginRequirement")!;
+        var component = Activator.CreateInstance(componentType)!;
+        object Requirement(string name)
+        {
+            var provider = Activator.CreateInstance(providerType, [name, name, new Uri("https://example.test/"), null, null])!;
+            var providers = Array.CreateInstance(providerType, 1);
+            providers.SetValue(provider, 0);
+            return Activator.CreateInstance(requirementType, [name, name, providers, null, null, null])!;
+        }
+        var originalDuty = Requirement("AutoDuty");
+        var other = Requirement("Other");
+        var field = componentType.GetField(singleRequirement ? "_dutyPlugin" : "_recommendedPlugins")!;
+        var list = Array.CreateInstance(requirementType, 3);
+        list.SetValue(other, 0);
+        list.SetValue(originalDuty, 1);
+        list.SetValue(other, 2);
+        var original = singleRequirement ? originalDuty : list;
+        field.SetValue(component, original);
+        instance.GetType().GetField("_serviceProvider")!.SetValue(instance,
+            Proxy<IServiceProvider>((_, args) => (Type)args![0]! == componentType ? component : null));
+        var pi = Proxy<IDalamudPluginInterface>((method, _) => method.Name == "get_InstalledPlugins" ? new[] { exposed } : null);
+        using var bridge = NewBridge(pi);
+        var prepared = Invoke(bridge, "PrepareCosmeticPatch", instance)!;
+        Invoke(bridge, "ApplyCosmeticPatch", prepared);
+        var replacement = field.GetValue(component)!;
+        Assert.NotSame(original, replacement);
+        var entry = singleRequirement ? replacement : ((Array)replacement).GetValue(1)!;
+        Assert.Equal("Dad duty bridge", requirementType.GetProperty("GroupName")!.GetValue(entry));
+        var replacementProviders = (IEnumerable)requirementType.GetProperty("Providers")!.GetValue(entry)!;
+        Assert.Equal("dad", providerType.GetProperty("InternalName")!.GetValue(Assert.Single(replacementProviders.Cast<object>())));
+        if (!singleRequirement)
+        {
+            Assert.Same(other, ((Array)replacement).GetValue(0));
+            Assert.Same(other, ((Array)replacement).GetValue(2));
+        }
+        var owned = typeof(Bridge).GetField("cosmeticOwnership", PrivateInstance)!.GetValue(bridge)!;
+        Assert.True((bool)typeof(Bridge).GetMethod("IsCosmeticFullyOwned", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [owned])!);
+        var external = singleRequirement ? other : list.Clone();
+        if (externalReplacement) field.SetValue(component, external);
+        bridge.Dispose();
+        Assert.Same(externalReplacement ? external : original, field.GetValue(component));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void CoreAutoDutySubscribersRouteAndRestoreWithoutForkExtensions(bool getConfig, bool start)
+    {
+        var exposed = Exposed("Questionable", wrapperType: CreateWrapperType(getConfig, start));
+        var calls = new List<string>();
+        var pi = Proxy<IDalamudPluginInterface>((method, args) => method.Name switch
+        {
+            "get_InstalledPlugins" => new[] { exposed },
+            "GetIpcSubscriber" => Proxy(method.ReturnType, (call, _) =>
+            {
+                calls.Add($"{args![0]}:{call.Name}");
+                return null;
+            }),
+            _ => null,
+        });
+        using var bridge = NewBridge(pi);
+        var instance = typeof(Bridge).GetMethod("ResolveQuestionableInstance", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [exposed])!;
+        var assembly = instance.GetType().Assembly;
+        var config = Activator.CreateInstance(assembly.GetType("Questionable.Configuration")!)!;
+        var auto = Activator.CreateInstance(assembly.GetType("Questionable.External.AutoDutyIpc")!)!;
+        auto.GetType().GetField("_configuration")!.SetValue(auto, config);
+        var originals = new Dictionary<FieldInfo, object>();
+        foreach (var field in auto.GetType().GetFields().Where(field => field.Name != "_configuration"))
+        {
+            var original = Proxy(field.FieldType, (_, _) => null);
+            originals.Add(field, original);
+            field.SetValue(auto, original);
+        }
+        instance.GetType().GetField("_serviceProvider")!.SetValue(instance,
+            Proxy<IServiceProvider>((_, args) => (Type)args![0]! == auto.GetType() ? auto : config));
+
+        var prepared = Invoke(bridge, "PreparePatch", exposed, instance)!;
+        Invoke(bridge, "ApplyPatch", prepared);
+        Assert.Equal(5 + (getConfig ? 1 : 0) + (start ? 1 : 0), originals.Count);
+        Assert.True(((QuestionableConfigFixture)config).Duties.RunInstancedContentWithAutoDuty);
+        foreach (var (field, original) in originals)
+            Assert.NotSame(original, field.GetValue(auto));
+        ((ICallGateSubscriber<uint, int, bool, object>)auto.GetType().GetField("_run")!.GetValue(auto)!).InvokeAction(123, 1, false);
+        Assert.Equal(new[] { "dad.Duty.Run:InvokeAction" }, calls);
+        var stop = auto.GetType().GetField("_stop")!;
+        var external = Proxy<ICallGateSubscriber<object>>((_, _) => null);
+        stop.SetValue(auto, external);
+        bridge.Dispose();
+        foreach (var (field, original) in originals)
+            Assert.Same(field.Name == "_stop" ? external : original, field.GetValue(auto));
+        Assert.False(((QuestionableConfigFixture)config).Duties.RunInstancedContentWithAutoDuty);
+    }
+
+    [Theory]
+    [InlineData("_contentHasPath", false)]
+    [InlineData("_setConfig", false)]
+    [InlineData("_run", false)]
+    [InlineData("_isStopped", false)]
+    [InlineData("_stop", false)]
+    [InlineData("_getConfig", true)]
+    [InlineData("_start", true)]
+    public void InvalidSubscriberContractFailsBeforeMutation(string fieldName, bool wrongType)
+    {
+        var exposed = Exposed("Questionable", wrapperType: CreateWrapperType(
+            missingCoreField: wrongType ? null : fieldName, wrongTypeField: wrongType ? fieldName : null));
+        var pi = Proxy<IDalamudPluginInterface>((method, _) => method.Name switch
+        {
+            "get_InstalledPlugins" => new[] { exposed },
+            "GetIpcSubscriber" => Proxy(method.ReturnType, (_, _) => null),
+            _ => null,
+        });
+        using var bridge = NewBridge(pi);
+        var instance = typeof(Bridge).GetMethod("ResolveQuestionableInstance", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [exposed])!;
+        var assembly = instance.GetType().Assembly;
+        var config = Activator.CreateInstance(assembly.GetType("Questionable.Configuration")!)!;
+        var auto = Activator.CreateInstance(assembly.GetType("Questionable.External.AutoDutyIpc")!)!;
+        auto.GetType().GetField("_configuration")!.SetValue(auto, config);
+        var originals = new Dictionary<FieldInfo, object>();
+        foreach (var field in auto.GetType().GetFields().Where(field => field.Name != "_configuration"))
+        {
+            var original = field.FieldType == typeof(object) ? new object() : Proxy(field.FieldType, (_, _) => null);
+            originals.Add(field, original);
+            field.SetValue(auto, original);
+        }
+        instance.GetType().GetField("_serviceProvider")!.SetValue(instance,
+            Proxy<IServiceProvider>((_, args) => (Type)args![0]! == auto.GetType() ? auto : config));
+
+        var error = Assert.Throws<TargetInvocationException>(() => Invoke(bridge, "PreparePatch", exposed, instance));
+        Assert.Contains(fieldName, error.InnerException!.Message);
+        foreach (var (field, original) in originals)
+            Assert.Same(original, field.GetValue(auto));
+        Assert.False(((QuestionableConfigFixture)config).Duties.RunInstancedContentWithAutoDuty);
     }
 
     [Theory]
@@ -734,7 +952,7 @@ public sealed class DadQuestionableRuntimeTests
         return fixture;
     }
 
-    private static Type CreateWrapperType()
+    private static Type CreateWrapperType(bool getConfig = true, bool start = true, string? missingCoreField = null, string? wrongTypeField = null, bool? singleRequirement = null)
     {
         var module = AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("QuestionableRenameDoubles"), AssemblyBuilderAccess.Run)
             .DefineDynamicModule("Doubles");
@@ -745,8 +963,30 @@ public sealed class DadQuestionableRuntimeTests
                  { ("_contentHasPath", typeof(ICallGateSubscriber<uint, bool>)), ("_getConfig", typeof(ICallGateSubscriber<string, string>)),
                    ("_setConfig", typeof(ICallGateSubscriber<string, string, object>)), ("_run", typeof(ICallGateSubscriber<uint, int, bool, object>)),
                    ("_start", typeof(ICallGateSubscriber<bool, object>)), ("_isStopped", typeof(ICallGateSubscriber<bool>)), ("_stop", typeof(ICallGateSubscriber<object>)) })
-            auto.DefineField(name, type, FieldAttributes.Public);
+        {
+            if ((name == "_getConfig" && !getConfig) || (name == "_start" && !start) || name == missingCoreField)
+                continue;
+            auto.DefineField(name, name == wrongTypeField ? typeof(object) : type, FieldAttributes.Public);
+        }
         auto.CreateType();
+        if (singleRequirement.HasValue)
+        {
+            var component = module.DefineType("Questionable.Windows.ConfigComponents.PluginConfigComponent", TypeAttributes.Public);
+            var provider = CreateRecordShape(component.DefineNestedType("PluginProvider", TypeAttributes.NestedPublic),
+                ("DisplayName", typeof(string)), ("InternalName", typeof(string)), ("WebsiteUri", typeof(Uri)),
+                ("DalamudRepositoryUri", typeof(Uri)), ("DalamudRepositoryAliases", typeof(IReadOnlyList<Uri>)));
+            var detail = component.DefineNestedType("PluginDetailInfo", TypeAttributes.NestedPublic);
+            var requirement = CreateRecordShape(component.DefineNestedType("PluginRequirement", TypeAttributes.NestedPublic),
+                ("GroupName", typeof(string)), ("Description", typeof(string)), ("Providers", typeof(IReadOnlyList<>).MakeGenericType(provider)),
+                ("ConfigCommand", typeof(string)), ("DetailsToCheck", typeof(List<>).MakeGenericType(detail)),
+                ("ExtraLink", typeof((string Label, Uri Uri)?)));
+            component.DefineField(singleRequirement.Value ? "_dutyPlugin" : "_recommendedPlugins",
+                singleRequirement.Value ? requirement : typeof(IReadOnlyList<>).MakeGenericType(requirement), FieldAttributes.Public);
+            component.CreateType();
+            provider.CreateType();
+            detail.CreateType();
+            requirement.CreateType();
+        }
         var pluginBuilder = module.DefineType("Questionable.QuestionablePlugin", TypeAttributes.Public);
         pluginBuilder.DefineField("_serviceProvider", typeof(IServiceProvider), FieldAttributes.Public);
         var plugin = pluginBuilder.CreateType()!;
@@ -780,15 +1020,42 @@ public sealed class DadQuestionableRuntimeTests
         return wrapper.CreateType()!;
     }
 
-    private static IExposedPlugin Exposed(string name, bool loaded = true)
+    private static TypeBuilder CreateRecordShape(TypeBuilder builder, params (string Name, Type Type)[] properties)
     {
-        var wrapper = Activator.CreateInstance(WrapperType)!;
-        WrapperType.GetField("TestName")!.SetValue(wrapper, name);
-        WrapperType.GetField("TestLoaded")!.SetValue(wrapper, loaded);
-        var localField = WrapperType.GetField("<plugin>P")!;
+        var constructor = builder.DefineConstructor(MethodAttributes.Public, CallingConventions.Standard,
+            properties.Select(property => property.Type).ToArray());
+        var il = constructor.GetILGenerator();
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
+        for (var index = 0; index < properties.Length; index++)
+        {
+            var (name, type) = properties[index];
+            var field = builder.DefineField("_" + name, type, FieldAttributes.Private | FieldAttributes.InitOnly);
+            var property = builder.DefineProperty(name, PropertyAttributes.None, type, Type.EmptyTypes);
+            var getter = builder.DefineMethod("get_" + name, MethodAttributes.Public | MethodAttributes.SpecialName, type, Type.EmptyTypes);
+            var get = getter.GetILGenerator();
+            get.Emit(OpCodes.Ldarg_0);
+            get.Emit(OpCodes.Ldfld, field);
+            get.Emit(OpCodes.Ret);
+            property.SetGetMethod(getter);
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldarg, (short)(index + 1));
+            il.Emit(OpCodes.Stfld, field);
+        }
+        il.Emit(OpCodes.Ret);
+        return builder;
+    }
+
+    private static IExposedPlugin Exposed(string name, bool loaded = true, Type? wrapperType = null)
+    {
+        wrapperType ??= WrapperType;
+        var wrapper = Activator.CreateInstance(wrapperType)!;
+        wrapperType.GetField("TestName")!.SetValue(wrapper, name);
+        wrapperType.GetField("TestLoaded")!.SetValue(wrapper, loaded);
+        var localField = wrapperType.GetField("<plugin>P")!;
         var local = Activator.CreateInstance(localField.FieldType)!;
         localField.FieldType.GetField("instance")!.SetValue(local,
-            Activator.CreateInstance(WrapperType.Assembly.GetType("Questionable.QuestionablePlugin")!));
+            Activator.CreateInstance(wrapperType.Assembly.GetType("Questionable.QuestionablePlugin")!));
         localField.SetValue(wrapper, local);
         return (IExposedPlugin)wrapper;
     }

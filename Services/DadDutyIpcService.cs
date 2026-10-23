@@ -295,7 +295,9 @@ public sealed class DadDutyIpcService : IDisposable
     private static string NormalizeConfigKey(string key)
     {
         var trimmed = key.Trim();
-        return trimmed.StartsWith("Meta.", StringComparison.OrdinalIgnoreCase) ? trimmed[5..] : trimmed;
+        if (trimmed.StartsWith("Meta.", StringComparison.OrdinalIgnoreCase))
+            return trimmed[5..];
+        return trimmed.StartsWith("DutyConfig.", StringComparison.OrdinalIgnoreCase) ? trimmed[11..] : trimmed;
     }
 
     private string GetConfig(string key)

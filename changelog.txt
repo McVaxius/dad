@@ -1,6 +1,13 @@
 2026-10-22
  - i farted really loud and it woke me up
 
+2026-10-22 - Published Questionable duty bridge compatibility
+
+- Accept the five core AutoDuty subscribers in published Questionable and patch GetConfig/Start only when those fork extensions exist. Keep exact field types, mandatory core validation before mutation, and restoration of only still-owned values.
+- Accept WigglyQuest 7.5.30's DutyConfig-prefixed combat/loot queries and writes alongside existing plain/Meta names. Keep loot acknowledgements free of configuration changes or work dispatch.
+- Read WigglyQuest's expected solo duty through its published IPC while retaining normal started-quest ownership and paused-duty handling. Update its existing dedicated duty-dependency entry with the same owned restoration used for older recommendation lists.
+- Cover five/six/seven-subscriber contracts, rejected missing/mistyped fields and owned cleanup through the production bridge. No version, deployment or live-client change.
+
 2026-10-22 - Startup and independent lobby protection (I620)
 
 - Remove the duplicate Auto translation entry across supported languages so UI resource validation can complete. Validate appearance before creating services that own hooks or subscriptions.

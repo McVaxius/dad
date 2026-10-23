@@ -132,6 +132,7 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
 
     private sealed class PreparedCosmeticPatch
     {
+        public bool SingleRequirement { get; init; }
         public required object QuestionableInstance { get; init; }
         public required object PluginConfigComponent { get; init; }
         public required FieldInfo RecommendedPluginsField { get; init; }
@@ -144,6 +145,7 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
 
     private sealed class CosmeticPatchOwnership
     {
+        public bool SingleRequirement { get; init; }
         public required object QuestionableInstance { get; init; }
         public required object PluginConfigComponent { get; init; }
         public required FieldInfo RecommendedPluginsField { get; init; }
@@ -330,6 +332,8 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
             var assembly = instance.GetType().Assembly;
             var controllerType = assembly.GetType("Questionable.Controller.QuestController", true)!;
             var controller = provider.GetService(controllerType)!;
+            if (string.Equals(exposed.InternalName, "WigglyQuest", StringComparison.OrdinalIgnoreCase))
+                return (inDuty, ready, MatchesExpectedSoloDutyIpc(controller, territory, content), territory, content);
             var dataType = assembly.GetType("Questionable.Data.TerritoryData", true)!;
             var data = provider.GetService(dataType)!;
             return (inDuty, ready, MatchesSoloQuestStep(controller, data, territory, content), territory, content);
@@ -344,6 +348,39 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
             }
             return (inDuty, ready, false, territory, content);
         }
+    }
+
+    public sealed class ExpectedSoloDutySnapshot
+    {
+        public string? Status { get; set; }
+        public string? QuestId { get; set; }
+        public byte? Sequence { get; set; }
+        public int? Step { get; set; }
+        public byte? Ordinal { get; set; }
+        public uint? ContentFinderConditionId { get; set; }
+        public uint? TerritoryId { get; set; }
+    }
+
+    internal bool MatchesExpectedSoloDutyIpc(object controller, uint territory, uint content)
+    {
+        var controllerType = controller.GetType();
+        var progress = RequireProperty(controllerType, "CurrentQuest").GetValue(controller);
+        if (territory == 0 || content == 0 || progress == null ||
+            !ReferenceEquals(progress, RequireProperty(controllerType, "StartedQuest").GetValue(controller)))
+            return false;
+
+        // The provider snapshot also covers simulated/next quests. Retain normal-quest
+        // ownership above, and allow the matching started quest to be paused in its duty.
+        var subscriber = pluginInterface.GetIpcSubscriber<ExpectedSoloDutySnapshot?>("WigglyQuest.Run.GetExpectedSoloDuty");
+        if (!subscriber.HasFunction)
+            throw Incompatible("WigglyQuest.Run.GetExpectedSoloDuty is unavailable.");
+        var expected = subscriber.InvokeFunc()
+            ?? throw Incompatible("WigglyQuest.Run.GetExpectedSoloDuty returned unavailable state.");
+        var quest = RequireProperty(progress.GetType(), "Quest").GetValue(progress)!;
+        var questId = RequireProperty(quest.GetType(), "Id").GetValue(quest)?.ToString();
+        return expected.Status == "Expected" && !string.IsNullOrEmpty(questId) && expected.QuestId == questId &&
+               expected.Sequence.HasValue && expected.Step is >= 0 && expected.Ordinal.HasValue &&
+               expected.TerritoryId == territory && expected.ContentFinderConditionId == content;
     }
 
     internal static bool MatchesSoloQuestStep(object controller, object data, uint territory, uint content)
@@ -739,7 +776,14 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         var subscribers = new List<SubscriberTarget>(replacements.Length);
         foreach (var replacement in replacements)
         {
-            var field = RequireField(autoDutyType, replacement.FieldName);
+            var field = autoDutyType.GetField(replacement.FieldName, InstanceFields);
+            if (field == null)
+            {
+                // These subscribers are fork extensions, absent in published Questionable.
+                if (replacement.FieldName is "_getConfig" or "_start")
+                    continue;
+                throw Incompatible($"Missing field {autoDutyType.FullName}.{replacement.FieldName}.");
+            }
             if (field.FieldType != replacement.ExpectedType)
             {
                 throw Incompatible(
@@ -858,18 +902,21 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         var extraLinkProperty = RequireReadableProperty(pluginRequirementType, "ExtraLink", extraLinkType);
 
         var expectedListType = typeof(IReadOnlyList<>).MakeGenericType(pluginRequirementType);
-        var recommendedPluginsField = RequireField(pluginConfigComponentType, "_recommendedPlugins");
-        if (recommendedPluginsField.FieldType != expectedListType)
+        var dutyPluginField = pluginConfigComponentType.GetField("_dutyPlugin", InstanceFields);
+        var singleRequirement = dutyPluginField != null;
+        var recommendedPluginsField = dutyPluginField ?? RequireField(pluginConfigComponentType, "_recommendedPlugins");
+        var expectedFieldType = singleRequirement ? pluginRequirementType : expectedListType;
+        if (recommendedPluginsField.FieldType != expectedFieldType)
         {
             throw Incompatible(
-                $"{PluginConfigComponentTypeName}._recommendedPlugins expected {expectedListType.FullName}, found {recommendedPluginsField.FieldType.FullName}.");
+                $"{PluginConfigComponentTypeName}.{recommendedPluginsField.Name} expected {expectedFieldType.FullName}, found {recommendedPluginsField.FieldType.FullName}.");
         }
         var currentList = recommendedPluginsField.GetValue(pluginConfigComponent)
-            ?? throw Incompatible($"{PluginConfigComponentTypeName}._recommendedPlugins returned null.");
-        if (!expectedListType.IsInstanceOfType(currentList))
+            ?? throw Incompatible($"{PluginConfigComponentTypeName}.{recommendedPluginsField.Name} returned null.");
+        if (!expectedFieldType.IsInstanceOfType(currentList))
         {
             throw Incompatible(
-                $"{PluginConfigComponentTypeName}._recommendedPlugins value does not implement {expectedListType.FullName}.");
+                $"{PluginConfigComponentTypeName}.{recommendedPluginsField.Name} value does not implement {expectedFieldType.FullName}.");
         }
 
         var sourceList = currentList;
@@ -880,12 +927,12 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         {
             sourceList = cosmeticOwnership.OriginalList;
         }
-        if (sourceList is not System.Collections.IEnumerable sourceEntries)
-            throw Incompatible($"{PluginConfigComponentTypeName}._recommendedPlugins value is not enumerable.");
-
-        var entries = sourceEntries.Cast<object>().ToList();
+        var entries = singleRequirement
+            ? new List<object> { sourceList }
+            : (sourceList as System.Collections.IEnumerable)?.Cast<object>().ToList()
+              ?? throw Incompatible($"{PluginConfigComponentTypeName}._recommendedPlugins value is not enumerable.");
         if (entries.Any(entry => entry == null || !pluginRequirementType.IsInstanceOfType(entry)))
-            throw Incompatible($"{PluginConfigComponentTypeName}._recommendedPlugins contains an incompatible requirement.");
+            throw Incompatible($"{PluginConfigComponentTypeName}.{recommendedPluginsField.Name} contains an incompatible requirement.");
         var autoDutyIndexes = entries
             .Select((entry, index) => new
             {
@@ -903,7 +950,7 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
         if (autoDutyIndexes.Count != 1)
         {
             throw Incompatible(
-                $"{PluginConfigComponentTypeName}._recommendedPlugins expected exactly one {AutoDutyInternalName} requirement, found {autoDutyIndexes.Count}.");
+                $"{PluginConfigComponentTypeName}.{recommendedPluginsField.Name} expected exactly one {AutoDutyInternalName} requirement, found {autoDutyIndexes.Count}.");
         }
 
         var dadRepositoryUri = new Uri(DadRepositoryUrl);
@@ -945,11 +992,12 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
 
         return new PreparedCosmeticPatch
         {
+            SingleRequirement = singleRequirement,
             QuestionableInstance = questionableInstance,
             PluginConfigComponent = pluginConfigComponent,
             RecommendedPluginsField = recommendedPluginsField,
             OriginalList = sourceList,
-            ReplacementList = replacementList,
+            ReplacementList = singleRequirement ? replacementEntry : replacementList,
             ReplacementEntry = replacementEntry,
             ReplacementIndex = replacementIndex,
             ExpectedEntries = expectedEntries,
@@ -1117,6 +1165,7 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
     {
         cosmeticOwnership = new CosmeticPatchOwnership
         {
+            SingleRequirement = prepared.SingleRequirement,
             QuestionableInstance = prepared.QuestionableInstance,
             PluginConfigComponent = prepared.PluginConfigComponent,
             RecommendedPluginsField = prepared.RecommendedPluginsField,
@@ -1231,6 +1280,9 @@ public sealed class DadQuestionableReflectionBridge : IDisposable
             {
                 return false;
             }
+
+            if (patch.SingleRequirement)
+                return ReferenceEquals(patch.ReplacementList, patch.ReplacementEntry);
 
             if (patch.ReplacementList is not Array replacementList ||
                 replacementList.Length != patch.ExpectedEntries.Count ||
