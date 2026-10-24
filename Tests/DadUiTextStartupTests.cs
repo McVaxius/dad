@@ -30,7 +30,17 @@ namespace dad.Tests
             Assert.False(string.IsNullOrWhiteSpace(expectedProtection));
             Assert.Equal(expectedAuto, UiText.T("Auto"));
             Assert.Equal(expectedPicker, UiText.T("Picker"));
+            foreach (var caption in new[] { "LCARS", "Mute UI sounds", "Unmute UI sounds", "LCARS panels and outlined controls. Picker colours are retained.", "Audio output is unavailable." })
+            {
+                Assert.False(string.IsNullOrWhiteSpace(text.Resources.GetString(caption, false)));
+                Assert.Equal(text.Resources.GetString(caption, false), UiText.T(caption));
+            }
             Assert.Equal(expectedProtection, UiText.T("Lobby protection is enabled."));
+            Assert.Equal(text.Resources.GetString("trust_ui_026", false), UiText.T("NPC leveling"));
+            Assert.Equal(text.Resources.GetString("trust_ui_027", false), UiText.T("NPC roster"));
+            Assert.Equal(text.Resources.GetString("trust_ui_048", false), UiText.T("Trust presets"));
+            Assert.Equal(text.Resources.GetString("trust_ui_028", false), UiText.T("NPC target level"));
+            Assert.Equal(text.Resources.GetString("trust_ui_032", false), UiText.T("Player-job target level"));
             Assert.Equal(text.Resources.GetString("ui_accounts_enable_selected", false), UiText.T("Enable selected"));
             Assert.Equal(text.Resources.GetString("ui_accounts_revision_conflict", false),
                 UiText.T("Revision conflict; cancel and edit again."));

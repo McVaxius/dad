@@ -39,6 +39,8 @@
     <Compile Include="..\Services\DadCharacterXadbMergeRules.cs" Link="DadCharacterXadbMergeRules.cs" />
     <Compile Include="..\Services\DadXadbRefreshResultRules.cs" Link="DadXadbRefreshResultRules.cs" />
     <Compile Include="..\Services\DadRosterKnownCharacterLedger.cs" Link="DadRosterKnownCharacterLedger.cs" />
+    <Compile Include="..\Services\DadTrustProgressRules.cs" Link="DadTrustProgressRules.cs" />
+    <Compile Include="..\Services\DadTrustPartySelector.cs" Link="DadTrustPartySelector.cs" />
     <Compile Include="..\Services\DadRosterKnowledgeLearningCursor.cs" Link="DadRosterKnowledgeLearningCursor.cs" />
     <Compile Include="..\Services\DadRosterKnowledgeSourceRules.cs" Link="DadRosterKnowledgeSourceRules.cs" />
     <Compile Include="..\Services\DadRosterTransportCatalogRuntime.cs" Link="DadRosterTransportCatalogRuntime.cs" />

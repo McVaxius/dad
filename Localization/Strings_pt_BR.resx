@@ -8867,4 +8867,62 @@
   <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} alteração(ões) pendente(s)</value></data>
   <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Os personagens são ativados por padrão. Edite os perfis salvos aqui sem entrar com cada personagem.</value></data>
   <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Salvamento da conta em andamento</value></data>
+  <data name="trust_ui_001" xml:space="preserve"><value>Todos os companheiros disponíveis</value></data>
+  <data name="trust_ui_002" xml:space="preserve"><value>Todas as metas de nível do Trust selecionadas foram atingidas.</value></data>
+  <data name="trust_ui_003" xml:space="preserve"><value>Versátil</value></data>
+  <data name="trust_ui_004" xml:space="preserve"><value>Equilibre os níveis dos companheiros ou salve um grupo fixo de Trust.</value></data>
+  <data name="trust_ui_005" xml:space="preserve"><value>Escolher</value></data>
+  <data name="trust_ui_006" xml:space="preserve"><value>Escolha um personagem da sua conta em Equipe antes de criar uma predefinição de Trust.</value></data>
+  <data name="trust_ui_007" xml:space="preserve"><value>Companheiro</value></data>
+  <data name="trust_ui_008" xml:space="preserve"><value>Companheiro {0}</value></data>
+  <data name="trust_ui_009" xml:space="preserve"><value>Companheiros</value></data>
+  <data name="trust_ui_010" xml:space="preserve"><value>Os companheiros param no próprio nível máximo.</value></data>
+  <data name="trust_ui_011" xml:space="preserve"><value>Masmorras compatíveis</value></data>
+  <data name="trust_ui_012" xml:space="preserve"><value>Masmorra</value></data>
+  <data name="trust_ui_013" xml:space="preserve"><value>Jobs que já atingiram a meta ainda podem ajudar os companheiros a subir de nível.</value></data>
+  <data name="trust_ui_014" xml:space="preserve"><value>Jobs que o DAD pode usar</value></data>
+  <data name="trust_ui_015" xml:space="preserve"><value>Última atualização</value></data>
+  <data name="trust_ui_016" xml:space="preserve"><value>Nível</value></data>
+  <data name="trust_ui_017" xml:space="preserve"><value>Nível {0}</value></data>
+  <data name="trust_ui_018" xml:space="preserve"><value>Nível máximo</value></data>
+  <data name="trust_ui_019" xml:space="preserve"><value>Subir meus jobs também</value></data>
+  <data name="trust_ui_020" xml:space="preserve"><value>Os níveis pertencem a este personagem. Atualize-os antes de montar um grupo.</value></data>
+  <data name="trust_ui_021" xml:space="preserve"><value>Bloqueado</value></data>
+  <data name="trust_ui_022" xml:space="preserve"><value>Requer atenção</value></data>
+  <data name="trust_ui_023" xml:space="preserve"><value>Novo</value></data>
+  <data name="trust_ui_024" xml:space="preserve"><value>Próxima execução</value></data>
+  <data name="trust_ui_025" xml:space="preserve"><value>Nenhuma masmorra compatível. Verifique as funções, os níveis e os desbloqueios do grupo.</value></data>
+  <data name="trust_ui_026" xml:space="preserve"><value>Evolução de NPCs</value></data>
+  <data name="trust_ui_027" xml:space="preserve"><value>Lista de NPCs</value></data>
+  <data name="trust_ui_028" xml:space="preserve"><value>Nível alvo dos NPCs</value></data>
+  <data name="trust_ui_029" xml:space="preserve"><value>Apenas masmorras disponíveis para o grupo inteiro são listadas.</value></data>
+  <data name="trust_ui_030" xml:space="preserve"><value>Própria conta</value></data>
+  <data name="trust_ui_031" xml:space="preserve"><value>O grupo, o job e a masmorra são atualizados após cada execução.</value></data>
+  <data name="trust_ui_032" xml:space="preserve"><value>Nível alvo dos jobs do jogador</value></data>
+  <data name="trust_ui_033" xml:space="preserve"><value>Prévia da predefinição</value></data>
+  <data name="trust_ui_034" xml:space="preserve"><value>À distância</value></data>
+  <data name="trust_ui_035" xml:space="preserve"><value>Atualize os níveis no cliente deste personagem.</value></data>
+  <data name="trust_ui_036" xml:space="preserve"><value>Atualizar níveis do Trust</value></data>
+  <data name="trust_ui_037" xml:space="preserve"><value>Atualizando níveis do Trust...</value></data>
+  <data name="trust_ui_038" xml:space="preserve"><value>Executar predefinição</value></data>
+  <data name="trust_ui_039" xml:space="preserve"><value>Usar este grupo exatamente como salvo.</value></data>
+  <data name="trust_ui_040" xml:space="preserve"><value>Ryne participa apenas de conteúdo de Shadowbringers.</value></data>
+  <data name="trust_ui_041" xml:space="preserve"><value>Salvar predefinição</value></data>
+  <data name="trust_ui_042" xml:space="preserve"><value>Salvar configuração</value></data>
+  <data name="trust_ui_043" xml:space="preserve"><value>Salve as alterações antes de iniciar ou agendar.</value></data>
+  <data name="trust_ui_044" xml:space="preserve"><value>Salvar não inicia uma execução.</value></data>
+  <data name="trust_ui_045" xml:space="preserve"><value>Selecione um companheiro para ver masmorras compatíveis.</value></data>
+  <data name="trust_ui_046" xml:space="preserve"><value>Iniciar evolução</value></data>
+  <data name="trust_ui_047" xml:space="preserve"><value>Esta predefinição mudou. Selecione-a novamente antes de salvar.</value></data>
+  <data name="trust_ui_048" xml:space="preserve"><value>Predefinições de Trust</value></data>
+  <data name="trust_ui_049" xml:space="preserve"><value>Você: {0} {1}</value></data>
+  <data name="trust_ui_050" xml:space="preserve"><value>Seu job</value></data>
+  <data name="trust_ui_051" xml:space="preserve"><value>Seu grupo de Trust</value></data>
+  <data name="trust_ui_052" xml:space="preserve"><value>Client Dad pode agendar Duty Support ou Trust solo para a própria conta; outras tarefas exigem Dad Coordinator.</value></data>
+  <data name="trust_ui_053" xml:space="preserve"><value>Abrir Trust</value></data>
+  <data name="LCARS" xml:space="preserve"><value>LCARS</value></data>
+  <data name="Mute UI sounds" xml:space="preserve"><value>Silenciar sons da interface</value></data>
+  <data name="Unmute UI sounds" xml:space="preserve"><value>Ativar sons da interface</value></data>
+  <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>Painéis LCARS e controles com contorno. As cores do seletor são mantidas.</value></data>
+  <data name="Audio output is unavailable." xml:space="preserve"><value>A saída de áudio está indisponível.</value></data>
 </root>

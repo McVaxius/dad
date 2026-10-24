@@ -85,6 +85,7 @@ internal static class DadPresentation
     }
     internal static void Surface(Vector2 min, Vector2 max, bool raised = false)
     {
+        if (MaterialTheme.Current.IsLcars) { MaterialLcars.PanelFrame(min, max); return; }
         var c = MaterialTheme.Current.Colors;
         MaterialCanvas.Surface(min, max, raised ? c.SurfaceContainerHigh : c.Surface, c.Background, 4 * MaterialTheme.Metrics.Scale);
         Dalamud.Bindings.ImGui.ImGui.GetWindowDrawList().AddRect(min, max, MaterialCanvas.Color(c.OutlineVariant), 4 * MaterialTheme.Metrics.Scale);

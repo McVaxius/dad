@@ -87,6 +87,7 @@ public sealed class DadShoppingWizardWindow : Window
     public override void Draw()
     {
         motion.DrawChrome();
+        if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         using var controls = MaterialControls.Push(MaterialControlContext.Dense);
         UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         MaterialText.Text(UiText.F("Step {0} of 4 — {1}", step + 1, UiText.T(Steps[step])));

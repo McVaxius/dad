@@ -20,6 +20,7 @@ public sealed class DadCharacterIntelligenceService
     private readonly DadTransportService transportService;
     private readonly IPluginLog log;
     private readonly Func<DadAcquiredCharacter?>? localCharacterObservation;
+    private Func<DadAcquiredCharacter, DadTrustProgress?>? trustObservation;
     private readonly DadSemanticRevisionTracker<global::dad.DadPlannerRosterSemantic>
         plannerSemanticRevisionTracker = new();
     // B5: fires once per distinct (active job, level) change of the local character, never on first capture.
@@ -50,6 +51,9 @@ public sealed class DadCharacterIntelligenceService
 
     public DadCharacterPool CurrentPool { get; private set; }
     internal long PlannerSemanticRevision => plannerSemanticRevisionTracker.Revision;
+
+    public void ConfigureTrustObservation(Func<DadAcquiredCharacter, DadTrustProgress?> observe)
+        => trustObservation = observe;
 
     public void Update()
     {
@@ -176,7 +180,8 @@ public sealed class DadCharacterIntelligenceService
                     character.XadbReady,
                     character.RosterVisibility,
                     character.NeedsRosterUpdate,
-                    character.MapEligible)))));
+                    character.MapEligible,
+                    new DadTrustProgressSemantic(character.TrustProgress))))));
 
     public string GetCharacterPoolJson()
         => JsonSerializer.Serialize(CurrentPool, PoolJsonOptions);
@@ -245,7 +250,7 @@ public sealed class DadCharacterIntelligenceService
         try
         {
             if (localCharacterObservation != null)
-                return ObserveLevelChange(localCharacterObservation()?.Clone());
+                return ObserveLevelChange(ObserveTrust(localCharacterObservation()?.Clone()));
             if (!Plugin.ClientState.IsLoggedIn || Plugin.ObjectTable.LocalPlayer == null)
                 return null;
 
@@ -296,13 +301,21 @@ public sealed class DadCharacterIntelligenceService
             if (string.IsNullOrWhiteSpace(character.DataCenterName))
                 AddBlocker(character, "Datacenter unresolved from world.");
 
-            return ObserveLevelChange(character);
+            return ObserveLevelChange(ObserveTrust(character));
         }
         catch (Exception ex)
         {
             log.Warning(ex, "[dad] Failed to capture local Dad character snapshot.");
             return null;
         }
+    }
+
+    private DadAcquiredCharacter? ObserveTrust(DadAcquiredCharacter? character)
+    {
+        if (character != null && trustObservation != null)
+            character.TrustProgress = DadTrustProgressRules.Merge(character.TrustProgress, trustObservation(character),
+                new(character.AccountId), new(character.CharacterKey), character.ContentId);
+        return character;
     }
 
     private DadAcquiredCharacter? ObserveLevelChange(DadAcquiredCharacter? character)

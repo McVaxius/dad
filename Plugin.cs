@@ -59,6 +59,8 @@ public sealed partial class Plugin : IDalamudPlugin
     private DadFonts uiFonts = null!;
     private UiText uiText = null!;
     private MaterialTheme uiTheme = null!;
+    private readonly MaterialUiSoundPlayer uiSounds = new();
+    private readonly Dictionary<Window, TitleBarButton> soundTitleButtons = new();
     private MaterialOptions<string> languageOptions = null!;
     private string appliedLanguage = string.Empty;
     private uint appliedAccent;
@@ -398,6 +400,8 @@ public sealed partial class Plugin : IDalamudPlugin
         LocalDutyQueueService = new DadLocalDutyQueueService(Log, PresenceService.BuildLiveSafetySnapshot,
             PresenceService.BuildLiveQueueConfirmationSnapshot);
         NpcDutyQueueService = new DadNpcDutyQueueService(Log);
+        CharacterIntelligenceService.ConfigureTrustObservation(NpcDutyQueueService.CaptureTrustProgress);
+        RosterCatalogService.ConfigureTrustRefresh(NpcDutyQueueService);
         CombatRotationService = new DadCombatRotationService(Configuration, PluginInterface, Log);
         PresenceService.ConfigureCombatRotationService(CombatRotationService);
         MogtomeIpcService = new DadMogtomeIpcService(PluginInterface);
@@ -494,7 +498,7 @@ public sealed partial class Plugin : IDalamudPlugin
             GetCurrentAutoPartyCrewCandidates);
         AutoPartyService.ConfigureOwnerStop(_ => RunCoordinatorService.CancelActiveRun());
         SchedulerService.ConfigureLevelingMode(
-            BuildLevelingChild,
+            (source, iteration, minimum) => BuildLevelingChild(source, BuildPlannerPool(), iteration, minimum),
             () => RunCoordinatorService.CancelActiveRun());
         SchedulerService.ConfigureAutoPartyAuthorizationGate(
             AutoPartyService.EvaluateSchedulerAuthorization);
@@ -515,7 +519,8 @@ public sealed partial class Plugin : IDalamudPlugin
         localLifecycleCleanup = new(Configuration, SchedulerService, RunCoordinatorService,
             WakeTakeoverService, ClaimService, WorkerExecutionService, QueueExecutionService, PresenceService,
             Log, CancelStandaloneCrewDisband, AutoPartyService, AlliancePartyFinderService,
-            reason => DutyIpcService?.Cancel(reason), TitleMenuReadinessService.CancelConnectionRecovery);
+            reason => DutyIpcService?.Cancel(reason), TitleMenuReadinessService.CancelConnectionRecovery,
+            NpcDutyQueueService.CancelTrustRosterRefresh);
         TitleMenuReadinessService.ConfigureConnectionRecovery(Configuration,
             CaptureConnectionRecoveryIdentity, IsConnectionRecoveryLoginOwnedElsewhere,
             DataManager, GameInteropProvider, Log);
@@ -626,6 +631,15 @@ public sealed partial class Plugin : IDalamudPlugin
                 () => owner is MainWindow
                     ? new(Configuration.UiLanguageVisibleOnMainWindow, Configuration.UiCompactVisibleOnMainWindow, Configuration.UiTransparencyVisibleOnMainWindow, true)
                     : new(true, true, true, true)));
+            var speaker = new TitleBarButton
+            {
+                Icon = Dalamud.Interface.FontAwesomeIcon.VolumeMute,
+                Priority = owner.TitleBarButtons.Count == 0 ? -1 : owner.TitleBarButtons.Min(button => button.Priority) - 1,
+                IconOffset = new(2, 1),
+                Click = button => { if (button == ImGuiMouseButton.Left) SetUiSoundsMuted(!Configuration.UiLcarsSoundsMuted); },
+                ShowTooltip = () => MaterialText.SetTooltip(UiText.T(Configuration.UiLcarsSoundsMuted ? "Unmute UI sounds" : "Mute UI sounds")),
+            };
+            soundTitleButtons.Add(owner, speaker);
         }
     }
 
@@ -667,7 +681,7 @@ public sealed partial class Plugin : IDalamudPlugin
     {
         var changed = MaterialAppearanceSelector.DrawColors(id, ref colorDraft, ref accentDraft,
             new(UiText.T("Color"), UiText.T("Language"), UiText.T("Teal"), UiText.T("Blue"), UiText.T("Pink"), UiText.T("Custom RGB")),
-            new(UiText.T("Auto"), UiText.T("Picker"), UiText.T("Default"), UiText.T("Background, controls and text follow your theme."), UiText.T("Theme colour"), UiText.T("Choose each colour independently."), UiText.T("Background"), UiText.T("Controls"), UiText.T("Text"), UiText.T("Aa  Preview text"), UiText.T("Control"), UiText.T("Switch to Picker to set each colour yourself."), UiText.T("Switch back to Auto to use the automatic theme.")), Configuration.UiCompact ? 298 : 316);
+            new(UiText.T("Auto"), UiText.T("Picker"), UiText.T("Default"), UiText.T("Background, controls and text follow your theme."), UiText.T("Theme colour"), UiText.T("Choose each colour independently."), UiText.T("Background"), UiText.T("Controls"), UiText.T("Text"), UiText.T("Aa  Preview text"), UiText.T("Control"), UiText.T("Switch to Picker to set each colour yourself."), UiText.T("Switch back to Auto to use the automatic theme.")) { Lcars = UiText.T("LCARS"), LcarsHelp = UiText.T("LCARS panels and outlined controls. Picker colours are retained.") }, Configuration.UiCompact ? 298 : 316);
         if (!changed) return false;
         Configuration.UiColors = colorDraft;
         Configuration.UiAccentRgb = MaterialColorSettings.ToRgb(accentDraft);
@@ -729,7 +743,13 @@ public sealed partial class Plugin : IDalamudPlugin
         using var font=uiFonts.Push(UiFontRole.Body);
         using var chrome = MaterialWindowChrome.Push();
         PrepareAppearanceTitleBars();
-        foreach (var actions in appearanceTitleBars.Values) actions.RefreshVisibility();
+        foreach (var actions in appearanceTitleBars.Values) { actions.SetLcarsIcons(uiTheme.IsLcars); actions.RefreshVisibility(); }
+        foreach (var (owner, speaker) in soundTitleButtons)
+        {
+            speaker.Icon = Configuration.UiLcarsSoundsMuted ? Dalamud.Interface.FontAwesomeIcon.VolumeMute : Dalamud.Interface.FontAwesomeIcon.VolumeUp;
+            if (!uiTheme.IsLcars) owner.TitleBarButtons.Remove(speaker);
+            else if (!owner.TitleBarButtons.Contains(speaker)) owner.TitleBarButtons.Add(speaker);
+        }
         WindowSystem.Draw();
         DrawAppearanceTitleBarPopups();
         foreach (var window in WindowSystem.Windows)
@@ -748,8 +768,10 @@ public sealed partial class Plugin : IDalamudPlugin
             if (visible)
             {
                 fontStatusDecorations.Paint();
+                if (uiTheme.IsLcars) MaterialLcars.Header("DAD");
                 ImGui.TextWrapped(appliedLanguage == "hi" && !loading ? "Hindi UI fonts are unavailable. Use English to continue."
                     : loading ? "Loading UI fonts..." : "UI fonts failed to load. See the plugin log.");
+                using var fontStatusButtons = MaterialLcars.NativeButtonStyle();
                 if (appliedLanguage == "hi" && !loading && ImGui.Button("Use English"))
                 {
                     Configuration.UiLanguage = "en";
@@ -789,9 +811,25 @@ public sealed partial class Plugin : IDalamudPlugin
             appliedAccent = Configuration.UiAccentRgb & 0xFFFFFF;
             appliedColors = colorDraft;
             uiTheme = DadPresentation.Theme(appliedAccent, colorDraft);
+            uiTheme.Feedback = PlayUiSound;
+            if (!uiTheme.IsLcars) uiSounds.Stop();
             var rgb = DadPresentation.Rgb(appliedAccent);
             accentDraft = new(rgb.X, rgb.Y, rgb.Z);
         }
+        uiTheme.Density = Configuration.UiCompact ? MaterialDensity.Compact : MaterialDensity.Standard;
+    }
+
+    private void PlayUiSound(MaterialUiSoundCue cue)
+    {
+        if (colorDraft.Mode == MaterialColorMode.Lcars && !Configuration.UiLcarsSoundsMuted) uiSounds.TryPlay(cue);
+    }
+
+    private void SetUiSoundsMuted(bool muted)
+    {
+        Configuration.UiLcarsSoundsMuted = muted;
+        if (muted) uiSounds.Stop();
+        Configuration.Save();
+        if (!muted) PlayUiSound(MaterialUiSoundCue.Preview);
     }
 
     private float AppearanceLanguageWidth()
@@ -834,6 +872,7 @@ public sealed partial class Plugin : IDalamudPlugin
         Framework.Update -= OnFrameworkUpdate;
         ClientState.Login -= OnLogin;
         PluginInterface.UiBuilder.Draw -= DrawUi;
+        uiSounds.Dispose();
         uiFonts?.Dispose();
         uiText?.Dispose();
         shapedText?.Dispose();
@@ -2362,6 +2401,7 @@ public sealed partial class Plugin : IDalamudPlugin
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             GatherParty = source.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
+            TrustParty = source.TrustParty?.Clone(),
             StopPolicy = source.StopPolicy.Clone(),
             CompletionActions = source.CompletionActions?.Clone(),
             IncludedAccountKeys = [..source.IncludedAccountKeys],
@@ -3783,6 +3823,7 @@ public sealed partial class Plugin : IDalamudPlugin
             MogtomeDutyPolicy = PlannerOptions.MogtomeDutyPolicy,
             GatherParty = PlannerOptions.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = PlannerOptions.RefreshTrustNpcLevels,
+            TrustParty = PlannerOptions.TrustParty?.Clone(),
             StopPolicy = stopPolicy,
             CompletionActions = DadCompletionActionSnapshots.Resolve(PlannerOptions.CompletionActions, Configuration.CompletionActions),
             Slots = !includeSlots
@@ -3916,6 +3957,7 @@ public sealed partial class Plugin : IDalamudPlugin
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             GatherParty = source.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
+            TrustParty = source.TrustParty?.Clone(),
             StopPolicy = source.StopPolicy.Clone(),
             LevelingMode = source.LevelingMode?.Clone() ?? new DadLevelingModeOptions(),
             SharedStopTargetIdentityToken = source.SharedStopTargetIdentityToken,
@@ -3973,6 +4015,7 @@ public sealed partial class Plugin : IDalamudPlugin
         options.MogtomeDutyPolicy = group.MogtomeDutyPolicy;
         options.GatherParty = group.GatherParty?.Clone() ?? new();
         options.RefreshTrustNpcLevels = group.RefreshTrustNpcLevels;
+        options.TrustParty = group.TrustParty?.Clone();
         options.StopPolicy = group.StopPolicy.Clone();
         options.CompletionActions = group.CompletionActions?.Clone();
         options.IncludedAccountKeys = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots)
@@ -4071,9 +4114,10 @@ public sealed partial class Plugin : IDalamudPlugin
     private DadLevelingChildBuild BuildLevelingChild(
         DadPlannerGroup source,
         DadCharacterPool pool,
-        int iteration)
+        int iteration,
+        DateTime? minimumTrustObservedAtUtc = null)
         => DadLevelingRuntime.BuildChild(source, pool, iteration, GetLevelingJobCatalog(),
-            PresetProviderService, Configuration.CompletionActions, ApplyPlannerRuntimeTruth);
+            PresetProviderService, Configuration.CompletionActions, ApplyPlannerRuntimeTruth, minimumTrustObservedAtUtc);
 
     private DadLevelingCompilation CompileLevelingMode(
         DadPlannerGroup source,
@@ -4081,7 +4125,7 @@ public sealed partial class Plugin : IDalamudPlugin
         int iteration)
         => DadLevelingRuntime.Compile(source, pool, iteration, GetLevelingJobCatalog(), PresetProviderService);
 
-    private IReadOnlyList<DadLevelingJobDescriptor> GetLevelingJobCatalog()
+    internal IReadOnlyList<DadLevelingJobDescriptor> GetLevelingJobCatalog()
     {
         if (levelingJobCatalog != null)
             return levelingJobCatalog;
@@ -4227,6 +4271,7 @@ public sealed partial class Plugin : IDalamudPlugin
             $"mogtome={options.MogtomePreset.Trim()}:{options.MogtomeDutyPolicy.Trim()}",
             $"gather={DadIpcJson.Serialize(options.GatherParty)}",
             $"trustRefresh={options.RefreshTrustNpcLevels}",
+            $"trustParty={DadIpcJson.Serialize(options.TrustParty)}",
             $"stop={plannerPreview.StopPolicy.Mode}:{plannerPreview.StopPolicy.AfterRuns}:{plannerPreview.StopPolicy.TargetLevel}:{plannerPreview.StopPolicy.TargetCharacterKey}:{plannerPreview.StopPolicy.SafetyCap}",
             $"completion={BuildCompletionActionSignature(options.CompletionActions)}",
             "blunderville=emote-run",
@@ -5785,7 +5830,7 @@ public sealed partial class Plugin : IDalamudPlugin
         ["KranglerPrivacyLease"] = () => KranglerPrivacyLeaseService.Update(
             IsKranglerPrivacyLeaseDesired()),
         ["DependencyWindow"] = dependenciesWindow.Sync,
-        ["CharacterIntelligence"] = () => CharacterIntelligenceService.Update(),
+        ["CharacterIntelligence"] = () => { NpcDutyQueueService.UpdateTrustRosterRefresh(); CharacterIntelligenceService.Update(); },
         ["VermaxionReservation"] = VermaxionIpcService.Update,
         ["Presence"] = () => PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint),
         ["PartyInviteAcceptance"] = PartyInviteGateway.UpdateAcceptance,
@@ -5876,6 +5921,12 @@ public sealed partial class Plugin : IDalamudPlugin
             ImGui.SameLine();
             MaterialText.Text(UiText.T("Compact mode"));
             DrawAppearanceSelector();
+            if (colorDraft.Mode == MaterialColorMode.Lcars)
+            {
+                var muted = Configuration.UiLcarsSoundsMuted;
+                if (UiGui.Checkbox("Mute UI sounds", ref muted)) SetUiSoundsMuted(muted);
+                if (uiSounds.Error is not null) UiGui.TextDisabled("Audio output is unavailable.");
+            }
         }
         void DrawMainWindowControls()
         {

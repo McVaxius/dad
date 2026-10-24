@@ -8867,4 +8867,62 @@
   <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} thay đổi chưa lưu</value></data>
   <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Nhân vật được bật theo mặc định. Sửa hồ sơ đã lưu tại đây mà không cần đăng nhập từng nhân vật.</value></data>
   <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Đang lưu tài khoản</value></data>
+  <data name="trust_ui_001" xml:space="preserve"><value>Tất cả đồng hành khả dụng</value></data>
+  <data name="trust_ui_002" xml:space="preserve"><value>Đã đạt mọi mục tiêu tăng cấp Trust đã chọn.</value></data>
+  <data name="trust_ui_003" xml:space="preserve"><value>Đa năng</value></data>
+  <data name="trust_ui_004" xml:space="preserve"><value>Cân bằng cấp đồng hành hoặc lưu một đội Trust cố định.</value></data>
+  <data name="trust_ui_005" xml:space="preserve"><value>Chọn</value></data>
+  <data name="trust_ui_006" xml:space="preserve"><value>Chọn nhân vật thuộc tài khoản của bạn trong Đội trước khi tạo thiết lập Trust.</value></data>
+  <data name="trust_ui_007" xml:space="preserve"><value>Đồng hành</value></data>
+  <data name="trust_ui_008" xml:space="preserve"><value>Đồng hành {0}</value></data>
+  <data name="trust_ui_009" xml:space="preserve"><value>Đồng hành</value></data>
+  <data name="trust_ui_010" xml:space="preserve"><value>Đồng hành dừng ở giới hạn cấp riêng.</value></data>
+  <data name="trust_ui_011" xml:space="preserve"><value>Phụ bản tương thích</value></data>
+  <data name="trust_ui_012" xml:space="preserve"><value>Phụ bản</value></data>
+  <data name="trust_ui_013" xml:space="preserve"><value>Nghề đã đạt cấp mục tiêu vẫn có thể giúp đồng hành tăng cấp.</value></data>
+  <data name="trust_ui_014" xml:space="preserve"><value>Nghề DAD được dùng</value></data>
+  <data name="trust_ui_015" xml:space="preserve"><value>Cập nhật lần cuối</value></data>
+  <data name="trust_ui_016" xml:space="preserve"><value>Cấp</value></data>
+  <data name="trust_ui_017" xml:space="preserve"><value>Cấp {0}</value></data>
+  <data name="trust_ui_018" xml:space="preserve"><value>Giới hạn cấp</value></data>
+  <data name="trust_ui_019" xml:space="preserve"><value>Tăng cấp nghề của tôi nữa</value></data>
+  <data name="trust_ui_020" xml:space="preserve"><value>Cấp độ thuộc về nhân vật này. Hãy cập nhật trước khi lập đội.</value></data>
+  <data name="trust_ui_021" xml:space="preserve"><value>Chưa mở khóa</value></data>
+  <data name="trust_ui_022" xml:space="preserve"><value>Cần kiểm tra</value></data>
+  <data name="trust_ui_023" xml:space="preserve"><value>Mới</value></data>
+  <data name="trust_ui_024" xml:space="preserve"><value>Lượt tiếp theo</value></data>
+  <data name="trust_ui_025" xml:space="preserve"><value>Không có phụ bản phù hợp. Kiểm tra vai trò, cấp và điều kiện mở khóa của đội.</value></data>
+  <data name="trust_ui_026" xml:space="preserve"><value>Tăng cấp NPC</value></data>
+  <data name="trust_ui_027" xml:space="preserve"><value>Danh sách NPC</value></data>
+  <data name="trust_ui_028" xml:space="preserve"><value>Cấp mục tiêu NPC</value></data>
+  <data name="trust_ui_029" xml:space="preserve"><value>Chỉ liệt kê phụ bản mà cả đội có thể tham gia.</value></data>
+  <data name="trust_ui_030" xml:space="preserve"><value>Tài khoản của bạn</value></data>
+  <data name="trust_ui_031" xml:space="preserve"><value>Đội, nghề và phụ bản được chọn lại sau mỗi lượt.</value></data>
+  <data name="trust_ui_032" xml:space="preserve"><value>Cấp mục tiêu nghề người chơi</value></data>
+  <data name="trust_ui_033" xml:space="preserve"><value>Xem trước thiết lập</value></data>
+  <data name="trust_ui_034" xml:space="preserve"><value>Tầm xa</value></data>
+  <data name="trust_ui_035" xml:space="preserve"><value>Cập nhật cấp trên máy khách đang chạy nhân vật này.</value></data>
+  <data name="trust_ui_036" xml:space="preserve"><value>Cập nhật cấp Trust</value></data>
+  <data name="trust_ui_037" xml:space="preserve"><value>Đang cập nhật cấp Trust...</value></data>
+  <data name="trust_ui_038" xml:space="preserve"><value>Chạy thiết lập</value></data>
+  <data name="trust_ui_039" xml:space="preserve"><value>Chạy đúng đội hình đã lưu.</value></data>
+  <data name="trust_ui_040" xml:space="preserve"><value>Ryne chỉ tham gia nội dung Shadowbringers.</value></data>
+  <data name="trust_ui_041" xml:space="preserve"><value>Lưu thiết lập</value></data>
+  <data name="trust_ui_042" xml:space="preserve"><value>Lưu cấu hình</value></data>
+  <data name="trust_ui_043" xml:space="preserve"><value>Lưu thay đổi trước khi bắt đầu hoặc lên lịch.</value></data>
+  <data name="trust_ui_044" xml:space="preserve"><value>Lưu không bắt đầu một lượt chạy.</value></data>
+  <data name="trust_ui_045" xml:space="preserve"><value>Chọn đồng hành để xem phụ bản tương thích.</value></data>
+  <data name="trust_ui_046" xml:space="preserve"><value>Bắt đầu tăng cấp</value></data>
+  <data name="trust_ui_047" xml:space="preserve"><value>Thiết lập này đã thay đổi. Chọn lại trước khi lưu.</value></data>
+  <data name="trust_ui_048" xml:space="preserve"><value>Thiết lập Trust</value></data>
+  <data name="trust_ui_049" xml:space="preserve"><value>Bạn: {0} {1}</value></data>
+  <data name="trust_ui_050" xml:space="preserve"><value>Nghề của bạn</value></data>
+  <data name="trust_ui_051" xml:space="preserve"><value>Đội Trust của bạn</value></data>
+  <data name="trust_ui_052" xml:space="preserve"><value>Client Dad có thể lên lịch Duty Support hoặc Trust đơn cho tài khoản của mình; công việc khác cần Dad Coordinator.</value></data>
+  <data name="trust_ui_053" xml:space="preserve"><value>Mở Trust</value></data>
+  <data name="LCARS" xml:space="preserve"><value>LCARS</value></data>
+  <data name="Mute UI sounds" xml:space="preserve"><value>Tắt âm thanh giao diện</value></data>
+  <data name="Unmute UI sounds" xml:space="preserve"><value>Bật âm thanh giao diện</value></data>
+  <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>Bảng LCARS và điều khiển có viền. Giữ nguyên màu đã chọn.</value></data>
+  <data name="Audio output is unavailable." xml:space="preserve"><value>Không có đầu ra âm thanh.</value></data>
 </root>

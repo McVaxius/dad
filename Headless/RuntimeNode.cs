@@ -59,6 +59,7 @@ internal sealed class RuntimeNode : IDisposable
     private readonly DadWorkerExecutionService worker;
     private readonly DadCoordinatorService coordinator;
     private readonly DadNpcDutyQueueService npcDutyQueue;
+    private readonly VirtualNpcDutyNative npcNative;
     private readonly VirtualDutyFinder dutyFinder;
     private readonly DadLocalDutyQueueService localDutyQueue;
     private readonly VirtualHelperIpc helpers;
@@ -255,7 +256,10 @@ internal sealed class RuntimeNode : IDisposable
         scheduler = new(configuration, configManager, profiles, intelligence, presence, transport, wake, roster, log);
         dutyFinder = new(() => character.ContentId, () => automation.Surface == "world", events.Enqueue, Unexpected);
         localDutyQueue = new(log, presence.BuildLiveSafetySnapshot, dutyFinder, presence.BuildLiveQueueConfirmationSnapshot);
-        npcDutyQueue = new(log, dutyFinder, new VirtualNpcDutyNative(dutyFinder, () => character.CurrentJobId ?? 0, events.Enqueue, Unexpected));
+        npcNative = new VirtualNpcDutyNative(dutyFinder, () => character.CurrentJobId ?? 0, events.Enqueue, Unexpected);
+        npcDutyQueue = new(log, dutyFinder, npcNative);
+        intelligence.ConfigureTrustObservation(npcDutyQueue.CaptureTrustProgress);
+        roster.ConfigureTrustRefresh(npcDutyQueue);
         helpers = new(events.Enqueue);
         gathering = new(presence.BuildLiveSafetySnapshot, events.Enqueue);
         DadRuntimeHandlers.ConfigureGathering(transport, gathering);
@@ -337,7 +341,7 @@ internal sealed class RuntimeNode : IDisposable
             currentCharacterId: () => character.ContentId);
         combat.QuestionableDutySettingsGate = () => questionableBridge.MaintainFrenRiderDutySettings(questionablePatched, questionableRunning);
         cleanup = new(configuration, scheduler, coordinator, wake, claims, worker, queue, presence, log,
-            _ => { }, autoParty?.Service, allianceService, dutyIpc.Cancel, title.CancelConnectionRecovery);
+            _ => { }, autoParty?.Service, allianceService, dutyIpc.Cancel, title.CancelConnectionRecovery, npcDutyQueue.CancelTrustRosterRefresh);
         transport.ConfigureStopAllHandler(cleanup.RunLocalLifecycleCleanup);
         scheduler.ConfigureAdmissionBlocker(() => DadRuntimeHandlers.SchedulerAdmissionBlocker(
             configuration, scheduler, coordinator, false, coordinator.GetLocalResult()));
@@ -373,7 +377,7 @@ internal sealed class RuntimeNode : IDisposable
         if (allianceService != null) steps["AlliancePartyFinder"] = allianceService.Update;
         if (input.TryGetProperty("fullLifecycle", out var full) && full.GetBoolean())
         {
-            steps["CharacterIntelligence"] = intelligence.Update;
+            steps["CharacterIntelligence"] = () => { npcDutyQueue.UpdateTrustRosterRefresh(); intelligence.Update(); };
             steps["VermaxionReservation"] = vermaxion.Update;
             steps["Presence"] = () => presence.Update(intelligence.CurrentPool, transport.CurrentTransport.ListenerEndpoint);
             steps["PartyInviteAcceptance"] = partyInvite.UpdateAcceptance;
@@ -478,6 +482,7 @@ internal sealed class RuntimeNode : IDisposable
                     character.XadbReady = true; character.SnapshotVersion = 1;
                     character.XadbSnapshotUtc = clock.Now.UtcDateTime; character.SnapshotQuality = "Complete";
                 }
+                if (command.TryGetProperty("trustAlphinaudLevel", out var trustLevel)) npcNative.AlphinaudLevel = trustLevel.GetInt32();
                 if (command.TryGetProperty("shoppingStage", out var shoppingStage)) shoppingIpc.Stage = shoppingStage.GetString()!;
                 if (command.TryGetProperty("shoppingFault", out var shoppingFault)) shoppingIpc.Fault = shoppingFault.GetString()!;
                 if (command.TryGetProperty("allianceUi", out var observedAlliance))
@@ -615,6 +620,10 @@ internal sealed class RuntimeNode : IDisposable
                 break;
             case "autoparty": controlResult = (autoParty ?? throw new InvalidOperationException("AutoParty is not configured.")).Execute(command); break;
             case "cancel": coordinator.CancelActiveRun(); dutyIpc.Cancel("Synthetic Cancel Run"); break;
+            case "refresh-trust-roster":
+                controlResult = npcDutyQueue.RequestTrustRosterRefresh(intelligence.RefreshLocalCharacterPool("synthetic-trust-refresh", false)
+                    .Characters.Single(static row => row.Source == DadCharacterSource.LocalRuntime));
+                break;
             case "local-stop-all": controlResult = cleanup.RunLocalLifecycleCleanup(new DadStopAllRequest
             {
                 OperationId = command.GetProperty("operationId").GetString()!,
@@ -703,11 +712,11 @@ internal sealed class RuntimeNode : IDisposable
         snapshotUtc = character.XadbSnapshotUtc, isCurrent = true,
     };
 
-    private DadLevelingChildBuild BuildLevelingChild(DadPlannerGroup source, int iteration)
+    private DadLevelingChildBuild BuildLevelingChild(DadPlannerGroup source, int iteration, DateTime? minimumTrustObservedAtUtc = null)
         => DadLevelingRuntime.BuildChild(source, roster.BuildCuratedPool(intelligence.CurrentPool), iteration,
             [new() { JobId = 19, Abbreviation = "PLD", Role = DadPartyRole.Tank, IsFullCombatJob = true }],
             presets, configuration.CompletionActions,
-            (preview, pool, group) => DadPlannerRuntimeValidation.Apply(preview, pool, group, planner, queue, presence.BuildLiveSafetySnapshot));
+            (preview, pool, group) => DadPlannerRuntimeValidation.Apply(preview, pool, group, planner, queue, presence.BuildLiveSafetySnapshot), minimumTrustObservedAtUtc);
 
     private DadPlannerGroup? ResolveGroup(string id) => configuration.PlannerGroups.FirstOrDefault(g => g.GroupId == id);
     private DadPlannerRunRequestPreview? BuildSchedulerPreview(string id)

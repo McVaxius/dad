@@ -8896,4 +8896,62 @@
   <data name="ui_accounts_pending_count" xml:space="preserve"><value>Несохранённых изменений: {0}</value></data>
   <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Персонажи включены по умолчанию. Редактируйте сохранённые профили здесь, не входя за каждого персонажа.</value></data>
   <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Сохранение учётной записи</value></data>
+  <data name="trust_ui_001" xml:space="preserve"><value>Все доступные спутники</value></data>
+  <data name="trust_ui_002" xml:space="preserve"><value>Все выбранные цели повышения уровня Траста достигнуты.</value></data>
+  <data name="trust_ui_003" xml:space="preserve"><value>Универсал</value></data>
+  <data name="trust_ui_004" xml:space="preserve"><value>Выравнивайте уровни спутников или сохраните точную группу Траста.</value></data>
+  <data name="trust_ui_005" xml:space="preserve"><value>Выбрать</value></data>
+  <data name="trust_ui_006" xml:space="preserve"><value>Перед созданием пресета Траста выберите персонажа своего аккаунта в разделе «Команда».</value></data>
+  <data name="trust_ui_007" xml:space="preserve"><value>Спутник</value></data>
+  <data name="trust_ui_008" xml:space="preserve"><value>Спутник {0}</value></data>
+  <data name="trust_ui_009" xml:space="preserve"><value>Спутники</value></data>
+  <data name="trust_ui_010" xml:space="preserve"><value>Спутники останавливаются на собственном предельном уровне.</value></data>
+  <data name="trust_ui_011" xml:space="preserve"><value>Совместимые подземелья</value></data>
+  <data name="trust_ui_012" xml:space="preserve"><value>Подземелье</value></data>
+  <data name="trust_ui_013" xml:space="preserve"><value>Профессии, уже достигшие цели, могут помогать повышать уровень спутников.</value></data>
+  <data name="trust_ui_014" xml:space="preserve"><value>Профессии, доступные DAD</value></data>
+  <data name="trust_ui_015" xml:space="preserve"><value>Последнее обновление</value></data>
+  <data name="trust_ui_016" xml:space="preserve"><value>Уровень</value></data>
+  <data name="trust_ui_017" xml:space="preserve"><value>Уровень {0}</value></data>
+  <data name="trust_ui_018" xml:space="preserve"><value>Предельный уровень</value></data>
+  <data name="trust_ui_019" xml:space="preserve"><value>Повышать и мои профессии</value></data>
+  <data name="trust_ui_020" xml:space="preserve"><value>Уровни относятся к этому персонажу. Обновите их перед подбором группы.</value></data>
+  <data name="trust_ui_021" xml:space="preserve"><value>Закрыто</value></data>
+  <data name="trust_ui_022" xml:space="preserve"><value>Требуется проверка</value></data>
+  <data name="trust_ui_023" xml:space="preserve"><value>Новый</value></data>
+  <data name="trust_ui_024" xml:space="preserve"><value>Следующий заход</value></data>
+  <data name="trust_ui_025" xml:space="preserve"><value>Нет подходящего подземелья. Проверьте роли, уровни и доступ группы.</value></data>
+  <data name="trust_ui_026" xml:space="preserve"><value>Прокачка НИП</value></data>
+  <data name="trust_ui_027" xml:space="preserve"><value>Список НИП</value></data>
+  <data name="trust_ui_028" xml:space="preserve"><value>Целевой уровень НИП</value></data>
+  <data name="trust_ui_029" xml:space="preserve"><value>Показаны только подземелья, доступные всей группе.</value></data>
+  <data name="trust_ui_030" xml:space="preserve"><value>Свой аккаунт</value></data>
+  <data name="trust_ui_031" xml:space="preserve"><value>После каждого захода группа, профессия и подземелье выбираются заново.</value></data>
+  <data name="trust_ui_032" xml:space="preserve"><value>Целевой уровень профессий игрока</value></data>
+  <data name="trust_ui_033" xml:space="preserve"><value>Предпросмотр пресета</value></data>
+  <data name="trust_ui_034" xml:space="preserve"><value>Дальний бой</value></data>
+  <data name="trust_ui_035" xml:space="preserve"><value>Обновите уровни на клиенте, где находится этот персонаж.</value></data>
+  <data name="trust_ui_036" xml:space="preserve"><value>Обновить уровни Траста</value></data>
+  <data name="trust_ui_037" xml:space="preserve"><value>Обновление уровней Траста...</value></data>
+  <data name="trust_ui_038" xml:space="preserve"><value>Запустить пресет</value></data>
+  <data name="trust_ui_039" xml:space="preserve"><value>Использовать эту группу в точности как сохранено.</value></data>
+  <data name="trust_ui_040" xml:space="preserve"><value>Рин участвует только в заданиях Shadowbringers.</value></data>
+  <data name="trust_ui_041" xml:space="preserve"><value>Сохранить пресет</value></data>
+  <data name="trust_ui_042" xml:space="preserve"><value>Сохранить настройки</value></data>
+  <data name="trust_ui_043" xml:space="preserve"><value>Сохраните изменения перед запуском или планированием.</value></data>
+  <data name="trust_ui_044" xml:space="preserve"><value>Сохранение не запускает заход.</value></data>
+  <data name="trust_ui_045" xml:space="preserve"><value>Выберите спутника, чтобы увидеть совместимые подземелья.</value></data>
+  <data name="trust_ui_046" xml:space="preserve"><value>Начать прокачку</value></data>
+  <data name="trust_ui_047" xml:space="preserve"><value>Этот пресет изменён. Выберите его заново перед сохранением.</value></data>
+  <data name="trust_ui_048" xml:space="preserve"><value>Пресеты Траста</value></data>
+  <data name="trust_ui_049" xml:space="preserve"><value>Вы: {0} {1}</value></data>
+  <data name="trust_ui_050" xml:space="preserve"><value>Ваша профессия</value></data>
+  <data name="trust_ui_051" xml:space="preserve"><value>Ваша группа Траста</value></data>
+  <data name="trust_ui_052" xml:space="preserve"><value>Client Dad может планировать одиночный Duty Support или Траст для своего аккаунта; для других задач нужен Dad Coordinator.</value></data>
+  <data name="trust_ui_053" xml:space="preserve"><value>Открыть Траст</value></data>
+  <data name="LCARS" xml:space="preserve"><value>LCARS</value></data>
+  <data name="Mute UI sounds" xml:space="preserve"><value>Отключить звуки интерфейса</value></data>
+  <data name="Unmute UI sounds" xml:space="preserve"><value>Включить звуки интерфейса</value></data>
+  <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>Панели LCARS и элементы управления с контуром. Выбранные цвета сохраняются.</value></data>
+  <data name="Audio output is unavailable." xml:space="preserve"><value>Аудиовыход недоступен.</value></data>
 </root>

@@ -48,7 +48,7 @@ public sealed class DadSchedulerService
     private List<DadSchedulerSlotState> frozenOrdinarySlots = [];
     private DailyRewardPreflightSession? dailyRewardPreflight;
     private bool dailyRewardPreflightAttempted;
-    private Func<DadPlannerGroup, int, DadLevelingChildBuild>? levelingChildBuilder;
+    private Func<DadPlannerGroup, int, DateTime?, DadLevelingChildBuild>? levelingChildBuilder;
     private Action? cancelActiveLevelingChild;
     private Func<DadRunRequest, DadAutoPartyAuthorizationDecision>? autoPartyAuthorizationGate;
     private Func<string>? admissionBlockerProvider;
@@ -103,6 +103,7 @@ public sealed class DadSchedulerService
         public DadSchedulerPresetState OuterState { get; init; } = new();
         public DadLevelingChildBuild ChildBuild { get; set; } = new();
         public int Iteration { get; set; } = 1;
+        public DateTime? MinimumTrustObservedAtUtc { get; set; }
         public bool RefreshingRoster { get; set; }
         public DateTime RefreshDeadlineUtc { get; set; }
         public List<LevelingRosterRefreshRow> RefreshRows { get; set; } = [];
@@ -195,7 +196,7 @@ public sealed class DadSchedulerService
             configuration.Schedules.Any(schedule => schedule.Cadence == DadScheduleCadence.DailyReset && CanRunScheduleHere(schedule)));
 
     private bool IsLocalDutySupportExecutionActive
-        => !configuration.RunAsServerDad && currentState.IsActive &&
+        => !configuration.RunAsServerDad && (levelingOperation != null || currentState.IsActive) &&
            DadLocalDutySupportRules.CanRunPreset(
                levelingOperation?.SourceGroup ??
                configuration.PlannerGroups.FirstOrDefault(group => group.GroupId == currentState.GroupId),
@@ -219,7 +220,7 @@ public sealed class DadSchedulerService
         => IsSchedulerActive && currentState.Slots.Any(static slot => slot.IsRegisteredIsland);
 
     public void ConfigureLevelingMode(
-        Func<DadPlannerGroup, int, DadLevelingChildBuild> childBuilder,
+        Func<DadPlannerGroup, int, DateTime?, DadLevelingChildBuild> childBuilder,
         Action cancelActiveChild)
     {
         levelingChildBuilder = childBuilder ?? throw new ArgumentNullException(nameof(childBuilder));
@@ -1597,7 +1598,7 @@ public sealed class DadSchedulerService
         DadLevelingChildBuild build;
         try
         {
-            build = levelingChildBuilder(operation.SourceGroup, operation.Iteration) ?? new DadLevelingChildBuild();
+            build = levelingChildBuilder(operation.SourceGroup, operation.Iteration, operation.MinimumTrustObservedAtUtc) ?? new DadLevelingChildBuild();
         }
         catch (Exception ex)
         {
@@ -2596,6 +2597,7 @@ public sealed class DadSchedulerService
                     ContentId = selection.ContentId,
                     SaveAfterRefresh = true,
                     DryRun = false,
+                    RefreshTrustRoster = operation.SourceGroup.LevelingMode?.Trust != null,
                 },
             });
         }
@@ -2648,7 +2650,7 @@ public sealed class DadSchedulerService
                 return;
             }
 
-            if (result == null)
+            if (result == null || result.Pending)
                 continue;
             if (!DadLevelingOperationRules.TryValidateExactRosterRefresh(row.Command, result, out var blocker))
             {
@@ -2669,6 +2671,8 @@ public sealed class DadSchedulerService
 
         characterIntelligenceService.RequestPeerSnapshots();
         operation.RefreshingRoster = false;
+        if (operation.SourceGroup.LevelingMode?.Trust != null)
+            operation.MinimumTrustObservedAtUtc = operation.RefreshRows.Max(static row => row.Command.RequestedAtUtc);
         operation.RefreshRows = [];
         operation.Iteration++;
         StartNextLevelingChild();

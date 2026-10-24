@@ -40,6 +40,7 @@ public static class DadSchedulerGroupCloneRules
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             GatherParty = source.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
+            TrustParty = source.TrustParty?.Clone(),
             StopPolicy = source.StopPolicy.Clone(),
             LevelingMode = source.LevelingMode?.Clone() ?? new DadLevelingModeOptions(),
             SharedStopTargetIdentityToken = source.SharedStopTargetIdentityToken,

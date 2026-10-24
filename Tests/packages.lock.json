@@ -124,9 +124,13 @@
           "xunit.extensibility.core": "[2.9.3]"
         }
       },
+      "aethertekui": {
+        "type": "Project"
+      },
       "dad.headless": {
         "type": "Project",
         "dependencies": {
+          "AethertekUI": "[0.3.0, )",
           "Dad.AutoParty.Protocol": "[0.2.0-preview.8, 0.2.0-preview.8]",
           "ECommons": "[3.2.1.15, 3.2.1.15]",
           "System.Security.Cryptography.ProtectedData": "[10.0.10, 10.0.10]"

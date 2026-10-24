@@ -57,6 +57,7 @@ public sealed class DadClientReconnectWindow : Window, IDisposable
     public override void Draw()
     {
         motion.DrawChrome();
+        if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         using var controls = MaterialControls.Push(MaterialControlContext.Dense);
         UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         ApplyPendingPositionChange();

@@ -13,6 +13,31 @@ namespace dad.Tests;
 public sealed class DadAutoPartyConfigurationMigrationTests
 {
     [Fact]
+    public void NativeAppearanceRoundTripRetainsPickerMuteAndUnrelatedSettings()
+    {
+        var configuration = Newtonsoft.Json.JsonConvert.DeserializeObject<Configuration>(
+            """{"UiLanguage":"ko","PluginEnabled":false,"FixtureUnknown":{"keep":17}}""")!;
+        Assert.True(configuration.UiLcarsSoundsMuted);
+        var picker = new AethertekUI.MaterialColorSettings
+        {
+            Mode = AethertekUI.MaterialColorMode.Picker,
+            BackgroundRgb = 0x123456, ControlsRgb = 0xABCDEF, TextRgb = 0xFEDCBA,
+        };
+        foreach (var mode in new[] { AethertekUI.MaterialColorMode.Picker, AethertekUI.MaterialColorMode.Lcars, AethertekUI.MaterialColorMode.Auto })
+        {
+            configuration.UiColors = picker with { Mode = mode };
+            configuration.UiLcarsSoundsMuted = false;
+            configuration = Newtonsoft.Json.JsonConvert.DeserializeObject<Configuration>(
+                Newtonsoft.Json.JsonConvert.SerializeObject(configuration))!;
+            Assert.Equal(picker with { Mode = mode }, configuration.UiColors);
+            Assert.False(configuration.UiLcarsSoundsMuted);
+            Assert.Equal("ko", configuration.UiLanguage);
+            Assert.False(configuration.PluginEnabled);
+            Assert.Equal(17, (int)configuration.AdditionalSettings!["FixtureUnknown"]["keep"]!);
+        }
+    }
+
+    [Fact]
     public void MissingDirectoryGenerationDefaultsNormalizesAndClonesAsOne()
     {
         var autoParty = JsonSerializer.Deserialize<DadAutoPartyConfiguration>("{}")!;

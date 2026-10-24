@@ -12,7 +12,8 @@ internal sealed class DadLocalLifecycleCleanup(
     DadQueueExecutionService QueueExecutionService, DadPresenceService PresenceService,
     IPluginLog Log, Action<string> CancelStandaloneCrewDisband,
     DadAutoPartyService? AutoPartyService, DadAlliancePartyFinderService? AlliancePartyFinderService,
-    Action<string>? CancelDutyBridge = null, Action<string>? CancelConnectionRecovery = null)
+    Action<string>? CancelDutyBridge = null, Action<string>? CancelConnectionRecovery = null,
+    Action<string>? CancelTrustRefresh = null)
 {
     private readonly Dictionary<string, DadStopAllWorkerResult> localStopAllResults = new(StringComparer.OrdinalIgnoreCase);
 
@@ -34,6 +35,7 @@ internal sealed class DadLocalLifecycleCleanup(
             {
                 DadCompletionActionRunner.CancelRound(Configuration);
                 CancelConnectionRecovery?.Invoke(reason);
+                CancelTrustRefresh?.Invoke(reason);
                 var suppression = TimeSpan.FromSeconds(Math.Max(2, Configuration.CancelAckTimeoutSeconds));
                 CancelStandaloneCrewDisband(reason);
                 var scheduler = SchedulerService.StopAll(reason, suppression);

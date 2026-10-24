@@ -20,6 +20,29 @@ public sealed class DadShareServiceTests
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public void TrustSharingPreservesExactChoicesAndRequiresAReaderThatUnderstandsThem()
+    {
+        var service = CreateService();
+        var source = BuildPlan(PlanA, "Trust fixture");
+        source.TrustParty = new() { PlayerJobId = 19, Npcs = [DadTrustNpcId.Alphinaud, DadTrustNpcId.Alisaie, DadTrustNpcId.Ryne] };
+        source.LevelingMode.Trust = new() { NpcTargetLevel = 95, LevelPlayerJobs = true, PlayerTargetLevel = 90,
+            AllAvailableNpcs = false, SelectedNpcs = [DadTrustNpcId.Alisaie], AllowedJobs = [19, 24, 37] };
+        Assert.True(service.TryExportPlan(source, KnownIdentities(), out var encoded, out var error), error);
+        Assert.True(service.TryDecode(encoded, DadShareConstants.PlanKind, out var envelope, out error), error);
+        Assert.Equal(6, envelope!.Schema);
+        var result = service.Apply(envelope, [], [], commandValuesConfirmed: true);
+        Assert.True(result.Success, result.Summary);
+        var imported = Assert.Single(result.PlannerGroups);
+        Assert.Equal(source.TrustParty.Npcs, imported.TrustParty!.Npcs);
+        Assert.Equal(source.LevelingMode.Trust.AllowedJobs, imported.LevelingMode.Trust!.AllowedJobs);
+        Assert.Equal(95, imported.LevelingMode.Trust.NpcTargetLevel);
+        Assert.Equal(90, imported.LevelingMode.Trust.PlayerTargetLevel);
+        envelope.Schema = 5;
+        Assert.False(service.TryValidateEnvelope(envelope, DadShareConstants.PlanKind, out error));
+        Assert.Contains("schema 6", error);
+    }
+
+    [Fact]
     public void PerMemberSharingRetainsOptionalListsAndAllCommandConfirmationBoundaries()
     {
         var service = CreateService();

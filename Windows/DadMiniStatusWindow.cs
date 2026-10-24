@@ -74,6 +74,7 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
     public override void Draw()
     {
         motion.DrawChrome();
+        if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         ApplyPendingPositionChange();
         var snapshot = plugin.BuildMiniStatusSnapshot();
         DrawHeader(snapshot);

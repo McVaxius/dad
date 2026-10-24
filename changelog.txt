@@ -1,3 +1,38 @@
+2026-10-23 - LCARS appearance (local implementation)
+
+- Add Auto / Picker / LCARS to existing appearance controls, retaining saved Picker colours. Skin Main, Settings, Mini, Quick Commands, setup/shopping/batch wizards, dependencies, reconnect and AutoParty/fleet windows with LCARS rails, elbows, frames and outlined controls. Preserve ordinary Plan and the dedicated Trust pages.
+- UI tones default muted; Settings and each LCARS titlebar share one saved mute choice and owned playback.
+
+2026-10-23 - Dedicated Trust editors (I633, locally verified)
+
+- Keep an admitted own-account NPC leveling operation active on a Client Dad while its ordinary child has been handed to the local coordinator. This lets terminal child cleanup, roster refresh and the next child progress without a connected Coordinator, while retaining exact account/character/Slot1 admission.
+
+- Add separate NPC leveling, fixed Trust presets and per-character NPC roster pages under a dedicated Trust navigation item. Keep general planning and existing schedules in their own sections.
+- Edit separate NPC/player target levels and one job multiselect grouped by role. Fixed presets choose exactly three companions, a player job and a whole-party compatible dungeon; the roster exposes observed roles, levels, caps and compatible duties.
+- Keep drafts separate from saved presets, reject conflicting preset edits, and use existing persistence/scheduling. Saving does not start a run. Add the Trust labels and help text to all fifteen existing language catalogs.
+- The complete Release/x64 plugin build and 395 focused regressions passed. Offline native content, input, localization and save checks passed 2,076 assertions across all fifteen languages, both densities and 100%/150% scale. The final virtual lifecycle matrix passed all 143 scenarios and 2,513 assertions, including own-account Client Dad and separate NPC/player goals. These use supplied observations and native CPU rendering; whole-shell and game-client acceptance remain separate. Version remains 2.0.0.2 with no deployment change.
+
+2026-10-23 - Trust roster refresh and leveling integration (I633, partial)
+
+- Add a finite framework-driven roster refresh that reads every unlocked Trust dungeon's current member group. Require exact character ownership and complete readable membership; cancellation, unsupported data or changed selection cannot produce a full-roster observation.
+- Save separate NPC/player targets and one permitted-job pool in existing leveling presets, and exact fixed groups in ordinary Trust presets. Preserve deep clones, sharing and request propagation; Trust shares require schema 6 so older readers reject choices they cannot retain. Ordinary shares keep schema 5.
+- Compile automatic Trust parties into the existing one-run leveling children, freezing the player job and three companions. Require fresh character-owned Trust observations after each child before choosing the next group or declaring completion. Extend the existing own-account Client Dad schedule boundary to Trust.
+- Include Trust observation changes in existing planner cache invalidation and cancel refreshes through shared Stop All cleanup. Focused checks passed 304/304; the two-child Trust leveling scenario passed all 25 assertions. The full virtual lifecycle matrix passed all 141 scenarios and 2,451 assertions. The plugin builds at the existing version with six existing unrelated nullable warnings. Dedicated Trust UI acceptance is still in progress; native/client acceptance is unverified.
+
+2026-10-23 - Native Trust party queue groundwork (I633, partial)
+
+- Carry an optional exact player job/three-NPC party in Trust tasks with deep clones. Read actual native member counts, identities and role capabilities rather than expansion-specific slot names; recognize valid member ID 0 and supported identity variants.
+- Validate a fixed party before clearing the current selection, require successful native additions, and verify the exact selected members/current character/job/duty before registration. Changed or rejected native selection cannot substitute another NPC or register an unverified group.
+- Capture the selected native group's character-owned levels, unlocks and dungeon membership through the existing observation cadence, without claiming a complete roster refresh.
+- Production-linked Trust/roster verification passed 92/92; the plugin build and all nine dad-trust virtual lifecycle assertions passed. No game-client or deployment action is included. Full roster refresh, saved group/UI and scheduler integration still remain.
+
+2026-10-23 - Trust observation storage groundwork (I633, partial)
+
+- Store character-owned NPC levels, caps, unlock/read times and per-dungeon member-role observations in existing roster records. Keep unknown readings separate from zero/locked/empty membership and preserve Trust knowledge through XADB/heartbeat refreshes.
+- Deep-copy roster observations and merge by each reading's timestamp, with exact account/CID ownership checks. Character profiles and shared preset definitions carry no observed progress. No separate storage, collector, version or client operation is added.
+- Add pure party planning for lowest eligible NPC/player goals with separate targets, one permitted-job pool, capped supporting members/jobs, all-rounder role assignment and whole-party dungeon availability. Fixed-party planning preserves the exact selected job and three NPCs. Missing or stale required readings block planning or completion.
+- All 63 focused Trust storage/planning and roster regressions passed, including conflicting-read validation. The complete Headless executable and Release/x64 plugin built with six existing unrelated nullable warnings. Native capture, execution integration, Trust navigation and scheduling remain unfinished; this groundwork does not start a run.
+
 2026-10-22
  - i farted really loud and it woke me up
 

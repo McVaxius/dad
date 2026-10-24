@@ -35,15 +35,7 @@ internal enum DadTrustPlayerRole
     Limited,
 }
 
-internal enum DadTrustMemberRole
-{
-    Dps,
-    Healer,
-    Tank,
-    AllRounder,
-}
-
-internal readonly record struct DadTrustMemberCandidate(byte Index, string Name, DadTrustMemberRole Role);
+internal readonly record struct DadTrustMemberCandidate(byte Index, DadTrustNpcId NpcId, int Level, DadTrustRoles Roles, string Name);
 
 public sealed class DadNpcDutyResolvedContent
 {
@@ -62,6 +54,7 @@ public sealed class DadNpcDutyResolvedContent
     public bool HasDutySupportData { get; set; }
     public bool HasTrustData { get; set; }
     public bool RefreshTrustNpcLevelsBeforeQueue { get; set; }
+    public DadTrustFixedParty? FixedParty { get; set; }
 }
 
 public sealed class DadNpcDutyQueuePulse
@@ -78,7 +71,7 @@ public sealed class DadNpcDutyQueuePulse
     public List<DadModuleBlockerDto> Blockers { get; set; } = [];
 }
 
-public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGateway
+public sealed partial class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGateway
 {
     private static readonly TimeSpan OpenThrottle = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan SelectThrottle = TimeSpan.FromSeconds(1);
@@ -103,6 +96,9 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
     private bool trustPartyCleared;
     private bool trustPartySelected;
     private bool trustNpcLevelsRefreshed;
+    private readonly List<DadTrustNpcId> selectedTrustNpcs = [];
+    private uint selectedTrustPlayerJobId;
+    private ulong selectedTrustCharacterId;
 
     public DadNpcDutyQueueService(IPluginLog log)
         : this(log, new DadDutyFinderNativeAccess(), new DadNpcDutyNativeAccess()) { }
@@ -117,6 +113,7 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
 
     public void Dispose()
     {
+        CancelTrustRosterRefresh("Trust refresh stopped because DAD is unloading.");
         if (!dutyStateSubscribed)
             return;
 
@@ -154,12 +151,14 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
             return null;
         }
 
-        return ResolveCore(
+        var content = ResolveCore(
             DadNpcDutyQueueMode.Trust,
             task.ContentFinderConditionId,
             task.DutyName,
             task.RefreshNpcLevelsBeforeQueue,
             out blocker);
+        if (content != null) content.FixedParty = task.FixedParty?.Clone();
+        return content;
     }
 
     public bool CanSelectTrustPartyForLocalPlayer(out string blocker)
@@ -184,6 +183,8 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
     public DadNpcDutyQueuePulse Pulse(string runId, DadNpcDutyResolvedContent content)
     {
         // Review M16: mutual exclusion on the shared queue (see DadLocalDutyQueueService).
+        if (IsTrustRosterRefreshActive)
+            CancelTrustRosterRefresh("Trust refresh stopped because duty queueing started.");
         var ownershipClaim = queueOwnership.TryClaim(runId);
         if (ownershipClaim == DadQueueOwnershipClaim.Rejected)
         {
@@ -476,6 +477,8 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
 
             if (native.SelectedContentId(content.Mode) != content.DawnContentRowId)
             {
+                if (trustPartySelected)
+                    return Failed(content, "Trust duty selection changed after its party was prepared.");
                 if (DadClock.UtcNow < nextSelectAttemptUtc)
                     return Active(content, DadNpcDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Waiting for Trust selection to settle for {content.DutyName}.");
 
@@ -494,6 +497,11 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
 
             if (!trustPartyCleared)
             {
+                if (!native.TrustMembersAvailable)
+                    return Active(content, DadNpcDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending,
+                        "Waiting for current Trust member data.");
+                if (!TryPlanTrustParty(content, out _, out var preparationFailure))
+                    return Failed(content, preparationFailure);
                 native.ClearTrustParty();
                 native.UpdateTrustAddon();
                 trustPartyCleared = true;
@@ -509,6 +517,9 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
                 trustPartySelected = true;
                 return Active(content, DadNpcDutyQueuePulseKind.PreparedTrustParty, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, trustPartySummary);
             }
+
+            if (!ValidatePreparedTrustParty(content, requireQueueAvailability: true, out var readbackFailure))
+                return Failed(content, readbackFailure);
 
             if (DadClock.UtcNow < nextRegisterAttemptUtc)
                 return Active(content, DadNpcDutyQueuePulseKind.Waiting, DadRunPhase.QueueStarting, DadParticipantState.QueuePending, $"Waiting before retrying Trust register for {content.DutyName}.");
@@ -532,129 +543,163 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
     {
         summary = string.Empty;
         failure = string.Empty;
-        var playerRole = GetLocalPlayerRole();
-        if (playerRole is DadTrustPlayerRole.Unknown or DadTrustPlayerRole.Limited)
-        {
-            failure = playerRole == DadTrustPlayerRole.Limited
-                ? "Limited jobs (Blue Mage and Beastmaster) cannot run Trust through Dad's native Trust lane."
-                : "Trust requires a logged-in local combat job so Dad can select compatible NPC roles.";
+        if (!TryPlanTrustParty(content, out var selectedMembers, out failure))
             return false;
-        }
-
-        var availableMembers = GetAvailableTrustMembers(content);
-        if (!TryBuildTrustParty(playerRole, availableMembers, out var selectedMembers, out failure))
-            return false;
-
-        // Review H4: guard the native member pointer (null during zone/agent transitions) before
-        // dereferencing the fixed candidate offsets — the realistic crash vector here.
-        if (!native.TrustMembersAvailable)
+        selectedTrustNpcs.Clear();
+        selectedTrustPlayerJobId = native.LocalJobId;
+        selectedTrustCharacterId = game.ContentId;
+        // Place restricted-role members before an all-rounder so native role
+        // selection retains the remaining compatible slot.
+        foreach (var member in selectedMembers.OrderBy(static member => RoleCount(member.Roles)).ThenBy(static member => member.Index))
         {
-            failure = $"Trust member data is unavailable for {content.DutyName}.";
-            return false;
+            if (selectedTrustCharacterId == 0 || game.ContentId != selectedTrustCharacterId ||
+                native.LocalJobId != selectedTrustPlayerJobId || !native.AddTrustMember(member.Index))
+            {
+                failure = "Trust rejected a selected companion or the active character/job changed.";
+                return false;
+            }
+            selectedTrustNpcs.Add(member.NpcId);
         }
-
-        foreach (var member in selectedMembers.OrderBy(static member => member.Role).ThenBy(static member => member.Index))
-        {
-            native.AddTrustMember(member.Index);
-        }
-
+        if (!ValidatePreparedTrustParty(content, requireQueueAvailability: false, out failure)) return false;
         summary = $"Selected Trust party for {content.DutyName}: {string.Join(", ", selectedMembers.Select(static member => member.Name))}.";
         return true;
     }
 
-    private List<DadTrustMemberCandidate> GetAvailableTrustMembers(
-        DadNpcDutyResolvedContent content)
+    private bool TryPlanTrustParty(DadNpcDutyResolvedContent content, out List<DadTrustMemberCandidate> selected, out string failure)
     {
-        var candidates = BuildTrustCandidates(content);
-        var available = new List<DadTrustMemberCandidate>();
-        // Review H4: guard the native member pointer before dereferencing candidate offsets.
-        if (!native.TrustMembersAvailable)
-            return available;
-
-        foreach (var candidate in candidates)
-        {
-            var entry = native.TrustMember(candidate.Index);
-            if (entry.MemberId == 0 || entry.Level < content.ClassJobLevelRequired)
-                continue;
-
-            available.Add(candidate);
-        }
-
-        return available;
-    }
-
-    private static IReadOnlyList<DadTrustMemberCandidate> BuildTrustCandidates(DadNpcDutyResolvedContent content)
-    {
-        var candidates = new List<DadTrustMemberCandidate>
-        {
-            new(0, "Alphinaud", DadTrustMemberRole.Healer),
-            new(1, "Alisaie", DadTrustMemberRole.Dps),
-            new(2, "Thancred", DadTrustMemberRole.Tank),
-            new(3, "Urianger", DadTrustMemberRole.Healer),
-            new(4, "Y'shtola", DadTrustMemberRole.Dps),
-        };
-
-        candidates.Add(content.ExVersion == 3
-            ? new DadTrustMemberCandidate(5, "Ryne", DadTrustMemberRole.Dps)
-            : new DadTrustMemberCandidate(5, "Estinien", DadTrustMemberRole.Dps));
-
-        candidates.Add(new DadTrustMemberCandidate(6, "G'raha Tia", DadTrustMemberRole.AllRounder));
-
-        if (content.TerritoryType is >= 1097 and <= 1164)
-            candidates.Add(new DadTrustMemberCandidate(7, "Zero", DadTrustMemberRole.Dps));
-
-        if (content.ExVersion == 5)
-            candidates.Add(new DadTrustMemberCandidate(7, "Krile", DadTrustMemberRole.Dps));
-
-        return candidates;
-    }
-
-    private static bool TryBuildTrustParty(
-        DadTrustPlayerRole playerRole,
-        IReadOnlyList<DadTrustMemberCandidate> availableMembers,
-        out List<DadTrustMemberCandidate> selectedMembers,
-        out string failure)
-    {
-        selectedMembers = [];
+        selected = [];
         failure = string.Empty;
-
-        var neededRoles = playerRole switch
+        var playerRole = GetLocalPlayerRole();
+        if (playerRole is DadTrustPlayerRole.Unknown or DadTrustPlayerRole.Limited || game.ContentId == 0)
         {
-            DadTrustPlayerRole.Tank => new[] { DadTrustMemberRole.Healer, DadTrustMemberRole.Dps, DadTrustMemberRole.Dps },
-            DadTrustPlayerRole.Healer => [DadTrustMemberRole.Tank, DadTrustMemberRole.Dps, DadTrustMemberRole.Dps],
-            DadTrustPlayerRole.Dps => [DadTrustMemberRole.Tank, DadTrustMemberRole.Healer, DadTrustMemberRole.Dps],
-            _ => [],
-        };
-
-        foreach (var role in neededRoles)
-        {
-            if (TryAddTrustMemberRole(role, availableMembers, selectedMembers))
-                continue;
-
-            if (TryAddTrustMemberRole(DadTrustMemberRole.AllRounder, availableMembers, selectedMembers))
-                continue;
-
-            failure = $"Trust cannot select a full NPC party for current player role {playerRole}; missing {role}.";
+            failure = "Trust requires a ready character on a supported combat job.";
             return false;
         }
+        var duty = native.SelectedTrustDuty();
+        if (duty == null || duty.ContentFinderConditionId != content.ContentFinderConditionId || !duty.Unlocked)
+        {
+            failure = "The selected Trust dungeon is locked or its character unlock proof is unavailable.";
+            return false;
+        }
+        if (content.FixedParty is { } fixedParty && (fixedParty.PlayerJobId == 0 || fixedParty.PlayerJobId != native.LocalJobId ||
+            fixedParty.Npcs is not { Count: 3 } || fixedParty.Npcs.Distinct().Count() != 3))
+        {
+            failure = "The current job and exactly three different companions must match the saved Trust party.";
+            return false;
+        }
+        var available = new List<DadTrustMemberCandidate>();
+        if (!native.TrustMembersAvailable || native.TrustMemberCount is <= 0 or > 12)
+        {
+            failure = "Current Trust member data is unavailable.";
+            return false;
+        }
+        for (byte index = 0; index < native.TrustMemberCount; index++)
+        {
+            var entry = native.TrustMember(index);
+            if (!entry.Initialized || !entry.Unlocked || entry.Level < content.ClassJobLevelRequired || entry.Roles == DadTrustRoles.None ||
+                (entry.Roles & ~DadTrustRoles.All) != 0 || !DadTrustNpcCatalog.TryResolve(entry.MemberId, entry.ClassJobId, out var npc))
+                continue;
+            available.Add(new(index, npc, entry.Level, entry.Roles, entry.Name));
+        }
+        if (available.GroupBy(static member => member.NpcId).Any(static group => group.Count() > 1))
+        {
+            failure = "Trust member identities are ambiguous.";
+            return false;
+        }
+        var role = playerRole switch
+        {
+            DadTrustPlayerRole.Tank => DadPartyRole.Tank,
+            DadTrustPlayerRole.Healer => DadPartyRole.Healer,
+            _ => DadPartyRole.Dps,
+        };
+        if (content.FixedParty != null)
+        {
+            selected = available.Where(member => content.FixedParty.Npcs.Contains(member.NpcId)).ToList();
+            if (selected.Count == 3 && HasRoles(selected)) return true;
+        }
+        else
+        {
+            for (var a = 0; a < available.Count - 2; a++)
+            for (var b = a + 1; b < available.Count - 1; b++)
+            for (var c = b + 1; c < available.Count; c++)
+            {
+                var candidates = new List<DadTrustMemberCandidate> { available[a], available[b], available[c] };
+                if (!HasRoles(candidates)) continue;
+                selected = candidates;
+                return true;
+            }
+        }
+        failure = "The selected Trust companions cannot form a compatible party for this dungeon and player job.";
+        return false;
 
-        return selectedMembers.Count == 3;
+        bool HasRoles(List<DadTrustMemberCandidate> members) => DadTrustPartySelector.TryAssignRoles(role,
+            members.Select(static member => new DadTrustDutyMember { NpcId = member.NpcId, AvailableRoles = member.Roles }).ToArray(), out _);
     }
 
-    private static bool TryAddTrustMemberRole(
-        DadTrustMemberRole role,
-        IReadOnlyList<DadTrustMemberCandidate> availableMembers,
-        List<DadTrustMemberCandidate> selectedMembers)
+    private bool ValidatePreparedTrustParty(DadNpcDutyResolvedContent content, bool requireQueueAvailability, out string failure)
     {
-        var member = availableMembers.FirstOrDefault(candidate =>
-            candidate.Role == role &&
-            selectedMembers.All(selected => selected.Index != candidate.Index));
-        if (string.IsNullOrWhiteSpace(member.Name))
-            return false;
-
-        selectedMembers.Add(member);
+        failure = "The prepared Trust party changed or its native selection is unverified.";
+        if (game.ContentId == 0 || game.ContentId != selectedTrustCharacterId || native.LocalJobId != selectedTrustPlayerJobId ||
+            !native.TrustMembersAvailable || !native.TrustPartyFull || selectedTrustNpcs.Count != 3) return false;
+        var duty = native.SelectedTrustDuty();
+        if (duty == null || duty.ContentFinderConditionId != content.ContentFinderConditionId || !duty.Unlocked ||
+            requireQueueAvailability && !duty.AvailableToCurrentParty) return false;
+        var indices = native.SelectedTrustMemberIndices();
+        if (indices.Count != 3 || indices.Distinct().Count() != 3) return false;
+        var actual = new List<DadTrustNpcId>();
+        foreach (var index in indices)
+        {
+            if (index >= native.TrustMemberCount) return false;
+            var member = native.TrustMember(index);
+            if (!member.Initialized || !member.Unlocked || member.Level < content.ClassJobLevelRequired ||
+                !DadTrustNpcCatalog.TryResolve(member.MemberId, member.ClassJobId, out var npc)) return false;
+            actual.Add(npc);
+        }
+        if (!actual.ToHashSet().SetEquals(selectedTrustNpcs)) return false;
+        failure = string.Empty;
         return true;
     }
+
+    public DadTrustProgress? CaptureSelectedTrustProgress(DadAcquiredCharacter owner)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(owner.AccountId) || string.IsNullOrWhiteSpace(owner.CharacterKey) ||
+                owner.ContentId == 0 || owner.ContentId != game.ContentId || !game.IsLoggedIn || !game.HasLocalPlayer ||
+                game.Condition(ConditionFlag.BetweenAreas) || game.Condition(ConditionFlag.BetweenAreas51) ||
+                game.Condition(ConditionFlag.BoundByDuty) || !native.AgentAvailable(DadNpcDutyQueueMode.Trust) ||
+                !native.AddonReady(DadNpcDutyQueueMode.Trust) || !native.TrustMembersAvailable || native.TrustMemberCount is <= 0 or > 12)
+                return null;
+            var duty = native.SelectedTrustDuty();
+            if (duty == null) return null;
+            var now = DadClock.UtcNow;
+            var progress = new DadTrustProgress { AccountKey = new(owner.AccountId), CharacterKey = new(owner.CharacterKey), ContentId = owner.ContentId };
+            var membership = new List<DadTrustDutyMember>();
+            for (byte i = 0; i < native.TrustMemberCount; i++)
+            {
+                var member = native.TrustMember(i);
+                if (!member.Initialized || (member.Roles & ~DadTrustRoles.All) != 0 ||
+                    !DadTrustNpcCatalog.TryResolve(member.MemberId, member.ClassJobId, out var npc)) continue;
+                progress.Npcs.Add(new() { NpcId = npc, DisplayName = member.Name, Level = member.Level > 0 ? member.Level : null,
+                    LevelCap = DadTrustNpcCatalog.SupportedCap(npc, member.Level), Unlocked = member.Unlocked, ObservedAtUtc = now });
+                membership.Add(new() { NpcId = npc, AvailableRoles = member.Roles });
+            }
+            if (owner.ContentId != game.ContentId || native.SelectedTrustDuty()?.ContentFinderConditionId != duty.ContentFinderConditionId)
+                return null;
+            progress.Duties.Add(new() { ContentFinderConditionId = duty.ContentFinderConditionId, Unlocked = duty.Unlocked,
+                Members = membership, ObservedAtUtc = now });
+            // This is one current native group, not proof the whole roster was refreshed.
+            return DadTrustProgressRules.ForOwner(progress, progress.AccountKey, progress.CharacterKey, owner.ContentId);
+        }
+        catch (Exception exception)
+        {
+            log.Debug(exception, "[dad] Current Trust observation is unavailable.");
+            return null;
+        }
+    }
+
+    private static int RoleCount(DadTrustRoles roles)
+        => ((roles & DadTrustRoles.Tank) != 0 ? 1 : 0) + ((roles & DadTrustRoles.Healer) != 0 ? 1 : 0) + ((roles & DadTrustRoles.Dps) != 0 ? 1 : 0);
 
     private void ResetForNewRun(DadNpcDutyQueueMode mode)
     {
@@ -669,6 +714,9 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
         trustPartyCleared = false;
         trustPartySelected = false;
         trustNpcLevelsRefreshed = false;
+        selectedTrustNpcs.Clear();
+        selectedTrustPlayerJobId = 0;
+        selectedTrustCharacterId = 0;
     }
 
     private void ClearRunState()
@@ -684,6 +732,9 @@ public sealed class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGatewa
         trustPartyCleared = false;
         trustPartySelected = false;
         trustNpcLevelsRefreshed = false;
+        selectedTrustNpcs.Clear();
+        selectedTrustPlayerJobId = 0;
+        selectedTrustCharacterId = 0;
     }
 
     private void TrySubscribeDutyState()

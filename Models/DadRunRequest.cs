@@ -507,7 +507,14 @@ public sealed class DadDutySupportTask
 
 public sealed class DadTrustTask
 {
-    public DadTrustTask Clone() => (DadTrustTask)MemberwiseClone();
+    public DadTrustTask Clone()
+    {
+        var clone = (DadTrustTask)MemberwiseClone();
+        clone.FixedParty = FixedParty?.Clone();
+        return clone;
+    }
+
+    public DadTrustFixedParty? FixedParty { get; set; }
 
     public uint ContentFinderConditionId { get; set; }
     public string DutyName { get; set; } = string.Empty;

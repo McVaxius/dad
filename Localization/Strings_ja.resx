@@ -8868,4 +8868,62 @@
   <data name="ui_accounts_pending_count" xml:space="preserve"><value>未保存の変更: {0}</value></data>
   <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>キャラクターは既定で有効です。各キャラクターにログインせずに、ここで保存済みプロファイルを編集できます。</value></data>
   <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>アカウントを保存中</value></data>
+  <data name="trust_ui_001" xml:space="preserve"><value>利用可能な同行者すべて</value></data>
+  <data name="trust_ui_002" xml:space="preserve"><value>選択したトラストの育成目標をすべて達成しました。</value></data>
+  <data name="trust_ui_003" xml:space="preserve"><value>オールラウンダー</value></data>
+  <data name="trust_ui_004" xml:space="preserve"><value>同行者のレベルを均等に上げるか、固定のトラストパーティを保存します。</value></data>
+  <data name="trust_ui_005" xml:space="preserve"><value>選択</value></data>
+  <data name="trust_ui_006" xml:space="preserve"><value>トラストのプリセットを作成する前に、クルーで自分のアカウントのキャラクターを選択してください。</value></data>
+  <data name="trust_ui_007" xml:space="preserve"><value>同行者</value></data>
+  <data name="trust_ui_008" xml:space="preserve"><value>同行者 {0}</value></data>
+  <data name="trust_ui_009" xml:space="preserve"><value>同行者</value></data>
+  <data name="trust_ui_010" xml:space="preserve"><value>同行者はそれぞれのレベル上限で育成を終了します。</value></data>
+  <data name="trust_ui_011" xml:space="preserve"><value>参加可能なダンジョン</value></data>
+  <data name="trust_ui_012" xml:space="preserve"><value>ダンジョン</value></data>
+  <data name="trust_ui_013" xml:space="preserve"><value>目標レベルに達したジョブも同行者の育成を支援できます。</value></data>
+  <data name="trust_ui_014" xml:space="preserve"><value>DADが使用できるジョブ</value></data>
+  <data name="trust_ui_015" xml:space="preserve"><value>最終更新</value></data>
+  <data name="trust_ui_016" xml:space="preserve"><value>レベル</value></data>
+  <data name="trust_ui_017" xml:space="preserve"><value>レベル {0}</value></data>
+  <data name="trust_ui_018" xml:space="preserve"><value>レベル上限</value></data>
+  <data name="trust_ui_019" xml:space="preserve"><value>自分のジョブも育成する</value></data>
+  <data name="trust_ui_020" xml:space="preserve"><value>レベルはこのキャラクターの記録です。パーティを計画する前に更新してください。</value></data>
+  <data name="trust_ui_021" xml:space="preserve"><value>未開放</value></data>
+  <data name="trust_ui_022" xml:space="preserve"><value>確認が必要</value></data>
+  <data name="trust_ui_023" xml:space="preserve"><value>新規</value></data>
+  <data name="trust_ui_024" xml:space="preserve"><value>次の周回</value></data>
+  <data name="trust_ui_025" xml:space="preserve"><value>参加可能なダンジョンがありません。パーティのロール、レベル、開放状況を確認してください。</value></data>
+  <data name="trust_ui_026" xml:space="preserve"><value>NPC育成</value></data>
+  <data name="trust_ui_027" xml:space="preserve"><value>NPC一覧</value></data>
+  <data name="trust_ui_028" xml:space="preserve"><value>NPCの目標レベル</value></data>
+  <data name="trust_ui_029" xml:space="preserve"><value>パーティ全員が参加できるダンジョンのみ表示します。</value></data>
+  <data name="trust_ui_030" xml:space="preserve"><value>自分のアカウント</value></data>
+  <data name="trust_ui_031" xml:space="preserve"><value>周回後にパーティ、ジョブ、ダンジョンを再選択します。</value></data>
+  <data name="trust_ui_032" xml:space="preserve"><value>プレイヤージョブの目標レベル</value></data>
+  <data name="trust_ui_033" xml:space="preserve"><value>プリセットのプレビュー</value></data>
+  <data name="trust_ui_034" xml:space="preserve"><value>遠隔</value></data>
+  <data name="trust_ui_035" xml:space="preserve"><value>このキャラクターを操作しているクライアントでレベルを更新してください。</value></data>
+  <data name="trust_ui_036" xml:space="preserve"><value>トラストのレベルを更新</value></data>
+  <data name="trust_ui_037" xml:space="preserve"><value>トラストのレベルを更新中...</value></data>
+  <data name="trust_ui_038" xml:space="preserve"><value>プリセットを実行</value></data>
+  <data name="trust_ui_039" xml:space="preserve"><value>保存されたとおりのメンバーで実行します。</value></data>
+  <data name="trust_ui_040" xml:space="preserve"><value>リーンはShadowbringersのコンテンツにのみ参加します。</value></data>
+  <data name="trust_ui_041" xml:space="preserve"><value>プリセットを保存</value></data>
+  <data name="trust_ui_042" xml:space="preserve"><value>設定を保存</value></data>
+  <data name="trust_ui_043" xml:space="preserve"><value>開始またはスケジュール登録の前に変更を保存してください。</value></data>
+  <data name="trust_ui_044" xml:space="preserve"><value>保存だけでは周回を開始しません。</value></data>
+  <data name="trust_ui_045" xml:space="preserve"><value>同行者を選択すると参加可能なダンジョンを表示します。</value></data>
+  <data name="trust_ui_046" xml:space="preserve"><value>育成を開始</value></data>
+  <data name="trust_ui_047" xml:space="preserve"><value>このプリセットは変更されました。保存前にもう一度選択してください。</value></data>
+  <data name="trust_ui_048" xml:space="preserve"><value>トラストのプリセット</value></data>
+  <data name="trust_ui_049" xml:space="preserve"><value>自分：{0} {1}</value></data>
+  <data name="trust_ui_050" xml:space="preserve"><value>自分のジョブ</value></data>
+  <data name="trust_ui_051" xml:space="preserve"><value>自分のトラストパーティ</value></data>
+  <data name="trust_ui_052" xml:space="preserve"><value>Client Dadは自分のアカウントのソロDuty Supportまたはトラストを予約できます。他の作業にはDad Coordinatorが必要です。</value></data>
+  <data name="trust_ui_053" xml:space="preserve"><value>トラストを開く</value></data>
+  <data name="LCARS" xml:space="preserve"><value>LCARS</value></data>
+  <data name="Mute UI sounds" xml:space="preserve"><value>UIサウンドをミュート</value></data>
+  <data name="Unmute UI sounds" xml:space="preserve"><value>UIサウンドを有効化</value></data>
+  <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>LCARSパネルと輪郭付きコントロール。カラーピッカーの色は保持されます。</value></data>
+  <data name="Audio output is unavailable." xml:space="preserve"><value>音声出力を利用できません。</value></data>
 </root>

@@ -8867,4 +8867,62 @@
   <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} perubahan tertunda</value></data>
   <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Karakter diaktifkan secara bawaan. Edit profil tersimpan di sini tanpa masuk ke setiap karakter.</value></data>
   <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Penyimpanan akun berlangsung</value></data>
+  <data name="trust_ui_001" xml:space="preserve"><value>Semua pendamping yang tersedia</value></data>
+  <data name="trust_ui_002" xml:space="preserve"><value>Semua target level Trust yang dipilih telah tercapai.</value></data>
+  <data name="trust_ui_003" xml:space="preserve"><value>Serbabisa</value></data>
+  <data name="trust_ui_004" xml:space="preserve"><value>Seimbangkan level pendamping atau simpan grup Trust tetap.</value></data>
+  <data name="trust_ui_005" xml:space="preserve"><value>Pilih</value></data>
+  <data name="trust_ui_006" xml:space="preserve"><value>Pilih karakter akun sendiri di Kru sebelum membuat preset Trust.</value></data>
+  <data name="trust_ui_007" xml:space="preserve"><value>Pendamping</value></data>
+  <data name="trust_ui_008" xml:space="preserve"><value>Pendamping {0}</value></data>
+  <data name="trust_ui_009" xml:space="preserve"><value>Para pendamping</value></data>
+  <data name="trust_ui_010" xml:space="preserve"><value>Pendamping berhenti pada batas level masing-masing.</value></data>
+  <data name="trust_ui_011" xml:space="preserve"><value>Dungeon yang sesuai</value></data>
+  <data name="trust_ui_012" xml:space="preserve"><value>Dungeon</value></data>
+  <data name="trust_ui_013" xml:space="preserve"><value>Job yang sudah mencapai target tetap dapat membantu menaikkan level pendamping.</value></data>
+  <data name="trust_ui_014" xml:space="preserve"><value>Job yang boleh digunakan DAD</value></data>
+  <data name="trust_ui_015" xml:space="preserve"><value>Pembaruan terakhir</value></data>
+  <data name="trust_ui_016" xml:space="preserve"><value>Level</value></data>
+  <data name="trust_ui_017" xml:space="preserve"><value>Level {0}</value></data>
+  <data name="trust_ui_018" xml:space="preserve"><value>Batas level</value></data>
+  <data name="trust_ui_019" xml:space="preserve"><value>Naikkan level job saya juga</value></data>
+  <data name="trust_ui_020" xml:space="preserve"><value>Level ini milik karakter ini. Perbarui sebelum merencanakan grup.</value></data>
+  <data name="trust_ui_021" xml:space="preserve"><value>Terkunci</value></data>
+  <data name="trust_ui_022" xml:space="preserve"><value>Perlu diperiksa</value></data>
+  <data name="trust_ui_023" xml:space="preserve"><value>Baru</value></data>
+  <data name="trust_ui_024" xml:space="preserve"><value>Putaran berikutnya</value></data>
+  <data name="trust_ui_025" xml:space="preserve"><value>Tidak ada dungeon yang sesuai. Periksa peran, level, dan akses grup.</value></data>
+  <data name="trust_ui_026" xml:space="preserve"><value>Peningkatan level NPC</value></data>
+  <data name="trust_ui_027" xml:space="preserve"><value>Daftar NPC</value></data>
+  <data name="trust_ui_028" xml:space="preserve"><value>Target level NPC</value></data>
+  <data name="trust_ui_029" xml:space="preserve"><value>Hanya dungeon yang dapat diikuti seluruh grup yang ditampilkan.</value></data>
+  <data name="trust_ui_030" xml:space="preserve"><value>Akun sendiri</value></data>
+  <data name="trust_ui_031" xml:space="preserve"><value>Grup, job, dan dungeon dipilih ulang setelah setiap putaran.</value></data>
+  <data name="trust_ui_032" xml:space="preserve"><value>Target level job pemain</value></data>
+  <data name="trust_ui_033" xml:space="preserve"><value>Pratinjau preset</value></data>
+  <data name="trust_ui_034" xml:space="preserve"><value>Jarak jauh</value></data>
+  <data name="trust_ui_035" xml:space="preserve"><value>Perbarui level di klien yang menjalankan karakter ini.</value></data>
+  <data name="trust_ui_036" xml:space="preserve"><value>Perbarui level Trust</value></data>
+  <data name="trust_ui_037" xml:space="preserve"><value>Memperbarui level Trust...</value></data>
+  <data name="trust_ui_038" xml:space="preserve"><value>Jalankan preset</value></data>
+  <data name="trust_ui_039" xml:space="preserve"><value>Gunakan grup ini persis seperti yang disimpan.</value></data>
+  <data name="trust_ui_040" xml:space="preserve"><value>Ryne hanya mengikuti konten Shadowbringers.</value></data>
+  <data name="trust_ui_041" xml:space="preserve"><value>Simpan preset</value></data>
+  <data name="trust_ui_042" xml:space="preserve"><value>Simpan pengaturan</value></data>
+  <data name="trust_ui_043" xml:space="preserve"><value>Simpan perubahan sebelum memulai atau menjadwalkan.</value></data>
+  <data name="trust_ui_044" xml:space="preserve"><value>Menyimpan tidak memulai putaran.</value></data>
+  <data name="trust_ui_045" xml:space="preserve"><value>Pilih pendamping untuk melihat dungeon yang sesuai.</value></data>
+  <data name="trust_ui_046" xml:space="preserve"><value>Mulai menaikkan level</value></data>
+  <data name="trust_ui_047" xml:space="preserve"><value>Preset ini telah berubah. Pilih kembali sebelum menyimpan.</value></data>
+  <data name="trust_ui_048" xml:space="preserve"><value>Preset Trust</value></data>
+  <data name="trust_ui_049" xml:space="preserve"><value>Anda: {0} {1}</value></data>
+  <data name="trust_ui_050" xml:space="preserve"><value>Job Anda</value></data>
+  <data name="trust_ui_051" xml:space="preserve"><value>Grup Trust Anda</value></data>
+  <data name="trust_ui_052" xml:space="preserve"><value>Client Dad dapat menjadwalkan Duty Support atau Trust solo untuk akunnya sendiri; pekerjaan lain memerlukan Dad Coordinator.</value></data>
+  <data name="trust_ui_053" xml:space="preserve"><value>Buka Trust</value></data>
+  <data name="LCARS" xml:space="preserve"><value>LCARS</value></data>
+  <data name="Mute UI sounds" xml:space="preserve"><value>Bisukan suara antarmuka</value></data>
+  <data name="Unmute UI sounds" xml:space="preserve"><value>Aktifkan suara antarmuka</value></data>
+  <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>Panel LCARS dan kontrol bergaris tepi. Warna pemilih tetap disimpan.</value></data>
+  <data name="Audio output is unavailable." xml:space="preserve"><value>Keluaran audio tidak tersedia.</value></data>
 </root>

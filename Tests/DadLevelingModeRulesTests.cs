@@ -121,6 +121,36 @@ public sealed class DadLevelingModeRulesTests
         Assert.True(new DadSchedulerPresetState { Phase = DadSchedulerPresetPhase.LevelingBetweenChildren }.IsActive);
     }
 
+    [Theory]
+    [InlineData("valid", true)]
+    [InlineData("pending", false)]
+    [InlineData("old-full-read", false)]
+    [InlineData("old-npc-read", false)]
+    [InlineData("old-duty-read", false)]
+    [InlineData("foreign-owner", false)]
+    public void TrustRefreshRequiresNewWholeRosterEvidenceForTheExactCharacter(string state, bool expected)
+    {
+        var now = DateTime.UtcNow;
+        var command = new DadRosterRefreshCommandDto { CommandId = "fixture-trust-refresh", AccountKey = new("fixture-account"),
+            CharacterKey = new("Fixture One@Example"), ContentId = 1001, RequestedAtUtc = now.AddSeconds(-1), RefreshTrustRoster = true };
+        var progress = new DadTrustProgress { AccountKey = command.AccountKey, CharacterKey = command.CharacterKey, ContentId = command.ContentId,
+            RosterObservedAtUtc = now, Npcs = [new() { NpcId = DadTrustNpcId.Alphinaud, Level = 90, Unlocked = true, ObservedAtUtc = now }],
+            Duties = [new() { ContentFinderConditionId = 4, Unlocked = true, Members = [new() { NpcId = DadTrustNpcId.Alphinaud, AvailableRoles = DadTrustRoles.Healer }], ObservedAtUtc = now }] };
+        var result = new DadRosterRefreshResultDto { CommandId = command.CommandId, AccountKey = command.AccountKey, CharacterKey = command.CharacterKey,
+            ContentId = command.ContentId, Accepted = true, Success = true, RefreshedAtUtc = now,
+            XadbStatus = new() { IsReady = true, JobLevels = new() { [19] = 100 } },
+            Snapshot = new() { Character = new() { TrustProgress = progress } } };
+        switch (state)
+        {
+            case "pending": result.Pending = true; break;
+            case "old-full-read": progress.RosterObservedAtUtc = now.AddMinutes(-1); break;
+            case "old-npc-read": progress.Npcs[0].ObservedAtUtc = now.AddMinutes(-1); break;
+            case "old-duty-read": progress.Duties[0].ObservedAtUtc = now.AddMinutes(-1); break;
+            case "foreign-owner": progress.AccountKey = new("other-account"); break;
+        }
+        Assert.Equal(expected, DadLevelingOperationRules.TryValidateExactRosterRefresh(command, result, out _));
+    }
+
     [Fact]
     public void ExactRosterRefreshRejectsStaleContradictoryOrIncompleteReplies()
     {

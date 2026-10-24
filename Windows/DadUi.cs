@@ -97,14 +97,17 @@ internal static class DadUi
     public static void Section(string title, string? subtitle = null)
     {
         using (UiText.Font(UiFontRole.BodyStrong))
-            MaterialSettings.Section(UiText.T(title));
+        {
+            if (MaterialTheme.Current.IsLcars) MaterialLcars.PanelHeading(UiText.T(title), 1);
+            else MaterialSettings.Section(UiText.T(title));
+        }
         if (!string.IsNullOrWhiteSpace(subtitle))
             MutedWrapped(subtitle);
     }
 
     public static bool BeginCard(string id, float minimumHeight = 0f, bool flat = false)
     {
-        ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, flat ? Vector2.Zero : new Vector2(DadPresentation.Compact?8:12,DadPresentation.Compact?6:10)*MaterialTheme.Metrics.Scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.CellPadding, flat ? Vector2.Zero : new Vector2(MaterialTheme.Current.IsLcars?20:DadPresentation.Compact?8:12,MaterialTheme.Current.IsLcars?(DadPresentation.Compact?10:12):DadPresentation.Compact?6:10)*MaterialTheme.Metrics.Scale);
         var open = ImGui.BeginTable(
             id,
             1,
@@ -151,6 +154,13 @@ internal static class DadUi
         var max = ImGui.GetItemRectMax();
         var color = selected ? MaterialTheme.Current.Colors.Primary : MaterialTheme.Current.Colors.OnSurfaceVariant;
         var draw = ImGui.GetWindowDrawList();
+        if (MaterialTheme.Current.IsLcars)
+        {
+            if (selected) draw.AddRectFilled(min, max, MaterialCanvas.Color(MaterialLcars.Lilac), 6 * scale);
+            else draw.AddRect(min, max, MaterialCanvas.Color(MaterialLcars.Lilac), 6 * scale);
+            color = selected ? MaterialLcars.Background : MaterialLcars.Text;
+        }
+        MaterialLcars.Feedback(clicked);
         draw.PushClipRect(min, max, true);
         MaterialIcons.Draw(icon, min + new Vector2(8 * scale, (height - 20 * scale) * .5f), 20 * scale, color, ImGui.GetStyle().Alpha);
         MaterialText.AddText(draw, min + new Vector2(36 * scale, (height - size.Y) * .5f),

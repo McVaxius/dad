@@ -9,6 +9,8 @@ internal static class DadRosterCharacterMerge
 
     public static void NormalizeSnapshotJobLedger(DadRosterCharacter character)
     {
+        character.TrustProgress = DadTrustProgressRules.ForOwner(character.TrustProgress, character.AccountKey,
+            character.CharacterKey, character.ContentId);
         // Normalization is allowed to learn, never forget. Preserve every already-stored entry verbatim,
         // including unknown/future IDs and non-positive legacy values; positive validation is a caller concern.
         var normalizedJobLevels = character.JobLevels == null
@@ -94,6 +96,10 @@ internal static class DadRosterCharacterMerge
         DadRosterCharacter target,
         DadRosterCharacter incoming)
     {
+        // XADB does not supply Trust progress. Preserve only observations owned
+        // by the character still represented by this row.
+        target.TrustProgress = DadTrustProgressRules.ForOwner(target.TrustProgress, target.AccountKey,
+            target.CharacterKey, target.ContentId);
         NormalizeXadbSnapshot(incoming);
         target.JobLevels ??= [];
         MergeJobLedger(
@@ -129,6 +135,8 @@ internal static class DadRosterCharacterMerge
             runtimeSource &&
             HasCompleteXadbJobData(target);
         target.XadbReady |= incoming.XadbReady;
+        target.TrustProgress = DadTrustProgressRules.Merge(target.TrustProgress, incoming.TrustProgress,
+            target.AccountKey, target.CharacterKey, target.ContentId);
         target.IsCurrent |= incoming.IsCurrent;
         target.LastRuntimeSeenUtc = MaxDate(target.LastRuntimeSeenUtc, incoming.LastRuntimeSeenUtc);
         MergeJobLedger(

@@ -30,21 +30,24 @@ internal static class DadLevelingRuntime
     }
 
     public static DadLevelingCompilation Compile(DadPlannerGroup source, DadCharacterPool pool, int iteration,
-        IReadOnlyList<DadLevelingJobDescriptor> jobs, DadPresetProviderService presets)
+        IReadOnlyList<DadLevelingJobDescriptor> jobs, DadPresetProviderService presets, DateTime? minimumTrustObservedAtUtc = null)
     {
-        var duties = (source.LevelingMode?.DutyThresholds ?? [])
+        var duties = source.LevelingMode?.Trust != null
+            ? presets.SearchPlannerDutyOptions(DadPlannerActivityMode.Trust, string.Empty, 1000).ToList()
+            : (source.LevelingMode?.DutyThresholds ?? [])
             .Where(static threshold => threshold != null && threshold.ContentFinderConditionId > 0)
             .Select(threshold => presets.GetPlannerDutyOption(threshold.ContentFinderConditionId))
             .Where(static duty => duty != null).Select(static duty => duty!)
             .DistinctBy(static duty => duty.ContentFinderConditionId).ToList();
-        return DadLevelingModeCompiler.Compile(source, pool, jobs, duties, iteration);
+        return DadLevelingModeCompiler.Compile(source, pool, jobs, duties, iteration, minimumTrustObservedAtUtc: minimumTrustObservedAtUtc);
     }
 
     public static DadLevelingChildBuild BuildChild(DadPlannerGroup source, DadCharacterPool pool, int iteration,
         IReadOnlyList<DadLevelingJobDescriptor> jobs, DadPresetProviderService presets, DadCompletionActions completion,
-        Func<DadPlannerRunRequestPreview, DadCharacterPool, DadPlannerGroup, DadPlannerRunRequestPreview> validate)
+        Func<DadPlannerRunRequestPreview, DadCharacterPool, DadPlannerGroup, DadPlannerRunRequestPreview> validate,
+        DateTime? minimumTrustObservedAtUtc = null)
     {
-        var compilation = Compile(source, pool, iteration, jobs, presets);
+        var compilation = Compile(source, pool, iteration, jobs, presets, minimumTrustObservedAtUtc);
         var build = new DadLevelingChildBuild { Compilation = compilation };
         if (!compilation.CanStartChild || compilation.ChildGroup == null) return build;
         var child = compilation.ChildGroup;

@@ -24,6 +24,11 @@ public sealed class DadRosterCatalogService
     private DadAccountRosterCatalog? cachedLocalCatalog;
     private DateTime cachedLocalCatalogUtc = DateTime.MinValue;
     private string lastRuntimeSourceProjectionDiagnostic = string.Empty;
+    private DadNpcDutyQueueService? trustQueue;
+    private string trustRefreshCommandId = string.Empty;
+    private DadRosterRefreshResultDto? completedTrustRefreshResult;
+
+    public void ConfigureTrustRefresh(DadNpcDutyQueueService queue) => trustQueue = queue;
 
     public DadRosterCatalogService(
         Configuration configuration,
@@ -113,7 +118,8 @@ public sealed class DadRosterCatalogService
                     character.Source,
                     character.SourceClientInstanceId,
                     character.SourceWorkerSessionId.Value,
-                    new DadOrderedSemantic<string>(character.Blockers))))));
+                    new DadOrderedSemantic<string>(character.Blockers),
+                    new global::dad.DadTrustProgressSemantic(character.TrustProgress))))));
 
     public void NotifyAccountPresentationChanged(DadAccountKey accountKey, string alias)
     {
@@ -839,7 +845,54 @@ public sealed class DadRosterCatalogService
         DadRosterRefreshCommandDto command,
         DadParticipantSnapshot snapshot)
     {
+        DadTrustProgress? trust = null;
+        if (command.RefreshTrustRoster && !command.DryRun)
+        {
+            var owner = snapshot.Character;
+            var response = new DadRosterRefreshResultDto { CommandId = command.CommandId, AccountKey = command.AccountKey,
+                CharacterKey = command.CharacterKey, ContentId = command.ContentId, Snapshot = snapshot.Clone() };
+            if (trustQueue == null || command.ContentId == 0 || owner.ContentId != command.ContentId ||
+                !DadRosterIdentity.SameAccount(snapshot.ManagedAccountKey, command.AccountKey) ||
+                !string.Equals(owner.CharacterKey, command.CharacterKey.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                response.Summary = "Trust roster refresh needs the exact current account and character.";
+                return response;
+            }
+            if (!string.Equals(trustRefreshCommandId, command.CommandId, StringComparison.Ordinal))
+            {
+                if (trustQueue.IsTrustRosterRefreshActive)
+                {
+                    response.Summary = "Another Trust roster refresh is already active.";
+                    return response;
+                }
+                trustRefreshCommandId = command.CommandId;
+                completedTrustRefreshResult = null;
+                if (!trustQueue.RequestTrustRosterRefresh(owner))
+                {
+                    response.Summary = trustQueue.TrustRosterRefreshSummary;
+                    completedTrustRefreshResult = response;
+                    return response;
+                }
+            }
+            if (completedTrustRefreshResult != null) return completedTrustRefreshResult;
+            response.Accepted = true;
+            response.Pending = trustQueue.IsTrustRosterRefreshActive;
+            response.Summary = trustQueue.TrustRosterRefreshSummary;
+            if (response.Pending) return response;
+            trust = trustQueue.CaptureTrustProgress(owner);
+            if (trust?.RosterObservedAtUtc is not { } readAt || readAt < command.RequestedAtUtc)
+            {
+                completedTrustRefreshResult = response;
+                return response;
+            }
+        }
         var result = xadbClient.RefreshAndSaveForRosterUpdate(command, snapshot);
+        if (trust != null)
+        {
+            result.Snapshot.Character.TrustProgress = trust.Clone();
+            completedTrustRefreshResult = result;
+            if (result.Success) ApplyExactRefreshTruth(result, snapshot);
+        }
         RecordRefreshResult(result);
         return result;
     }
@@ -1079,6 +1132,8 @@ public sealed class DadRosterCatalogService
         refreshed.LastRuntimeSeenUtc = participant.LastHeartbeatUtc;
         refreshed.LastRosterRefreshUtc = result.RefreshedAtUtc;
         refreshed.JobLevels = new Dictionary<uint, int>(xadb.JobLevels ?? []);
+        refreshed.TrustProgress = DadTrustProgressRules.Merge(refreshed.TrustProgress, snapshot?.TrustProgress,
+            result.AccountKey, result.CharacterKey, result.ContentId);
         refreshed.CurrentJobId = xadb.CurrentJobId ?? snapshot?.CurrentJobId;
         refreshed.CurrentJobAbbrev = FirstNonEmpty(xadb.CurrentJobAbbrev, snapshot?.CurrentJobAbbrev);
         refreshed.CurrentLevel = xadb.CurrentLevel ?? snapshot?.CurrentLevel;
@@ -2051,6 +2106,8 @@ public sealed class DadRosterCatalogService
     private static DadRosterKnownCharacterRecord ToKnownRecord(DadRosterCharacter character)
         => new()
         {
+            TrustProgress = DadTrustProgressRules.ForOwner(character.TrustProgress, character.AccountKey,
+                character.CharacterKey, character.ContentId),
             AccountKey = character.AccountKey,
             AccountAlias = character.AccountAlias,
             CharacterKey = character.CharacterKey.Value,
@@ -2077,6 +2134,8 @@ public sealed class DadRosterCatalogService
     private static DadRosterCharacter ToRosterCharacter(DadRosterKnownCharacterRecord record)
         => new()
         {
+            TrustProgress = DadTrustProgressRules.ForOwner(record.TrustProgress, record.AccountKey,
+                new DadCharacterKey(record.CharacterKey), record.ContentId),
             AccountKey = record.AccountKey,
             AccountAlias = record.AccountAlias,
             CharacterKey = new DadCharacterKey(record.CharacterKey),
@@ -2107,6 +2166,8 @@ public sealed class DadRosterCatalogService
     private static DadRosterCharacter FromAcquiredCharacter(DadAcquiredCharacter character)
         => new()
         {
+            TrustProgress = DadTrustProgressRules.ForOwner(character.TrustProgress, ResolveAccountKey(character),
+                new DadCharacterKey(character.CharacterKey), character.ContentId),
             AccountKey = ResolveAccountKey(character),
             AccountAlias = character.AccountAlias,
             CharacterKey = new DadCharacterKey(character.CharacterKey),
@@ -2135,6 +2196,8 @@ public sealed class DadRosterCatalogService
     private static DadAcquiredCharacter ToAcquiredCharacter(DadRosterCharacter character)
         => new()
         {
+            TrustProgress = DadTrustProgressRules.ForOwner(character.TrustProgress, character.AccountKey,
+                character.CharacterKey, character.ContentId),
             CharacterKey = character.CharacterKey.Value,
             ContentId = character.ContentId,
             CharacterName = character.CharacterName,
@@ -2406,7 +2469,8 @@ internal sealed record DadRosterCatalogCharacterSemantic(
     DadCharacterSource Source,
     string SourceClientInstanceId,
     string SourceWorkerSessionId,
-    DadOrderedSemantic<string> Blockers);
+    DadOrderedSemantic<string> Blockers,
+    global::dad.DadTrustProgressSemantic TrustProgress);
 
 public sealed class DadPlannerRosterSnapshot
 {

@@ -9,6 +9,9 @@ namespace dad.Services;
 public sealed class DadShareService
 {
     private const int MaxTextLength = 512;
+    private static bool HasTrustChoices(DadShareEnvelopeDto envelope)
+        => (envelope.Plan != null && (envelope.Plan.TrustParty != null || envelope.Plan.LevelingMode?.Trust != null)) ||
+           (envelope.Plans ?? []).Any(static plan => plan?.TrustParty != null || plan?.LevelingMode?.Trust != null);
     private const int MaxCommandLength = 2_048;
     private const int MaxCommands = 64;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
@@ -130,6 +133,8 @@ public sealed class DadShareService
         encoded = string.Empty;
         if (envelope == null)
             return Fail("Share payload is empty.", out error);
+        if (envelope.Schema == DadShareConstants.Schema && HasTrustChoices(envelope))
+            envelope.Schema = DadShareConstants.TrustSchema;
         if (!TryValidateEnvelope(envelope, envelope.Kind, out error))
             return false;
 
@@ -220,8 +225,11 @@ public sealed class DadShareService
             return Fail("Share payload is empty.", out error);
         if (!string.Equals(envelope.Format, DadShareConstants.Format, StringComparison.Ordinal))
             return Fail($"Unknown share format '{envelope.Format}'.", out error);
-        if (envelope.Schema is < DadShareConstants.MinimumSupportedSchema or > DadShareConstants.Schema)
+        if (envelope.Schema is < DadShareConstants.MinimumSupportedSchema or > DadShareConstants.TrustSchema ||
+            envelope.Schema == DadShareConstants.TrustSchema && !HasTrustChoices(envelope))
             return Fail($"Unsupported share schema {envelope.Schema}.", out error);
+        if (envelope.Schema < DadShareConstants.TrustSchema && HasTrustChoices(envelope))
+            return Fail("Trust party and NPC leveling choices require share schema 6.", out error);
         if (envelope.Schema < 5 && (envelope.Plan?.ShoppingAssociations?.Count > 0 ||
             envelope.Schedule?.ShoppingAssociations?.Count > 0 || envelope.Plans?.Any(plan => plan.ShoppingAssociations?.Count > 0) == true))
             return Fail("Per-member assignments require share schema 5.", out error);
@@ -658,6 +666,7 @@ public sealed class DadShareService
             MogtomeDutyPolicy = privacy.Sanitize(source.MogtomeDutyPolicy),
             GatherParty = BuildGatherTaskDto(source, privacy),
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
+            TrustParty = source.TrustParty?.Clone(),
             StopPolicy = new DadShareStopPolicyDto
             {
                 Mode = stop.Mode,
@@ -673,6 +682,7 @@ public sealed class DadShareService
             {
                 RefreshRecommendedGear = source.LevelingMode?.RefreshRecommendedGear ?? true,
                 Enabled = source.LevelingMode?.Enabled ?? false,
+                Trust = source.LevelingMode?.Trust?.Clone(),
                 GoalLevel = source.LevelingMode?.GoalLevel ?? DadRunStopPolicy.DefaultTargetLevel,
                 JobOrder = source.LevelingMode?.JobOrder ?? DadLevelingJobOrder.LowestFirst,
                 DutyThresholds = (source.LevelingMode?.DutyThresholds ?? [])
@@ -840,6 +850,7 @@ public sealed class DadShareService
             MogtomeDutyPolicy = source.MogtomeDutyPolicy,
             GatherParty = source.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = source.RefreshTrustNpcLevels,
+            TrustParty = source.TrustParty?.Clone(),
             StopPolicy = new DadRunStopPolicy
             {
                 Mode = source.StopPolicy.Mode,
@@ -855,6 +866,7 @@ public sealed class DadShareService
             {
                 RefreshRecommendedGear = source.LevelingMode?.RefreshRecommendedGear ?? true,
                 Enabled = source.LevelingMode?.Enabled ?? false,
+                Trust = source.LevelingMode?.Trust?.Clone(),
                 GoalLevel = source.LevelingMode?.GoalLevel ?? DadRunStopPolicy.DefaultTargetLevel,
                 JobOrder = source.LevelingMode?.JobOrder ?? DadLevelingJobOrder.LowestFirst,
                 DutyThresholds = (source.LevelingMode?.DutyThresholds ?? [])
@@ -1102,6 +1114,15 @@ public sealed class DadShareService
         }
         if (plan.LevelingMode == null || !IsDefined(plan.LevelingMode.JobOrder))
             return Fail("Plan Leveling Mode settings are invalid.", out error);
+        if (plan.TrustParty is { } fixedParty && (fixedParty.PlayerJobId == 0 || fixedParty.Npcs is not { Count: 3 } ||
+            fixedParty.Npcs.Distinct().Count() != 3 || fixedParty.Npcs.Any(static npc => npc == DadTrustNpcId.Unknown || !Enum.IsDefined(npc))))
+            return Fail("Plan Trust party is invalid.", out error);
+        if (plan.LevelingMode.Trust is { } trust && (trust.NpcTargetLevel is < 1 or > 999 ||
+            trust.LevelPlayerJobs && trust.PlayerTargetLevel is < 1 or > 999 || trust.AllowedJobs is not { Count: > 0 and <= 64 } ||
+            trust.AllowedJobs.Any(static job => job == 0) || trust.AllowedJobs.Distinct().Count() != trust.AllowedJobs.Count ||
+            trust.SelectedNpcs == null || trust.SelectedNpcs.Count > 32 ||
+            trust.SelectedNpcs.Any(static npc => npc == DadTrustNpcId.Unknown || !Enum.IsDefined(npc))))
+            return Fail("Plan Trust leveling settings are invalid.", out error);
         if (plan.LevelingMode.GoalLevel is < 1 or > 999)
             return Fail("Plan Leveling Mode goal is invalid.", out error);
         if (plan.LevelingMode.DutyThresholds == null || plan.LevelingMode.DutyThresholds.Count > 256)

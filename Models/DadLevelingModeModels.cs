@@ -28,6 +28,7 @@ public sealed class DadLevelingModeOptions
     public int GoalLevel { get; set; } = DadRunStopPolicy.DefaultTargetLevel;
     public DadLevelingJobOrder JobOrder { get; set; } = DadLevelingJobOrder.LowestFirst;
     public List<DadLevelingDutyThreshold> DutyThresholds { get; set; } = [];
+    public DadTrustLevelingOptions? Trust { get; set; }
 
     public DadLevelingModeOptions Normalize()
     {
@@ -50,6 +51,7 @@ public sealed class DadLevelingModeOptions
             RefreshRecommendedGear = RefreshRecommendedGear,
             GoalLevel = GoalLevel,
             JobOrder = JobOrder,
+            Trust = Trust?.Clone(),
             DutyThresholds = (DutyThresholds ?? [])
                 .Where(static threshold => threshold != null)
                 .Select(static threshold => threshold.Clone())

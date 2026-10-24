@@ -92,6 +92,8 @@ internal static class DadRosterKnownCharacterLedger
         merged.UpdatedAtUtc = leftCopy.UpdatedAtUtc >= rightCopy.UpdatedAtUtc
             ? leftCopy.UpdatedAtUtc
             : rightCopy.UpdatedAtUtc;
+        merged.TrustProgress = DadTrustProgressRules.Merge(leftCopy.TrustProgress, rightCopy.TrustProgress,
+            merged.AccountKey, new DadCharacterKey(merged.CharacterKey), merged.ContentId);
         return merged;
     }
 
@@ -120,6 +122,7 @@ internal static class DadRosterKnownCharacterLedger
            && string.Equals(left.SnapshotQuality, right.SnapshotQuality, StringComparison.Ordinal)
            && left.SnapshotVersion == right.SnapshotVersion
            && left.XadbReady == right.XadbReady
+           && DadTrustProgressRules.Same(left.TrustProgress, right.TrustProgress)
            && left.MapEligible == right.MapEligible
            && string.Equals(left.MapEligibilitySummary, right.MapEligibilitySummary, StringComparison.Ordinal)
            && left.UpdatedAtUtc == right.UpdatedAtUtc
@@ -145,6 +148,7 @@ internal static class DadRosterKnownCharacterLedger
            && string.Equals(left.SnapshotQuality, right.SnapshotQuality, StringComparison.Ordinal)
            && left.SnapshotVersion == right.SnapshotVersion
            && left.XadbReady == right.XadbReady
+           && DadTrustProgressRules.Same(left.TrustProgress, right.TrustProgress)
            && left.MapEligible == right.MapEligible
            && string.Equals(left.MapEligibilitySummary, right.MapEligibilitySummary, StringComparison.Ordinal)
            && DictionariesEqual(left.JobLevels, right.JobLevels);
@@ -178,6 +182,8 @@ internal static class DadRosterKnownCharacterLedger
     private static DadRosterKnownCharacterRecord CloneForLedger(DadRosterKnownCharacterRecord source)
         => new()
         {
+            TrustProgress = DadTrustProgressRules.ForOwner(source.TrustProgress, source.AccountKey,
+                new DadCharacterKey(source.CharacterKey), source.ContentId),
             AccountKey = source.AccountKey,
             AccountAlias = source.AccountAlias ?? string.Empty,
             CharacterKey = source.CharacterKey ?? string.Empty,

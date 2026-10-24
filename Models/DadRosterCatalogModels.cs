@@ -99,6 +99,7 @@ public sealed class DadRosterCatalogConfiguration
 
 public sealed class DadRosterKnownCharacterRecord
 {
+    public DadTrustProgress? TrustProgress { get; set; }
     public DadAccountKey AccountKey { get; set; } = new(string.Empty);
     public string AccountAlias { get; set; } = string.Empty;
     public string CharacterKey { get; set; } = string.Empty;
@@ -124,6 +125,7 @@ public sealed class DadRosterKnownCharacterRecord
     public DadRosterKnownCharacterRecord Clone()
         => new()
         {
+            TrustProgress = TrustProgress?.Clone(),
             AccountKey = AccountKey,
             AccountAlias = AccountAlias,
             CharacterKey = CharacterKey,
@@ -306,6 +308,7 @@ public static class DadRosterIdentity
 
 public sealed class DadRosterCharacter
 {
+    public DadTrustProgress? TrustProgress { get; set; }
     public DadAccountKey AccountKey { get; set; } = new(string.Empty);
     public string AccountAlias { get; set; } = string.Empty;
     public DadCharacterKey CharacterKey { get; set; } = new(string.Empty);
@@ -340,6 +343,7 @@ public sealed class DadRosterCharacter
     public DadRosterCharacter Clone()
         => new()
         {
+            TrustProgress = TrustProgress?.Clone(),
             AccountKey = AccountKey,
             AccountAlias = AccountAlias,
             CharacterKey = CharacterKey,
@@ -536,6 +540,7 @@ public sealed class DadRosterRefreshCommandDto
     public ulong ContentId { get; set; }
     public bool SaveAfterRefresh { get; set; } = true;
     public bool DryRun { get; set; }
+    public bool RefreshTrustRoster { get; set; }
 }
 
 public sealed class DadRosterRefreshResultDto
@@ -546,6 +551,7 @@ public sealed class DadRosterRefreshResultDto
     public ulong ContentId { get; set; }
     public bool Accepted { get; set; }
     public bool Success { get; set; }
+    public bool Pending { get; set; }
     public bool DryRun { get; set; }
     public DateTime? RefreshedAtUtc { get; set; }
     public string Summary { get; set; } = string.Empty;

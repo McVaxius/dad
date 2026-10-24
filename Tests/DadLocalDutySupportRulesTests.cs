@@ -20,7 +20,6 @@ public sealed class DadLocalDutySupportRulesTests
 
     [Theory]
     [InlineData(DadPlannerActivityMode.DailyRoulette)]
-    [InlineData(DadPlannerActivityMode.Trust)]
     [InlineData(DadPlannerActivityMode.PremadeDuty)]
     [InlineData(DadPlannerActivityMode.Msq)]
     [InlineData(DadPlannerActivityMode.LocalDuty)]
@@ -31,6 +30,18 @@ public sealed class DadLocalDutySupportRulesTests
         second.ActivityMode = activity;
         Assert.False(DadLocalDutySupportRules.CanRunPreset(second, "own-account"));
         Assert.False(DadLocalDutySupportRules.CanRunSchedule(Schedule(first, second), [first, second], "own-account"));
+    }
+
+    [Fact]
+    public void ExactOwnAccountTrustUsesTheSameSlotAndAccountBoundaryAsDutySupport()
+    {
+        var group = Preset("trust");
+        group.ActivityMode = DadPlannerActivityMode.Trust;
+        Assert.True(DadLocalDutySupportRules.CanRunPreset(group, "own-account"));
+        Assert.True(DadLocalDutySupportRules.CanRunSchedule(Schedule(group), [group], "own-account"));
+        Assert.False(DadLocalDutySupportRules.CanRunPreset(group, "foreign-account"));
+        group.Slots.Add(new() { SlotId = "Slot2", RequiredAccountKey = new("own-account"), RequiredCharacterKey = new("Other@World") });
+        Assert.False(DadLocalDutySupportRules.CanRunPreset(group, "own-account"));
     }
 
     [Theory]

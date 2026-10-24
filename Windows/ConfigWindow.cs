@@ -92,6 +92,7 @@ public sealed class ConfigWindow : Window, IDisposable
     public override void Draw()
     {
         motion.DrawChrome();
+        if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         ApplyPendingPositionChange();
 

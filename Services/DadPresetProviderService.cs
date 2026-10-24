@@ -382,6 +382,7 @@ public sealed class DadPresetProviderService
             MogtomeDutyPolicy = group.MogtomeDutyPolicy,
             GatherParty = group.GatherParty?.Clone() ?? new(),
             RefreshTrustNpcLevels = group.RefreshTrustNpcLevels,
+            TrustParty = group.TrustParty?.Clone(),
             StopPolicy = group.StopPolicy.Clone(),
             CompletionActions = group.CompletionActions?.Clone(),
             IncludedAccountKeys = DadPlannerSlotRules.NormalizeGroupSlots(group.Slots)
@@ -1074,6 +1075,7 @@ public sealed class DadPresetProviderService
                     Attempts = 1,
                     AutoSelectHighestEligible = options.ActivityMode == DadPlannerActivityMode.TrustLeveling,
                     RefreshNpcLevelsBeforeQueue = options.RefreshTrustNpcLevels,
+                    FixedParty = options.TrustParty?.Clone(),
                 };
                 break;
             case DadPlannerActivityMode.PremadeDuty:

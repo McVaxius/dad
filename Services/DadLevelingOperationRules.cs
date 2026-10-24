@@ -51,6 +51,18 @@ public static class DadLevelingOperationRules
             blocker = $"Exact roster refresh did not prove a complete saved XADB job ledger: {result.Summary}";
             return false;
         }
+        if (command.RefreshTrustRoster)
+        {
+            var trust = DadTrustProgressRules.ForOwner(result.Snapshot?.Character.TrustProgress,
+                command.AccountKey, command.CharacterKey, command.ContentId);
+            if (result.Pending || trust?.RosterObservedAtUtc is not { } readAt || readAt < command.RequestedAtUtc || readAt > DadClock.UtcNow ||
+                trust.Npcs.Count == 0 || trust.Npcs.Any(npc => npc.ObservedAtUtc < command.RequestedAtUtc) ||
+                trust.Duties.Any(duty => duty.ObservedAtUtc < command.RequestedAtUtc))
+            {
+                blocker = "Exact roster refresh did not prove fresh character-owned Trust levels and dungeon membership.";
+                return false;
+            }
+        }
         return true;
     }
 }

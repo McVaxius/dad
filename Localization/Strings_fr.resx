@@ -8909,4 +8909,62 @@ Les lignes</value>
   <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} modification(s) en attente</value></data>
   <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Les personnages sont activés par défaut. Modifiez les profils enregistrés ici sans vous connecter à chaque personnage.</value></data>
   <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Enregistrement du compte en cours</value></data>
+  <data name="trust_ui_001" xml:space="preserve"><value>Tous les compagnons disponibles</value></data>
+  <data name="trust_ui_002" xml:space="preserve"><value>Tous les objectifs de progression Confiance sélectionnés sont atteints.</value></data>
+  <data name="trust_ui_003" xml:space="preserve"><value>Polyvalent</value></data>
+  <data name="trust_ui_004" xml:space="preserve"><value>Équilibrez les niveaux des compagnons ou enregistrez un groupe Confiance fixe.</value></data>
+  <data name="trust_ui_005" xml:space="preserve"><value>Choisir</value></data>
+  <data name="trust_ui_006" xml:space="preserve"><value>Choisissez un personnage de votre compte dans Équipe avant de créer un préréglage Confiance.</value></data>
+  <data name="trust_ui_007" xml:space="preserve"><value>Compagnon</value></data>
+  <data name="trust_ui_008" xml:space="preserve"><value>Compagnon {0}</value></data>
+  <data name="trust_ui_009" xml:space="preserve"><value>Compagnons</value></data>
+  <data name="trust_ui_010" xml:space="preserve"><value>Les compagnons s'arrêtent à leur propre niveau maximal.</value></data>
+  <data name="trust_ui_011" xml:space="preserve"><value>Donjons compatibles</value></data>
+  <data name="trust_ui_012" xml:space="preserve"><value>Donjon</value></data>
+  <data name="trust_ui_013" xml:space="preserve"><value>Les jobs ayant atteint l'objectif peuvent encore aider les compagnons à progresser.</value></data>
+  <data name="trust_ui_014" xml:space="preserve"><value>Jobs que DAD peut utiliser</value></data>
+  <data name="trust_ui_015" xml:space="preserve"><value>Dernière mise à jour</value></data>
+  <data name="trust_ui_016" xml:space="preserve"><value>Niveau</value></data>
+  <data name="trust_ui_017" xml:space="preserve"><value>Niveau {0}</value></data>
+  <data name="trust_ui_018" xml:space="preserve"><value>Niveau maximal</value></data>
+  <data name="trust_ui_019" xml:space="preserve"><value>Faire progresser mes jobs aussi</value></data>
+  <data name="trust_ui_020" xml:space="preserve"><value>Ces niveaux appartiennent à ce personnage. Actualisez-les avant de composer un groupe.</value></data>
+  <data name="trust_ui_021" xml:space="preserve"><value>Verrouillé</value></data>
+  <data name="trust_ui_022" xml:space="preserve"><value>À vérifier</value></data>
+  <data name="trust_ui_023" xml:space="preserve"><value>Nouveau</value></data>
+  <data name="trust_ui_024" xml:space="preserve"><value>Prochaine session</value></data>
+  <data name="trust_ui_025" xml:space="preserve"><value>Aucun donjon compatible. Vérifiez les rôles, niveaux et accès du groupe.</value></data>
+  <data name="trust_ui_026" xml:space="preserve"><value>Progression des PNJ</value></data>
+  <data name="trust_ui_027" xml:space="preserve"><value>Liste des PNJ</value></data>
+  <data name="trust_ui_028" xml:space="preserve"><value>Niveau cible des PNJ</value></data>
+  <data name="trust_ui_029" xml:space="preserve"><value>Seuls les donjons accessibles à tout le groupe sont affichés.</value></data>
+  <data name="trust_ui_030" xml:space="preserve"><value>Votre compte</value></data>
+  <data name="trust_ui_031" xml:space="preserve"><value>Le groupe, le job et le donjon sont réévalués après chaque session.</value></data>
+  <data name="trust_ui_032" xml:space="preserve"><value>Niveau cible des jobs du joueur</value></data>
+  <data name="trust_ui_033" xml:space="preserve"><value>Aperçu du préréglage</value></data>
+  <data name="trust_ui_034" xml:space="preserve"><value>À distance</value></data>
+  <data name="trust_ui_035" xml:space="preserve"><value>Actualisez les niveaux sur le client de ce personnage.</value></data>
+  <data name="trust_ui_036" xml:space="preserve"><value>Actualiser les niveaux Confiance</value></data>
+  <data name="trust_ui_037" xml:space="preserve"><value>Actualisation des niveaux Confiance...</value></data>
+  <data name="trust_ui_038" xml:space="preserve"><value>Lancer le préréglage</value></data>
+  <data name="trust_ui_039" xml:space="preserve"><value>Jouer avec ce groupe exactement comme enregistré.</value></data>
+  <data name="trust_ui_040" xml:space="preserve"><value>Ryne participe uniquement aux missions de Shadowbringers.</value></data>
+  <data name="trust_ui_041" xml:space="preserve"><value>Enregistrer le préréglage</value></data>
+  <data name="trust_ui_042" xml:space="preserve"><value>Enregistrer la configuration</value></data>
+  <data name="trust_ui_043" xml:space="preserve"><value>Enregistrez vos modifications avant de lancer ou de planifier.</value></data>
+  <data name="trust_ui_044" xml:space="preserve"><value>L'enregistrement ne lance aucune session.</value></data>
+  <data name="trust_ui_045" xml:space="preserve"><value>Sélectionnez un compagnon pour voir les donjons compatibles.</value></data>
+  <data name="trust_ui_046" xml:space="preserve"><value>Commencer la progression</value></data>
+  <data name="trust_ui_047" xml:space="preserve"><value>Ce préréglage a changé. Sélectionnez-le à nouveau avant d'enregistrer.</value></data>
+  <data name="trust_ui_048" xml:space="preserve"><value>Préréglages Confiance</value></data>
+  <data name="trust_ui_049" xml:space="preserve"><value>Vous : {0} {1}</value></data>
+  <data name="trust_ui_050" xml:space="preserve"><value>Votre job</value></data>
+  <data name="trust_ui_051" xml:space="preserve"><value>Votre groupe Confiance</value></data>
+  <data name="trust_ui_052" xml:space="preserve"><value>Client Dad peut planifier des missions solo de soutien ou Confiance pour son propre compte ; les autres tâches nécessitent Dad Coordinator.</value></data>
+  <data name="trust_ui_053" xml:space="preserve"><value>Ouvrir Confiance</value></data>
+  <data name="LCARS" xml:space="preserve"><value>LCARS</value></data>
+  <data name="Mute UI sounds" xml:space="preserve"><value>Couper les sons de l’interface</value></data>
+  <data name="Unmute UI sounds" xml:space="preserve"><value>Activer les sons de l’interface</value></data>
+  <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>Panneaux LCARS et commandes avec contour. Les couleurs du sélecteur sont conservées.</value></data>
+  <data name="Audio output is unavailable." xml:space="preserve"><value>La sortie audio est indisponible.</value></data>
 </root>

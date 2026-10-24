@@ -102,7 +102,16 @@ internal sealed record DadPlannerCharacterSemantic(
     bool XadbReady,
     DadRosterVisibility RosterVisibility,
     bool NeedsRosterUpdate,
-    bool? MapEligible);
+    bool? MapEligible,
+    DadTrustProgressSemantic TrustProgress);
+
+internal sealed class DadTrustProgressSemantic(DadTrustProgress? source) : IEquatable<DadTrustProgressSemantic>
+{
+    private readonly DadTrustProgress? snapshot = source?.Clone();
+    public bool Equals(DadTrustProgressSemantic? other) => other != null && DadTrustProgressRules.Same(snapshot, other.snapshot);
+    public override bool Equals(object? obj) => obj is DadTrustProgressSemantic other && Equals(other);
+    public override int GetHashCode() => 0;
+}
 
 internal sealed record DadPlannerDependencySemantic(
     DadOrderedSemantic<DadPlannerDependencyEntrySemantic> Participants);

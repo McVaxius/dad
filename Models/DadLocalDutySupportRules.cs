@@ -1,15 +1,15 @@
 namespace dad.Models;
 
-/// <summary>Local Client Dad scheduling is limited to one exact own-account Duty Support slot.</summary>
+/// <summary>Local Client Dad scheduling is limited to one exact own-account NPC duty slot.</summary>
 public static class DadLocalDutySupportRules
 {
     public const string CoordinatorOnlyReason =
-        "Client Dad may schedule only solo Duty Support for its own account; other work requires Dad Coordinator.";
+        "Client Dad may schedule solo Duty Support or Trust for its own account; other work requires Dad Coordinator.";
 
     public static bool CanRunPreset(DadPlannerGroup? group, string? localAccountId)
     {
         if (group == null || string.IsNullOrWhiteSpace(localAccountId) ||
-            group.ActivityMode != DadPlannerActivityMode.DutySupport ||
+            group.ActivityMode is not (DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.Trust) ||
             group.RunFamily != DadPlannerRunFamily.LevelingNpc || group.TransportOwner != DadTransportOwner.DadDirect ||
             group.AutoPartyFormationOnly || group.IsTemplate || DadShoppingAssociationRules.PlanAssignments(group).Count > 0 ||
             group.DutyExpectedPartySize != 1 || group.Slots is not { Count: > 0 })

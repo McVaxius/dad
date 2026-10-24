@@ -8867,4 +8867,62 @@
   <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} लंबित बदलाव</value></data>
   <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>पात्र डिफ़ॉल्ट रूप से सक्षम हैं। हर पात्र में लॉग इन किए बिना सहेजी गई प्रोफ़ाइल यहाँ संपादित करें।</value></data>
   <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>खाता सहेजा जा रहा है</value></data>
+  <data name="trust_ui_001" xml:space="preserve"><value>सभी उपलब्ध साथी</value></data>
+  <data name="trust_ui_002" xml:space="preserve"><value>चुने गए सभी Trust स्तर लक्ष्य पूरे हो गए हैं।</value></data>
+  <data name="trust_ui_003" xml:space="preserve"><value>सर्वगुणी</value></data>
+  <data name="trust_ui_004" xml:space="preserve"><value>साथियों के स्तर संतुलित करें या एक निश्चित Trust समूह सहेजें।</value></data>
+  <data name="trust_ui_005" xml:space="preserve"><value>चुनें</value></data>
+  <data name="trust_ui_006" xml:space="preserve"><value>Trust प्रीसेट बनाने से पहले क्रू में अपने खाते का पात्र चुनें।</value></data>
+  <data name="trust_ui_007" xml:space="preserve"><value>साथी</value></data>
+  <data name="trust_ui_008" xml:space="preserve"><value>साथी {0}</value></data>
+  <data name="trust_ui_009" xml:space="preserve"><value>साथी सदस्य</value></data>
+  <data name="trust_ui_010" xml:space="preserve"><value>साथी अपने स्तर की सीमा पर रुक जाते हैं।</value></data>
+  <data name="trust_ui_011" xml:space="preserve"><value>अनुकूल डंजन</value></data>
+  <data name="trust_ui_012" xml:space="preserve"><value>डंजन</value></data>
+  <data name="trust_ui_013" xml:space="preserve"><value>लक्ष्य पर पहुँच चुके जॉब भी साथियों का स्तर बढ़ाने में मदद कर सकते हैं।</value></data>
+  <data name="trust_ui_014" xml:space="preserve"><value>DAD द्वारा उपयोग किए जा सकने वाले जॉब</value></data>
+  <data name="trust_ui_015" xml:space="preserve"><value>अंतिम अपडेट</value></data>
+  <data name="trust_ui_016" xml:space="preserve"><value>स्तर</value></data>
+  <data name="trust_ui_017" xml:space="preserve"><value>स्तर {0}</value></data>
+  <data name="trust_ui_018" xml:space="preserve"><value>स्तर की सीमा</value></data>
+  <data name="trust_ui_019" xml:space="preserve"><value>मेरे जॉब का स्तर भी बढ़ाएँ</value></data>
+  <data name="trust_ui_020" xml:space="preserve"><value>ये स्तर इसी पात्र के हैं। समूह की योजना बनाने से पहले इन्हें अपडेट करें।</value></data>
+  <data name="trust_ui_021" xml:space="preserve"><value>लॉक है</value></data>
+  <data name="trust_ui_022" xml:space="preserve"><value>जाँच आवश्यक</value></data>
+  <data name="trust_ui_023" xml:space="preserve"><value>नया</value></data>
+  <data name="trust_ui_024" xml:space="preserve"><value>अगला रन</value></data>
+  <data name="trust_ui_025" xml:space="preserve"><value>कोई अनुकूल डंजन नहीं। समूह की भूमिकाएँ, स्तर और अनलॉक स्थिति जाँचें।</value></data>
+  <data name="trust_ui_026" xml:space="preserve"><value>NPC का स्तर बढ़ाना</value></data>
+  <data name="trust_ui_027" xml:space="preserve"><value>NPC सूची</value></data>
+  <data name="trust_ui_028" xml:space="preserve"><value>NPC लक्ष्य स्तर</value></data>
+  <data name="trust_ui_029" xml:space="preserve"><value>केवल पूरे समूह के लिए उपलब्ध डंजन दिखाए जाते हैं।</value></data>
+  <data name="trust_ui_030" xml:space="preserve"><value>अपना खाता</value></data>
+  <data name="trust_ui_031" xml:space="preserve"><value>हर रन के बाद समूह, जॉब और डंजन फिर चुने जाते हैं।</value></data>
+  <data name="trust_ui_032" xml:space="preserve"><value>खिलाड़ी के जॉब का लक्ष्य स्तर</value></data>
+  <data name="trust_ui_033" xml:space="preserve"><value>प्रीसेट पूर्वावलोकन</value></data>
+  <data name="trust_ui_034" xml:space="preserve"><value>दूर से</value></data>
+  <data name="trust_ui_035" xml:space="preserve"><value>इस पात्र को चलाने वाले क्लाइंट पर स्तर अपडेट करें।</value></data>
+  <data name="trust_ui_036" xml:space="preserve"><value>Trust स्तर अपडेट करें</value></data>
+  <data name="trust_ui_037" xml:space="preserve"><value>Trust स्तर अपडेट हो रहे हैं...</value></data>
+  <data name="trust_ui_038" xml:space="preserve"><value>प्रीसेट चलाएँ</value></data>
+  <data name="trust_ui_039" xml:space="preserve"><value>इस समूह को ठीक सहेजे गए रूप में चलाएँ।</value></data>
+  <data name="trust_ui_040" xml:space="preserve"><value>Ryne केवल Shadowbringers की सामग्री में भाग लेती है।</value></data>
+  <data name="trust_ui_041" xml:space="preserve"><value>प्रीसेट सहेजें</value></data>
+  <data name="trust_ui_042" xml:space="preserve"><value>सेटअप सहेजें</value></data>
+  <data name="trust_ui_043" xml:space="preserve"><value>शुरू करने या शेड्यूल बनाने से पहले बदलाव सहेजें।</value></data>
+  <data name="trust_ui_044" xml:space="preserve"><value>सहेजने से रन शुरू नहीं होता।</value></data>
+  <data name="trust_ui_045" xml:space="preserve"><value>अनुकूल डंजन देखने के लिए साथी चुनें।</value></data>
+  <data name="trust_ui_046" xml:space="preserve"><value>स्तर बढ़ाना शुरू करें</value></data>
+  <data name="trust_ui_047" xml:space="preserve"><value>यह प्रीसेट बदल गया है। सहेजने से पहले इसे फिर चुनें।</value></data>
+  <data name="trust_ui_048" xml:space="preserve"><value>Trust प्रीसेट</value></data>
+  <data name="trust_ui_049" xml:space="preserve"><value>आप: {0} {1}</value></data>
+  <data name="trust_ui_050" xml:space="preserve"><value>आपका जॉब</value></data>
+  <data name="trust_ui_051" xml:space="preserve"><value>आपका Trust समूह</value></data>
+  <data name="trust_ui_052" xml:space="preserve"><value>Client Dad अपने खाते के लिए एकल Duty Support या Trust शेड्यूल कर सकता है; अन्य कामों के लिए Dad Coordinator चाहिए।</value></data>
+  <data name="trust_ui_053" xml:space="preserve"><value>Trust खोलें</value></data>
+  <data name="LCARS" xml:space="preserve"><value>LCARS</value></data>
+  <data name="Mute UI sounds" xml:space="preserve"><value>UI ध्वनियाँ म्यूट करें</value></data>
+  <data name="Unmute UI sounds" xml:space="preserve"><value>UI ध्वनियाँ चालू करें</value></data>
+  <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>LCARS पैनल और बाहरी रेखा वाले नियंत्रण। पिकर के रंग सुरक्षित रहते हैं।</value></data>
+  <data name="Audio output is unavailable." xml:space="preserve"><value>ऑडियो आउटपुट उपलब्ध नहीं है।</value></data>
 </root>

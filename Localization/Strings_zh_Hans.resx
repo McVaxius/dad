@@ -8875,4 +8875,62 @@
   <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} 项待保存更改</value></data>
   <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>角色默认启用。无需登录各个角色，即可在此编辑已存储的配置。</value></data>
   <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>正在保存账号</value></data>
+  <data name="trust_ui_001" xml:space="preserve"><value>所有可用伙伴</value></data>
+  <data name="trust_ui_002" xml:space="preserve"><value>已达成所有选定的信托练级目标。</value></data>
+  <data name="trust_ui_003" xml:space="preserve"><value>全能型</value></data>
+  <data name="trust_ui_004" xml:space="preserve"><value>平衡伙伴等级，或保存固定的信托队伍。</value></data>
+  <data name="trust_ui_005" xml:space="preserve"><value>选择</value></data>
+  <data name="trust_ui_006" xml:space="preserve"><value>创建信托预设前，请先在队员页面选择自己账号的角色。</value></data>
+  <data name="trust_ui_007" xml:space="preserve"><value>伙伴</value></data>
+  <data name="trust_ui_008" xml:space="preserve"><value>伙伴 {0}</value></data>
+  <data name="trust_ui_009" xml:space="preserve"><value>伙伴</value></data>
+  <data name="trust_ui_010" xml:space="preserve"><value>伙伴达到各自的等级上限后停止练级。</value></data>
+  <data name="trust_ui_011" xml:space="preserve"><value>可参与的副本</value></data>
+  <data name="trust_ui_012" xml:space="preserve"><value>副本</value></data>
+  <data name="trust_ui_013" xml:space="preserve"><value>已达到目标等级的职业仍可帮助伙伴练级。</value></data>
+  <data name="trust_ui_014" xml:space="preserve"><value>DAD可以使用的职业</value></data>
+  <data name="trust_ui_015" xml:space="preserve"><value>最后更新</value></data>
+  <data name="trust_ui_016" xml:space="preserve"><value>等级</value></data>
+  <data name="trust_ui_017" xml:space="preserve"><value>等级 {0}</value></data>
+  <data name="trust_ui_018" xml:space="preserve"><value>等级上限</value></data>
+  <data name="trust_ui_019" xml:space="preserve"><value>同时提升我的职业</value></data>
+  <data name="trust_ui_020" xml:space="preserve"><value>这些等级属于当前角色。规划队伍前请先刷新。</value></data>
+  <data name="trust_ui_021" xml:space="preserve"><value>未解锁</value></data>
+  <data name="trust_ui_022" xml:space="preserve"><value>需要检查</value></data>
+  <data name="trust_ui_023" xml:space="preserve"><value>新建</value></data>
+  <data name="trust_ui_024" xml:space="preserve"><value>下一次运行</value></data>
+  <data name="trust_ui_025" xml:space="preserve"><value>没有适合的副本。请检查队伍职责、等级和解锁状态。</value></data>
+  <data name="trust_ui_026" xml:space="preserve"><value>NPC练级</value></data>
+  <data name="trust_ui_027" xml:space="preserve"><value>NPC名册</value></data>
+  <data name="trust_ui_028" xml:space="preserve"><value>NPC目标等级</value></data>
+  <data name="trust_ui_029" xml:space="preserve"><value>仅列出整个队伍都可以参与的副本。</value></data>
+  <data name="trust_ui_030" xml:space="preserve"><value>自己的账号</value></data>
+  <data name="trust_ui_031" xml:space="preserve"><value>每次运行后重新选择队伍、职业和副本。</value></data>
+  <data name="trust_ui_032" xml:space="preserve"><value>玩家职业目标等级</value></data>
+  <data name="trust_ui_033" xml:space="preserve"><value>预设预览</value></data>
+  <data name="trust_ui_034" xml:space="preserve"><value>远程</value></data>
+  <data name="trust_ui_035" xml:space="preserve"><value>请在运行此角色的客户端刷新等级。</value></data>
+  <data name="trust_ui_036" xml:space="preserve"><value>刷新信托等级</value></data>
+  <data name="trust_ui_037" xml:space="preserve"><value>正在刷新信托等级……</value></data>
+  <data name="trust_ui_038" xml:space="preserve"><value>运行预设</value></data>
+  <data name="trust_ui_039" xml:space="preserve"><value>严格按保存的成员组成运行。</value></data>
+  <data name="trust_ui_040" xml:space="preserve"><value>琳只参与Shadowbringers的内容。</value></data>
+  <data name="trust_ui_041" xml:space="preserve"><value>保存预设</value></data>
+  <data name="trust_ui_042" xml:space="preserve"><value>保存设置</value></data>
+  <data name="trust_ui_043" xml:space="preserve"><value>开始或安排计划前请先保存更改。</value></data>
+  <data name="trust_ui_044" xml:space="preserve"><value>保存不会开始运行。</value></data>
+  <data name="trust_ui_045" xml:space="preserve"><value>选择伙伴以查看可参与的副本。</value></data>
+  <data name="trust_ui_046" xml:space="preserve"><value>开始练级</value></data>
+  <data name="trust_ui_047" xml:space="preserve"><value>此预设已更改。保存前请重新选择。</value></data>
+  <data name="trust_ui_048" xml:space="preserve"><value>信托预设</value></data>
+  <data name="trust_ui_049" xml:space="preserve"><value>你：{0} {1}</value></data>
+  <data name="trust_ui_050" xml:space="preserve"><value>你的职业</value></data>
+  <data name="trust_ui_051" xml:space="preserve"><value>你的信托队伍</value></data>
+  <data name="trust_ui_052" xml:space="preserve"><value>Client Dad可以为自己的账号安排单人Duty Support或信托任务；其他任务需要Dad Coordinator。</value></data>
+  <data name="trust_ui_053" xml:space="preserve"><value>打开信托</value></data>
+  <data name="LCARS" xml:space="preserve"><value>LCARS</value></data>
+  <data name="Mute UI sounds" xml:space="preserve"><value>静音界面音效</value></data>
+  <data name="Unmute UI sounds" xml:space="preserve"><value>启用界面音效</value></data>
+  <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>LCARS面板与描边控件。保留选色器颜色。</value></data>
+  <data name="Audio output is unavailable." xml:space="preserve"><value>音频输出不可用。</value></data>
 </root>

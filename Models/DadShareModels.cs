@@ -5,6 +5,7 @@ public static class DadShareConstants
     public const string Format = "dad-share";
     public const int MinimumSupportedSchema = 1;
     public const int Schema = 5;
+    public const int TrustSchema = 6;
     public const string PlanKind = "plan";
     public const string ScheduleKind = "schedule";
     public const int MaxEncodedCharacters = 1_048_576;
@@ -85,6 +86,7 @@ public sealed class DadSharePlanDto
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public DadGatherPartyTask? GatherParty { get; set; }
     public bool RefreshTrustNpcLevels { get; set; } = true;
+    public DadTrustFixedParty? TrustParty { get; set; }
     public DadShareStopPolicyDto StopPolicy { get; set; } = new();
     public DadShareLevelingModeDto LevelingMode { get; set; } = new();
     public DadShareCompletionActionsDto? CompletionActions { get; set; }
@@ -103,6 +105,7 @@ public sealed class DadShareLevelingModeDto
     public int GoalLevel { get; set; } = DadRunStopPolicy.DefaultTargetLevel;
     public DadLevelingJobOrder JobOrder { get; set; } = DadLevelingJobOrder.LowestFirst;
     public List<DadShareLevelingDutyThresholdDto> DutyThresholds { get; set; } = [];
+    public DadTrustLevelingOptions? Trust { get; set; }
 }
 
 public sealed class DadShareLevelingDutyThresholdDto

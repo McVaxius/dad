@@ -8867,4 +8867,62 @@
   <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} pending change(s)</value></data>
   <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Characters are enabled by default. Edit stored profiles here without logging into each character.</value></data>
   <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Account save in progress</value></data>
+  <data name="trust_ui_001" xml:space="preserve"><value>All available companions</value></data>
+  <data name="trust_ui_002" xml:space="preserve"><value>All selected Trust leveling goals are reached.</value></data>
+  <data name="trust_ui_003" xml:space="preserve"><value>All-rounder</value></data>
+  <data name="trust_ui_004" xml:space="preserve"><value>Balance companions, or save an exact Trust party.</value></data>
+  <data name="trust_ui_005" xml:space="preserve"><value>Choose</value></data>
+  <data name="trust_ui_006" xml:space="preserve"><value>Choose an own-account character in Crew before creating a Trust preset.</value></data>
+  <data name="trust_ui_007" xml:space="preserve"><value>Companion</value></data>
+  <data name="trust_ui_008" xml:space="preserve"><value>Companion {0}</value></data>
+  <data name="trust_ui_009" xml:space="preserve"><value>Companions</value></data>
+  <data name="trust_ui_010" xml:space="preserve"><value>Companions stop at their own level cap.</value></data>
+  <data name="trust_ui_011" xml:space="preserve"><value>Compatible dungeons</value></data>
+  <data name="trust_ui_012" xml:space="preserve"><value>Dungeon</value></data>
+  <data name="trust_ui_013" xml:space="preserve"><value>Jobs already at target can still help level companions.</value></data>
+  <data name="trust_ui_014" xml:space="preserve"><value>Jobs DAD may use</value></data>
+  <data name="trust_ui_015" xml:space="preserve"><value>Last updated</value></data>
+  <data name="trust_ui_016" xml:space="preserve"><value>Level</value></data>
+  <data name="trust_ui_017" xml:space="preserve"><value>Level {0}</value></data>
+  <data name="trust_ui_018" xml:space="preserve"><value>Level cap</value></data>
+  <data name="trust_ui_019" xml:space="preserve"><value>Level my jobs too</value></data>
+  <data name="trust_ui_020" xml:space="preserve"><value>Levels belong to this character. Refresh them before planning a party.</value></data>
+  <data name="trust_ui_021" xml:space="preserve"><value>Locked</value></data>
+  <data name="trust_ui_022" xml:space="preserve"><value>Needs attention</value></data>
+  <data name="trust_ui_023" xml:space="preserve"><value>New</value></data>
+  <data name="trust_ui_024" xml:space="preserve"><value>Next run</value></data>
+  <data name="trust_ui_025" xml:space="preserve"><value>No compatible dungeon. Check party roles, levels and unlocks.</value></data>
+  <data name="trust_ui_026" xml:space="preserve"><value>NPC leveling</value></data>
+  <data name="trust_ui_027" xml:space="preserve"><value>NPC roster</value></data>
+  <data name="trust_ui_028" xml:space="preserve"><value>NPC target level</value></data>
+  <data name="trust_ui_029" xml:space="preserve"><value>Only dungeons available to this whole party are listed.</value></data>
+  <data name="trust_ui_030" xml:space="preserve"><value>Own account</value></data>
+  <data name="trust_ui_031" xml:space="preserve"><value>Party, job and dungeon update after each run.</value></data>
+  <data name="trust_ui_032" xml:space="preserve"><value>Player-job target level</value></data>
+  <data name="trust_ui_033" xml:space="preserve"><value>Preset preview</value></data>
+  <data name="trust_ui_034" xml:space="preserve"><value>Ranged</value></data>
+  <data name="trust_ui_035" xml:space="preserve"><value>Refresh levels on the client running this character.</value></data>
+  <data name="trust_ui_036" xml:space="preserve"><value>Refresh Trust levels</value></data>
+  <data name="trust_ui_037" xml:space="preserve"><value>Refreshing Trust levels...</value></data>
+  <data name="trust_ui_038" xml:space="preserve"><value>Run preset</value></data>
+  <data name="trust_ui_039" xml:space="preserve"><value>Run this group exactly as saved.</value></data>
+  <data name="trust_ui_040" xml:space="preserve"><value>Ryne joins Shadowbringers duties only.</value></data>
+  <data name="trust_ui_041" xml:space="preserve"><value>Save preset</value></data>
+  <data name="trust_ui_042" xml:space="preserve"><value>Save setup</value></data>
+  <data name="trust_ui_043" xml:space="preserve"><value>Save your changes before starting or scheduling.</value></data>
+  <data name="trust_ui_044" xml:space="preserve"><value>Saving does not start a run.</value></data>
+  <data name="trust_ui_045" xml:space="preserve"><value>Select a companion to see compatible dungeons.</value></data>
+  <data name="trust_ui_046" xml:space="preserve"><value>Start leveling</value></data>
+  <data name="trust_ui_047" xml:space="preserve"><value>This preset changed. Select it again before saving.</value></data>
+  <data name="trust_ui_048" xml:space="preserve"><value>Trust presets</value></data>
+  <data name="trust_ui_049" xml:space="preserve"><value>You: {0} {1}</value></data>
+  <data name="trust_ui_050" xml:space="preserve"><value>Your job</value></data>
+  <data name="trust_ui_051" xml:space="preserve"><value>Your Trust party</value></data>
+  <data name="trust_ui_052" xml:space="preserve"><value>Client Dad may schedule solo Duty Support or Trust for its own account; other work requires Dad Coordinator.</value></data>
+  <data name="trust_ui_053" xml:space="preserve"><value>Open Trust</value></data>
+  <data name="LCARS" xml:space="preserve"><value>LCARS</value></data>
+  <data name="Mute UI sounds" xml:space="preserve"><value>Mute UI sounds</value></data>
+  <data name="Unmute UI sounds" xml:space="preserve"><value>Unmute UI sounds</value></data>
+  <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>LCARS panels and outlined controls. Picker colours are retained.</value></data>
+  <data name="Audio output is unavailable." xml:space="preserve"><value>Audio output is unavailable.</value></data>
 </root>

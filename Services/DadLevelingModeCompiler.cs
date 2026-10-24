@@ -13,7 +13,8 @@ public static class DadLevelingModeCompiler
         IEnumerable<DadLevelingJobDescriptor> jobCatalog,
         IEnumerable<DadPlannerDutyOption> dutyCatalog,
         int iteration = 1,
-        Func<string>? idFactory = null)
+        Func<string>? idFactory = null,
+        DateTime? minimumTrustObservedAtUtc = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(pool);
@@ -24,6 +25,8 @@ public static class DadLevelingModeCompiler
         var options = source.LevelingMode?.Clone() ?? new DadLevelingModeOptions();
         if (!options.Enabled)
             return Block(result, "Leveling Mode is disabled.");
+        if (options.Trust != null)
+            return CompileTrust(source, pool, jobCatalog, dutyCatalog, result, idFactory, minimumTrustObservedAtUtc);
         if (options.GoalLevel is < 1 or > 999)
             return Block(result, "Leveling Mode goal must be between level 1 and 999.");
         if (!Enum.IsDefined(options.JobOrder))
@@ -180,6 +183,48 @@ public static class DadLevelingModeCompiler
         npcLane = childLane is DadPlannerActivityMode.DutySupport or DadPlannerActivityMode.Trust;
         runFamily = npcLane ? DadPlannerRunFamily.LevelingNpc : DadPlannerRunFamily.DutyFinder;
         return npcLane || childLane == DadPlannerActivityMode.PremadeDuty;
+    }
+
+    private static DadLevelingCompilation CompileTrust(DadPlannerGroup source, DadCharacterPool pool,
+        IEnumerable<DadLevelingJobDescriptor> jobs, IEnumerable<DadPlannerDutyOption> duties,
+        DadLevelingCompilation result, Func<string>? idFactory, DateTime? minimumObservedAtUtc)
+    {
+        if (!TryNormalizeLane(source.ActivityMode, out var lane, out _, out _) || lane != DadPlannerActivityMode.Trust)
+            return Block(result, "NPC leveling requires the Trust lane.");
+        var rows = DadPlannerSlotRules.GetPrimaryRows(source.Slots);
+        if (rows.Count != 1 || !DadPlannerSlotRules.IsLeaderSlot(rows[0].SlotId) || rows[0].SharedIdentity != null ||
+            rows[0].RequiredAccountKey.IsEmpty || rows[0].RequiredCharacterKey.IsEmpty)
+            return Block(result, "Trust NPC leveling requires one exact own-account character in Slot1.");
+        var row = rows[0];
+        var characters = pool.Characters.Where(character => CharacterMatches(row, character)).ToArray();
+        if (characters.Length != 1) return Block(result, "Trust NPC leveling needs one unambiguous exact character record.");
+        var character = characters[0];
+        if (!HasCompleteLedger(character, out var ledgerBlocker)) return Block(result, ledgerBlocker);
+        var descriptors = jobs.ToArray();
+        var selected = DadTrustPartySelector.SelectLeveling(source.LevelingMode.Trust!, character, descriptors, duties, minimumObservedAtUtc);
+        result.Status = selected.Status;
+        result.Summary = selected.Summary;
+        if (selected.Status == DadLevelingCompilationStatus.Blocked) return Block(result, selected.Summary);
+        if (selected.Status == DadLevelingCompilationStatus.Complete) return result;
+        if (selected.Duty == null) return Block(result, "Trust NPC leveling did not select a compatible dungeon.");
+        var job = descriptors.Single(descriptor => descriptor.JobId == selected.PlayerJobId);
+        result.Slots.Add(new() { SlotId = row.SlotId, AccountKey = row.RequiredAccountKey, CharacterKey = row.RequiredCharacterKey,
+            ContentId = character.ContentId, Role = job.Role, JobId = selected.PlayerJobId, JobAbbreviation = job.Abbreviation,
+            JobLevel = selected.PlayerLevel, IsFiller = !selected.IsPlayerLevelingGoal,
+            SlotComplete = !selected.IsPlayerLevelingGoal, Summary = selected.Summary });
+        result.PartyMinimumLevel = Math.Min(selected.PlayerLevel, selected.Npcs.Min(static npc => npc.Level));
+        result.SelectedDuty = selected.Duty;
+        idFactory ??= static () => Guid.NewGuid().ToString("N");
+        result.ChildJobId = idFactory()?.Trim() ?? string.Empty;
+        result.ChildRequestId = idFactory()?.Trim() ?? string.Empty;
+        if (result.ChildJobId.Length == 0 || result.ChildRequestId.Length == 0 ||
+            string.Equals(result.ChildJobId, result.ChildRequestId, StringComparison.OrdinalIgnoreCase))
+            return Block(result, "Trust leveling requires unique non-empty child identities.");
+        result.ChildGroup = BuildFrozenChild(source, rows, result.Slots, selected.Duty, DadPlannerActivityMode.Trust, DadPlannerRunFamily.LevelingNpc, true);
+        result.ChildGroup.TrustParty = new() { PlayerJobId = selected.PlayerJobId, Npcs = selected.Npcs.Select(static npc => npc.NpcId).ToList() };
+        result.ChildGroup.Slots[0].RequiredRole = job.Role;
+        result.ChildGroup.RefreshTrustNpcLevels = true;
+        return result;
     }
 
     public static bool IsEligibleForRole(DadLevelingJobDescriptor descriptor, DadPartyRole role)

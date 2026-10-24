@@ -8867,4 +8867,62 @@
   <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} bekleyen değişiklik</value></data>
   <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>Karakterler varsayılan olarak etkindir. Her karakterle giriş yapmadan kayıtlı profilleri burada düzenleyin.</value></data>
   <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Hesap kaydediliyor</value></data>
+  <data name="trust_ui_001" xml:space="preserve"><value>Kullanılabilir tüm yoldaşlar</value></data>
+  <data name="trust_ui_002" xml:space="preserve"><value>Seçilen tüm Trust seviye hedeflerine ulaşıldı.</value></data>
+  <data name="trust_ui_003" xml:space="preserve"><value>Çok yönlü</value></data>
+  <data name="trust_ui_004" xml:space="preserve"><value>Yoldaş seviyelerini dengeleyin veya sabit bir Trust grubu kaydedin.</value></data>
+  <data name="trust_ui_005" xml:space="preserve"><value>Seç</value></data>
+  <data name="trust_ui_006" xml:space="preserve"><value>Trust ön ayarı oluşturmadan önce Ekip bölümünden kendi hesabınızdaki bir karakteri seçin.</value></data>
+  <data name="trust_ui_007" xml:space="preserve"><value>Yoldaş</value></data>
+  <data name="trust_ui_008" xml:space="preserve"><value>Yoldaş {0}</value></data>
+  <data name="trust_ui_009" xml:space="preserve"><value>Yoldaşlar</value></data>
+  <data name="trust_ui_010" xml:space="preserve"><value>Yoldaşlar kendi seviye sınırlarına ulaştığında durur.</value></data>
+  <data name="trust_ui_011" xml:space="preserve"><value>Uyumlu zindanlar</value></data>
+  <data name="trust_ui_012" xml:space="preserve"><value>Zindan</value></data>
+  <data name="trust_ui_013" xml:space="preserve"><value>Hedef seviyeye ulaşmış meslekler yoldaşların seviye kazanmasına yardım edebilir.</value></data>
+  <data name="trust_ui_014" xml:space="preserve"><value>DAD'nin kullanabileceği meslekler</value></data>
+  <data name="trust_ui_015" xml:space="preserve"><value>Son güncelleme</value></data>
+  <data name="trust_ui_016" xml:space="preserve"><value>Seviye</value></data>
+  <data name="trust_ui_017" xml:space="preserve"><value>Seviye {0}</value></data>
+  <data name="trust_ui_018" xml:space="preserve"><value>Seviye sınırı</value></data>
+  <data name="trust_ui_019" xml:space="preserve"><value>Mesleklerimin seviyesini de yükselt</value></data>
+  <data name="trust_ui_020" xml:space="preserve"><value>Seviyeler bu karaktere aittir. Grup planlamadan önce güncelleyin.</value></data>
+  <data name="trust_ui_021" xml:space="preserve"><value>Kilitli</value></data>
+  <data name="trust_ui_022" xml:space="preserve"><value>Kontrol gerekli</value></data>
+  <data name="trust_ui_023" xml:space="preserve"><value>Yeni</value></data>
+  <data name="trust_ui_024" xml:space="preserve"><value>Sonraki tur</value></data>
+  <data name="trust_ui_025" xml:space="preserve"><value>Uyumlu zindan yok. Grubun rollerini, seviyelerini ve erişimini kontrol edin.</value></data>
+  <data name="trust_ui_026" xml:space="preserve"><value>NPC seviye yükseltme</value></data>
+  <data name="trust_ui_027" xml:space="preserve"><value>NPC listesi</value></data>
+  <data name="trust_ui_028" xml:space="preserve"><value>NPC hedef seviyesi</value></data>
+  <data name="trust_ui_029" xml:space="preserve"><value>Yalnızca tüm grubun girebildiği zindanlar gösterilir.</value></data>
+  <data name="trust_ui_030" xml:space="preserve"><value>Kendi hesabınız</value></data>
+  <data name="trust_ui_031" xml:space="preserve"><value>Her turdan sonra grup, meslek ve zindan yeniden seçilir.</value></data>
+  <data name="trust_ui_032" xml:space="preserve"><value>Oyuncu mesleği hedef seviyesi</value></data>
+  <data name="trust_ui_033" xml:space="preserve"><value>Ön ayar önizlemesi</value></data>
+  <data name="trust_ui_034" xml:space="preserve"><value>Uzak menzil</value></data>
+  <data name="trust_ui_035" xml:space="preserve"><value>Seviyeleri bu karakteri çalıştıran istemcide güncelleyin.</value></data>
+  <data name="trust_ui_036" xml:space="preserve"><value>Trust seviyelerini güncelle</value></data>
+  <data name="trust_ui_037" xml:space="preserve"><value>Trust seviyeleri güncelleniyor...</value></data>
+  <data name="trust_ui_038" xml:space="preserve"><value>Ön ayarı çalıştır</value></data>
+  <data name="trust_ui_039" xml:space="preserve"><value>Bu grubu tam olarak kaydedildiği gibi kullanın.</value></data>
+  <data name="trust_ui_040" xml:space="preserve"><value>Ryne yalnızca Shadowbringers içeriklerine katılır.</value></data>
+  <data name="trust_ui_041" xml:space="preserve"><value>Ön ayarı kaydet</value></data>
+  <data name="trust_ui_042" xml:space="preserve"><value>Ayarları kaydet</value></data>
+  <data name="trust_ui_043" xml:space="preserve"><value>Başlatmadan veya zamanlamadan önce değişiklikleri kaydedin.</value></data>
+  <data name="trust_ui_044" xml:space="preserve"><value>Kaydetmek bir tur başlatmaz.</value></data>
+  <data name="trust_ui_045" xml:space="preserve"><value>Uyumlu zindanları görmek için bir yoldaş seçin.</value></data>
+  <data name="trust_ui_046" xml:space="preserve"><value>Seviye yükseltmeyi başlat</value></data>
+  <data name="trust_ui_047" xml:space="preserve"><value>Bu ön ayar değişti. Kaydetmeden önce yeniden seçin.</value></data>
+  <data name="trust_ui_048" xml:space="preserve"><value>Trust ön ayarları</value></data>
+  <data name="trust_ui_049" xml:space="preserve"><value>Siz: {0} {1}</value></data>
+  <data name="trust_ui_050" xml:space="preserve"><value>Mesleğiniz</value></data>
+  <data name="trust_ui_051" xml:space="preserve"><value>Trust grubunuz</value></data>
+  <data name="trust_ui_052" xml:space="preserve"><value>Client Dad kendi hesabı için tek kişilik Duty Support veya Trust planlayabilir; diğer işler Dad Coordinator gerektirir.</value></data>
+  <data name="trust_ui_053" xml:space="preserve"><value>Trust'ı aç</value></data>
+  <data name="LCARS" xml:space="preserve"><value>LCARS</value></data>
+  <data name="Mute UI sounds" xml:space="preserve"><value>Arayüz seslerini kapat</value></data>
+  <data name="Unmute UI sounds" xml:space="preserve"><value>Arayüz seslerini aç</value></data>
+  <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>LCARS panelleri ve çerçeveli denetimler. Seçicideki renkler korunur.</value></data>
+  <data name="Audio output is unavailable." xml:space="preserve"><value>Ses çıkışı kullanılamıyor.</value></data>
 </root>

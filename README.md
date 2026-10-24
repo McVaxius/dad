@@ -1,5 +1,7 @@
 # DAD
 
+Window appearance offers **Auto / Picker / LCARS**. Picker colours stay saved when changing modes. LCARS styles the main window, separate Mini and support windows; its UI tones start muted. Settings and each LCARS titlebar speaker share one saved mute choice.
+
 DAD is a duty planner and multibox coordinator for FFXIV. Build reusable crews, ready the right characters,
 assemble and verify parties, queue supported duties and roulettes, and chain proven presets into schedules.
 
@@ -634,9 +636,19 @@ Visual layout and this live Discord/game test require separate acceptance; headl
   The local Create readiness row shows the first exact blocker and disables the button on Client Dads or any other failed
   prerequisite; rejected attempts remain visible and are audited.
 
-## Own-account Duty Support on Client Dads
+## Trust
 
-Client Dads may start saved solo Duty Support presets and schedules containing only those presets for their own
+Use **Trust** in the main navigation for three separate workflows:
+
+- **NPC leveling** balances the lowest eligible selected companions. Set an NPC target, optionally enable **Level my jobs too** with a separate player-job target, and choose the jobs DAD may use in each role. Multiple jobs per role are allowed. Jobs and companions already at their goals may support unfinished goals; each companion stops at its own cap.
+- **Trust presets** save one player job, exactly three companions and a compatible dungeon. The dungeon list checks the whole party's roles, levels, unlocks and observed member eligibility. The saved group is kept exactly; an unavailable companion is never replaced.
+- **NPC roster** shows the selected character's observed companions and compatible dungeons. Refresh levels on the client running that character. Unknown readings remain unknown, and observations stay with their owning character rather than being copied into presets.
+
+Saving does not start a run. Save the setup or preset, then use **Start leveling**, **Run preset**, or **Schedule**. These use the existing presets, schedules, job/gear preparation and ordinary NPC executor. Automatic Trust leveling refreshes character-owned job and Trust observations after each completed run before choosing another party or declaring completion. General player-job leveling remains in **Plan**.
+
+## Own-account Duty Support and Trust on Client Dads
+
+Client Dads may start saved solo Duty Support or Trust presets and schedules containing only those presets for their own
 stable account. Each preset must have one exact Slot1 character; any substitutes must stay on that same account.
 This includes the existing local Wake/relog, requested-job, LevelSeek, repeat, cadence, cancellation and failed-entry
 resume paths. A Coordinator connection is not required for a locally owned takeover; foreign takeover still yields
@@ -646,12 +658,12 @@ This does not promote the Client to Coordinator, change hub ports or enable the 
 execution continues to use its internal LocalOnly authority, with exact owner-aware roster validation.
 
 For independent multibox leveling, keep each instance in the Client role and bind its saved presets to that
-instance's own stable account ID, not merely a matching account alias. Select **Duty Support** with one primary
+instance's own stable account ID, not merely a matching account alias. Select **Duty Support** or **Trust** with one primary
 Slot1 character and party size 1. Build a schedule entirely from those saved presets; characters may differ between
 entries as long as their account is the same. No shared Coordinator or port change is required for these solo runs.
 Use **Wake/relog and run** for a saved preset, or **Run now** in Schedules. Keep the global **Keep runs on this client
 only** setting off when using the normal typed Wake/relog pipeline. That setting is not the permission for Client
-Duty Support and is not the same as the frozen solo request's internal `LocalOnly` authority.
+Duty Support/Trust and is not the same as the frozen solo request's internal `LocalOnly` authority.
 
 Admission, queued-preset selection, automatic preset cadence, daily schedules and failed-entry resume all use the
 same own-account policy. Missing or duplicate schedule references fail closed. If an active schedule becomes mixed

@@ -161,6 +161,7 @@ public enum DadRosterSourceMode
 
 public sealed class DadAcquiredCharacter
 {
+    public DadTrustProgress? TrustProgress { get; set; }
     public string CharacterKey { get; set; } = string.Empty;
     public ulong ContentId { get; set; }
     public string CharacterName { get; set; } = string.Empty;
@@ -199,6 +200,7 @@ public sealed class DadAcquiredCharacter
 
     public DadAcquiredCharacter Clone() => new()
     {
+        TrustProgress = TrustProgress?.Clone(),
         CharacterKey = CharacterKey,
         ContentId = ContentId,
         CharacterName = CharacterName,
@@ -391,6 +393,7 @@ public sealed class DadPresetPlannerOptions
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
     public DadGatherPartyTask GatherParty { get; set; } = new();
     public bool RefreshTrustNpcLevels { get; set; } = true;
+    public DadTrustFixedParty? TrustParty { get; set; }
     public DadRunStopPolicy StopPolicy { get; set; } = new();
     public DadCompletionActions? CompletionActions { get; set; }
     public List<DadAccountKey> IncludedAccountKeys { get; set; } = [];
@@ -423,6 +426,7 @@ public sealed class DadPlannerGroup
     public string MogtomeDutyPolicy { get; set; } = DadMogtomeDutyPolicies.PresetHandoff;
     public DadGatherPartyTask GatherParty { get; set; } = new();
     public bool RefreshTrustNpcLevels { get; set; } = true;
+    public DadTrustFixedParty? TrustParty { get; set; }
     public DadRunStopPolicy StopPolicy { get; set; } = new();
     public DadLevelingModeOptions LevelingMode { get; set; } = new();
     // Dalamud configuration uses Newtonsoft.Json, while DAD IPC uses System.Text.Json.

@@ -8905,4 +8905,62 @@ Tempo di recupero di</value>
   <data name="ui_accounts_pending_count" xml:space="preserve"><value>{0} modifiche in sospeso</value></data>
   <data name="ui_accounts_stored_profile_help" xml:space="preserve"><value>I personaggi sono abilitati per impostazione predefinita. Modifica qui i profili salvati senza accedere con ogni personaggio.</value></data>
   <data name="ui_accounts_save_in_progress" xml:space="preserve"><value>Salvataggio account in corso</value></data>
+  <data name="trust_ui_001" xml:space="preserve"><value>Tutti i compagni disponibili</value></data>
+  <data name="trust_ui_002" xml:space="preserve"><value>Tutti gli obiettivi di livello Fiducia selezionati sono stati raggiunti.</value></data>
+  <data name="trust_ui_003" xml:space="preserve"><value>Versatile</value></data>
+  <data name="trust_ui_004" xml:space="preserve"><value>Bilancia i livelli dei compagni o salva un gruppo Fiducia fisso.</value></data>
+  <data name="trust_ui_005" xml:space="preserve"><value>Scegli</value></data>
+  <data name="trust_ui_006" xml:space="preserve"><value>Scegli un personaggio del tuo account in Squadra prima di creare una preimpostazione Fiducia.</value></data>
+  <data name="trust_ui_007" xml:space="preserve"><value>Compagno</value></data>
+  <data name="trust_ui_008" xml:space="preserve"><value>Compagno {0}</value></data>
+  <data name="trust_ui_009" xml:space="preserve"><value>Compagni</value></data>
+  <data name="trust_ui_010" xml:space="preserve"><value>I compagni si fermano al proprio livello massimo.</value></data>
+  <data name="trust_ui_011" xml:space="preserve"><value>Dungeon compatibili</value></data>
+  <data name="trust_ui_012" xml:space="preserve"><value>Dungeon</value></data>
+  <data name="trust_ui_013" xml:space="preserve"><value>I job già al livello obiettivo possono ancora aiutare i compagni a salire di livello.</value></data>
+  <data name="trust_ui_014" xml:space="preserve"><value>Job che DAD può usare</value></data>
+  <data name="trust_ui_015" xml:space="preserve"><value>Ultimo aggiornamento</value></data>
+  <data name="trust_ui_016" xml:space="preserve"><value>Livello</value></data>
+  <data name="trust_ui_017" xml:space="preserve"><value>Livello {0}</value></data>
+  <data name="trust_ui_018" xml:space="preserve"><value>Livello massimo</value></data>
+  <data name="trust_ui_019" xml:space="preserve"><value>Fai salire anche i miei job</value></data>
+  <data name="trust_ui_020" xml:space="preserve"><value>I livelli appartengono a questo personaggio. Aggiornali prima di formare un gruppo.</value></data>
+  <data name="trust_ui_021" xml:space="preserve"><value>Bloccato</value></data>
+  <data name="trust_ui_022" xml:space="preserve"><value>Da verificare</value></data>
+  <data name="trust_ui_023" xml:space="preserve"><value>Nuovo</value></data>
+  <data name="trust_ui_024" xml:space="preserve"><value>Prossima sessione</value></data>
+  <data name="trust_ui_025" xml:space="preserve"><value>Nessun dungeon compatibile. Controlla ruoli, livelli e sblocchi del gruppo.</value></data>
+  <data name="trust_ui_026" xml:space="preserve"><value>Avanzamento PNG</value></data>
+  <data name="trust_ui_027" xml:space="preserve"><value>Elenco PNG</value></data>
+  <data name="trust_ui_028" xml:space="preserve"><value>Livello obiettivo PNG</value></data>
+  <data name="trust_ui_029" xml:space="preserve"><value>Sono elencati solo i dungeon accessibili all'intero gruppo.</value></data>
+  <data name="trust_ui_030" xml:space="preserve"><value>Account personale</value></data>
+  <data name="trust_ui_031" xml:space="preserve"><value>Gruppo, job e dungeon vengono aggiornati dopo ogni sessione.</value></data>
+  <data name="trust_ui_032" xml:space="preserve"><value>Livello obiettivo dei job del giocatore</value></data>
+  <data name="trust_ui_033" xml:space="preserve"><value>Anteprima preimpostazione</value></data>
+  <data name="trust_ui_034" xml:space="preserve"><value>A distanza</value></data>
+  <data name="trust_ui_035" xml:space="preserve"><value>Aggiorna i livelli sul client di questo personaggio.</value></data>
+  <data name="trust_ui_036" xml:space="preserve"><value>Aggiorna livelli Fiducia</value></data>
+  <data name="trust_ui_037" xml:space="preserve"><value>Aggiornamento livelli Fiducia...</value></data>
+  <data name="trust_ui_038" xml:space="preserve"><value>Esegui preimpostazione</value></data>
+  <data name="trust_ui_039" xml:space="preserve"><value>Usa questo gruppo esattamente come salvato.</value></data>
+  <data name="trust_ui_040" xml:space="preserve"><value>Ryne partecipa solo ai contenuti di Shadowbringers.</value></data>
+  <data name="trust_ui_041" xml:space="preserve"><value>Salva preimpostazione</value></data>
+  <data name="trust_ui_042" xml:space="preserve"><value>Salva configurazione</value></data>
+  <data name="trust_ui_043" xml:space="preserve"><value>Salva le modifiche prima di avviare o pianificare.</value></data>
+  <data name="trust_ui_044" xml:space="preserve"><value>Il salvataggio non avvia una sessione.</value></data>
+  <data name="trust_ui_045" xml:space="preserve"><value>Seleziona un compagno per vedere i dungeon compatibili.</value></data>
+  <data name="trust_ui_046" xml:space="preserve"><value>Avvia avanzamento</value></data>
+  <data name="trust_ui_047" xml:space="preserve"><value>Questa preimpostazione è cambiata. Selezionala di nuovo prima di salvare.</value></data>
+  <data name="trust_ui_048" xml:space="preserve"><value>Preimpostazioni Fiducia</value></data>
+  <data name="trust_ui_049" xml:space="preserve"><value>Tu: {0} {1}</value></data>
+  <data name="trust_ui_050" xml:space="preserve"><value>Il tuo job</value></data>
+  <data name="trust_ui_051" xml:space="preserve"><value>Il tuo gruppo Fiducia</value></data>
+  <data name="trust_ui_052" xml:space="preserve"><value>Client Dad può pianificare Duty Support o Fiducia in solitaria per il proprio account; le altre attività richiedono Dad Coordinator.</value></data>
+  <data name="trust_ui_053" xml:space="preserve"><value>Apri Fiducia</value></data>
+  <data name="LCARS" xml:space="preserve"><value>LCARS</value></data>
+  <data name="Mute UI sounds" xml:space="preserve"><value>Disattiva suoni interfaccia</value></data>
+  <data name="Unmute UI sounds" xml:space="preserve"><value>Attiva suoni interfaccia</value></data>
+  <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>Pannelli LCARS e controlli delineati. I colori del selettore vengono conservati.</value></data>
+  <data name="Audio output is unavailable." xml:space="preserve"><value>Uscita audio non disponibile.</value></data>
 </root>

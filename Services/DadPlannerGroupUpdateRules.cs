@@ -28,6 +28,7 @@ public static class DadPlannerGroupUpdateRules
         target.MogtomeDutyPolicy = source.MogtomeDutyPolicy;
         target.GatherParty = source.GatherParty?.Clone() ?? new();
         target.RefreshTrustNpcLevels = source.RefreshTrustNpcLevels;
+        target.TrustParty = source.TrustParty?.Clone();
         target.StopPolicy = source.StopPolicy.Clone();
         DadSharedPlanRules.ReconcileStopTarget(target);
         target.CompletionActions = source.CompletionActions?.Clone();

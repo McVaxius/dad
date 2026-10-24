@@ -20,6 +20,7 @@ public enum DadMainWindowTab
     Crew,
     Multiplayer,
     Status,
+    Trust,
 }
 
 public enum DadPresetsWindowTab
@@ -252,6 +253,7 @@ public sealed partial class MainWindow : Window, IDisposable
         using var captions=new MaterialStyleScope();
         captions.Color(ImGuiCol.TextDisabled,DadUi.Muted);
         motion.DrawChrome();
+        if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
         ApplyPendingPositionChange();
         var windowRootId = ImGui.GetID("");
@@ -294,17 +296,18 @@ public sealed partial class MainWindow : Window, IDisposable
     private void DrawMainWorkspaceRail(DadVisibleRunState runState, CharacterConfig profile,
         DadCharacterPool characterPool, DadRunResult displayRun, uint windowRootId)
     {
-        var tabLabels = new[] { "Home", "Plan", "Schedules", "Crew", "Clients", "Status" };
-        var icons = new[] { MaterialIcon.Home, MaterialIcon.Document, MaterialIcon.Calendar,
+        var tabLabels = new[] { "Home", "Plan", "Trust", "Schedules", "Crew", "Clients", "Status" };
+        var icons = new[] { MaterialIcon.Home, MaterialIcon.Document, MaterialIcon.Crown, MaterialIcon.Calendar,
             MaterialIcon.Group, MaterialIcon.Person, MaterialIcon.Chart };
         if (pendingMainTab.HasValue)
             selectedMainPage = pendingMainTab.Value switch
             {
                 DadMainWindowTab.Overview => 0,
-                DadMainWindowTab.Presets => (pendingPresetsTab ?? DadPresetsWindowTab.Planner) == DadPresetsWindowTab.Planner ? 1 : 2,
-                DadMainWindowTab.Crew => 3,
-                DadMainWindowTab.Multiplayer => 4,
-                _ => 5,
+                DadMainWindowTab.Presets => (pendingPresetsTab ?? DadPresetsWindowTab.Planner) == DadPresetsWindowTab.Planner ? 1 : 3,
+                DadMainWindowTab.Trust => 2,
+                DadMainWindowTab.Crew => 4,
+                DadMainWindowTab.Multiplayer => 5,
+                _ => 6,
             };
 
         var scale = MaterialTheme.Metrics.Scale;
@@ -344,10 +347,11 @@ public sealed partial class MainWindow : Window, IDisposable
             {
                 case 0: DrawOverviewTab(runState, profile, windowRootId); break;
                 case 1: DrawPresetPlannerTab(characterPool, runState); break;
-                case 2: DrawSchedulesTab(runState); break;
-                case 3: DrawCrewTab(characterPool, runState); break;
-                case 4: DrawMultiplayerTab(characterPool, runState); break;
-                case 5: DrawStatusTab(characterPool, runState, profile, displayRun); break;
+                case 2: DrawTrustWorkspace(runState); break;
+                case 3: DrawSchedulesTab(runState); break;
+                case 4: DrawCrewTab(characterPool, runState); break;
+                case 5: DrawMultiplayerTab(characterPool, runState); break;
+                case 6: DrawStatusTab(characterPool, runState, profile, displayRun); break;
             }
             ImGui.PopID();
         }
@@ -7525,6 +7529,17 @@ public sealed partial class MainWindow : Window, IDisposable
             return;
 
         var options = group.LevelingMode ?? new DadLevelingModeOptions();
+        if (options.Trust != null)
+        {
+            DadUi.Section("NPC leveling");
+            if (DadUi.Button("Open Trust##dad-plan-open-trust"))
+            {
+                if (plannerSnapshot.CuratedPool.Characters.Count > 0)
+                    ResetTrustDraft(0, group, plannerSnapshot.CuratedPool.Characters);
+                pendingMainTab = DadMainWindowTab.Trust;
+            }
+            return;
+        }
         var plannerOptions = plugin.PlannerOptions;
         var supported = DadLevelingModeActivationRules.TryNormalizeSupportedDraft(
             plannerOptions.RunFamily,
