@@ -1,3 +1,7 @@
+2026-10-25 - 2.0.0.4 - Failed-entry confirmation (I652)
+
+- Open the existing Resume from failed entry confirmation after the schedule tables close, preserving the popup identity, failed-run selection and eligibility checks.
+
 2026-10-23 - LCARS appearance (local implementation)
 
 - Add Auto / Picker / LCARS to existing appearance controls, retaining saved Picker colours. Skin Main, Settings, Mini, Quick Commands, setup/shopping/batch wizards, dependencies, reconnect and AutoParty/fleet windows with LCARS rails, elbows, frames and outlined controls. Preserve ordinary Plan and the dedicated Trust pages.

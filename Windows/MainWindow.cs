@@ -2247,6 +2247,7 @@ public sealed partial class MainWindow : Window, IDisposable
             activeRun,
             snapshot.RecentResults,
             plugin.SchedulerService.GetQueueSnapshot().RecentResults);
+        var openRetryFailedEntryPopup = false;
         if (!ImGui.BeginTable(
                 "dad-schedule-workspace",
                 1,
@@ -2333,7 +2334,7 @@ public sealed partial class MainWindow : Window, IDisposable
             if (UiGui.SmallButton("Resume from failed entry") && latestFailedRun != null)
             {
                 pendingRetryScheduleRunId = latestFailedRun.RunId;
-                ImGui.OpenPopup("Confirm retry failed schedule entry##dad-schedule-retry-confirm");
+                openRetryFailedEntryPopup = true;
             }
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 UiGui.SetTooltip(retryEligibility.Summary);
@@ -2342,6 +2343,8 @@ public sealed partial class MainWindow : Window, IDisposable
         }
 
         ImGui.EndTable();
+        if (openRetryFailedEntryPopup)
+            ImGui.OpenPopup("Confirm retry failed schedule entry##dad-schedule-retry-confirm");
         DrawRetryFailedEntryPopup(runState);
     }
 
