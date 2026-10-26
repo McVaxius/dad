@@ -1591,7 +1591,7 @@ public sealed class DadWakeTakeoverServiceTests
     }
 
     [Fact]
-    public void OldCompletedWakeReadCannotReleaseNewerTakeoverOwnership()
+    public void OldCompletedWakeReadAndCancelCannotReleaseNewerTakeoverOwnership()
     {
         // A mutating wake retains its restoration lease until Cancel; use an
         // already-online completion here so a second token can legitimately own it.
@@ -1628,6 +1628,29 @@ public sealed class DadWakeTakeoverServiceTests
         Assert.Equal(reservations, target.ReserveCount);
         Assert.Equal(releases, target.ReleaseTokens);
         Assert.Equal("new-operation", service.GetActiveStatus()!.OperationToken);
+
+        var cancelOld = Request();
+        cancelOld.MessageKind = DadWakeTakeoverMessageKind.Cancel;
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var cancelled = service.Handle(cancelOld);
+            Assert.Equal(DadWakeTakeoverPhase.Cancelled, cancelled.Phase);
+            Assert.Equal(DadWakeAcknowledgementState.Executed, cancelled.AcknowledgementState);
+            Assert.True(target.Snapshot.DadOwnsSuppression);
+            Assert.True(target.Snapshot.AutoRetainerSuppressed);
+            Assert.Equal(actions, target.Actions);
+            Assert.Equal(reservations, target.ReserveCount);
+            Assert.Equal(releases, target.ReleaseTokens);
+            Assert.Equal("new-operation", service.GetActiveStatus()!.OperationToken);
+        }
+
+        newer.MessageKind = DadWakeTakeoverMessageKind.Cancel;
+        Assert.Equal(DadWakeTakeoverPhase.Cancelled, service.Handle(newer).Phase);
+        Assert.False(target.Snapshot.DadOwnsSuppression);
+        Assert.False(target.Snapshot.AutoRetainerSuppressed);
+        Assert.Equal(actions.Count(action => action == "ReleaseSuppression") + 1,
+            target.Actions.Count(action => action == "ReleaseSuppression"));
+        Assert.Null(service.GetActiveStatus());
     }
 
     private static (DadWakeTakeoverService Service, FakeTarget Target, TestClock Clock) CompletedWakeWithFreshSnapshots(

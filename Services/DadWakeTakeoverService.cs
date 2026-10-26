@@ -1638,22 +1638,24 @@ public sealed class DadWakeTakeoverService : IDisposable
     }
 
     private DadWakeTakeoverTargetSnapshot Capture(OperationState operation, bool forceExternalRefresh = false)
+        => operation.LastSnapshot = ReadSnapshot(operation, forceExternalRefresh);
+
+    private DadWakeTakeoverTargetSnapshot ReadSnapshot(OperationState operation, bool forceExternalRefresh = false)
     {
         try
         {
-            operation.LastSnapshot = target.Capture(
-                                         BuildReservationScopedRequest(operation),
-                                         forceExternalRefresh) ??
-                                     new DadWakeTakeoverTargetSnapshot();
+            return target.Capture(
+                       BuildReservationScopedRequest(operation),
+                       forceExternalRefresh) ??
+                   new DadWakeTakeoverTargetSnapshot();
         }
         catch (Exception ex)
         {
-            operation.LastSnapshot = new DadWakeTakeoverTargetSnapshot
+            return new DadWakeTakeoverTargetSnapshot
             {
                 AutoRetainerStatus = $"Wake takeover target snapshot failed: {ex.Message}",
             };
         }
-        return operation.LastSnapshot;
     }
 
     private bool TryAllocateReservationAttemptToken(OperationState operation, out string error)
@@ -2028,9 +2030,10 @@ public sealed class DadWakeTakeoverService : IDisposable
         var phase = operation.Phase;
         // Ready records that the one-shot takeover finished, not that its final
         // safety observation remains current forever. Poll current truth without
-        // advancing/rearming the terminal operation or touching its owned leases.
+        // advancing/rearming the terminal operation or replacing its cleanup snapshot
+        // with global ownership that may now belong to a newer operation.
         snapshot ??= phase == DadWakeTakeoverPhase.Ready
-            ? Capture(operation, forceExternalRefresh: true)
+            ? ReadSnapshot(operation, forceExternalRefresh: true)
             : operation.LastSnapshot;
         var currentTargetBlocker = phase == DadWakeTakeoverPhase.Ready
             ? ValidateCoreTarget(snapshot, operation.ActiveRequest)
