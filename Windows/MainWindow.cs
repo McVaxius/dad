@@ -253,6 +253,7 @@ public sealed partial class MainWindow : Window, IDisposable
         using var captions=new MaterialStyleScope();
         captions.Color(ImGuiCol.TextDisabled,DadUi.Muted);
         motion.DrawChrome();
+        MaterialSkin.Backdrop();
         if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
         ApplyPendingPositionChange();
@@ -2572,8 +2573,12 @@ public sealed partial class MainWindow : Window, IDisposable
 
     private void DrawScheduleShareDetailsPopup(DadScheduleDefinition? schedule)
     {
-        if (!ImGui.BeginPopup("Schedule share details##dad-share-schedule-details", ImGuiWindowFlags.AlwaysAutoResize))
+        bool popupVisible;
+        using (MaterialSkin.BackdropStyle(popup: true))
+            popupVisible = ImGui.BeginPopup("Schedule share details##dad-share-schedule-details", ImGuiWindowFlags.AlwaysAutoResize);
+        if (!popupVisible)
             return;
+        MaterialSkin.Backdrop();
 
         schedule = plugin.Configuration.Schedules.FirstOrDefault(candidate =>
             string.Equals(candidate.ScheduleId, scheduleShareIdOwner, StringComparison.OrdinalIgnoreCase)) ?? schedule;
@@ -2623,8 +2628,10 @@ public sealed partial class MainWindow : Window, IDisposable
 
         var open = true;
         ImGui.SetNextWindowSize(new Vector2(520 * MaterialTheme.Metrics.Scale, 0), ImGuiCond.Always);
-        var visible = ImGui.Begin("Confirm Schedule import##dad-share-schedule-confirm", ref open,
-            ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.HorizontalScrollbar | ImGuiWindowFlags.NoCollapse);
+        bool visible;
+        using (MaterialSkin.BackdropStyle())
+            visible = ImGui.Begin("Confirm Schedule import##dad-share-schedule-confirm", ref open,
+                ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.HorizontalScrollbar | ImGuiWindowFlags.NoCollapse);
         if (!visible || !open)
         {
             ImGui.End();
@@ -2636,6 +2643,7 @@ public sealed partial class MainWindow : Window, IDisposable
             }
             return;
         }
+        MaterialSkin.Backdrop();
         UiGui.Title("Confirm Schedule import");
 
         var preview = pendingScheduleSharePreview;
@@ -3686,8 +3694,12 @@ public sealed partial class MainWindow : Window, IDisposable
 
     private void DrawDeleteAccountPopup(DadAccountRosterCatalog catalog)
     {
-        if (!ImGui.BeginPopup("Confirm delete account##dad-roster-delete-account"))
+        bool popupVisible;
+        using (MaterialSkin.BackdropStyle(popup: true))
+            popupVisible = ImGui.BeginPopup("Confirm delete account##dad-roster-delete-account");
+        if (!popupVisible)
             return;
+        MaterialSkin.Backdrop();
 
         var account = plugin.ConfigManager.GetAccount(new DadAccountKey(pendingDeleteAccountId));
         if (account == null)
@@ -4154,8 +4166,12 @@ public sealed partial class MainWindow : Window, IDisposable
         if (UiGui.SmallButton($"More...##dad-roster-more-{selectionKey}"))
             ImGui.OpenPopup($"dad-roster-more-popup-{selectionKey}");
 
-        if (ImGui.BeginPopup($"dad-roster-more-popup-{selectionKey}"))
+        bool morePopupVisible;
+        using (MaterialSkin.BackdropStyle(popup: true))
+            morePopupVisible = ImGui.BeginPopup($"dad-roster-more-popup-{selectionKey}");
+        if (morePopupVisible)
         {
+            MaterialSkin.Backdrop();
             if (UiGui.SmallButton($"Hide##dad-roster-hide-{selectionKey}"))
                 SetRosterVisibility([character], DadRosterVisibility.Hidden);
             ImGui.SameLine();
@@ -7989,8 +8005,12 @@ public sealed partial class MainWindow : Window, IDisposable
 
     private void DrawDeletePresetPopup(DadActivityPreset plannerPreview)
     {
-        if (!ImGui.BeginPopup("Confirm delete preset##dad-delete-preset"))
+        bool popupVisible;
+        using (MaterialSkin.BackdropStyle(popup: true))
+            popupVisible = ImGui.BeginPopup("Confirm delete preset##dad-delete-preset");
+        if (!popupVisible)
             return;
+        MaterialSkin.Backdrop();
 
         var pending = plugin.ResolvePlannerGroup(pendingDeletePlannerGroupId);
         if (pending == null)
@@ -8095,8 +8115,12 @@ public sealed partial class MainWindow : Window, IDisposable
 
     private void DrawPlannerShareDetailsPopup(DadPlannerGroup? selectedGroup)
     {
-        if (!ImGui.BeginPopup("Plan share details##dad-share-plan-details", ImGuiWindowFlags.AlwaysAutoResize))
+        bool popupVisible;
+        using (MaterialSkin.BackdropStyle(popup: true))
+            popupVisible = ImGui.BeginPopup("Plan share details##dad-share-plan-details", ImGuiWindowFlags.AlwaysAutoResize);
+        if (!popupVisible)
             return;
+        MaterialSkin.Backdrop();
 
         selectedGroup = plugin.ResolvePlannerGroup(plannerShareIdOwner) ?? selectedGroup;
         if (selectedGroup == null)
@@ -8144,8 +8168,10 @@ public sealed partial class MainWindow : Window, IDisposable
 
         var open = true;
         ImGui.SetNextWindowSize(new Vector2(520 * MaterialTheme.Metrics.Scale, 0), ImGuiCond.Always);
-        var visible = ImGui.Begin("Confirm Plan import##dad-share-plan-confirm", ref open,
-            ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.HorizontalScrollbar | ImGuiWindowFlags.NoCollapse);
+        bool visible;
+        using (MaterialSkin.BackdropStyle())
+            visible = ImGui.Begin("Confirm Plan import##dad-share-plan-confirm", ref open,
+                ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.HorizontalScrollbar | ImGuiWindowFlags.NoCollapse);
         if (!visible || !open)
         {
             ImGui.End();
@@ -8157,6 +8183,7 @@ public sealed partial class MainWindow : Window, IDisposable
             }
             return;
         }
+        MaterialSkin.Backdrop();
         UiGui.Title("Confirm Plan import");
 
         var preview = pendingPlannerSharePreview;

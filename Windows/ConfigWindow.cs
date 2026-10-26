@@ -92,6 +92,7 @@ public sealed class ConfigWindow : Window, IDisposable
     public override void Draw()
     {
         motion.DrawChrome();
+        MaterialSkin.Backdrop();
         if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         ApplyPendingPositionChange();
@@ -843,8 +844,12 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawDeleteAccountPopup()
     {
-        if (!ImGui.BeginPopup("Confirm delete account##dad-config-delete-account"))
+        bool popupVisible;
+        using (MaterialSkin.BackdropStyle(popup: true))
+            popupVisible = ImGui.BeginPopup("Confirm delete account##dad-config-delete-account");
+        if (!popupVisible)
             return;
+        MaterialSkin.Backdrop();
 
         var account = plugin.ConfigManager.GetAccount(new DadAccountKey(pendingDeleteAccountId));
         if (account == null)

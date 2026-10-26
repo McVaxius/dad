@@ -49,6 +49,7 @@ public sealed class DadAutoPartyFleetMatrixWindow : Window
     public override void Draw()
     {
         motion.DrawChrome();
+        MaterialSkin.Backdrop();
         if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         var matrix = plugin.Configuration.AutoPartyFleet;

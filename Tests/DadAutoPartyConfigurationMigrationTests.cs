@@ -13,17 +13,26 @@ namespace dad.Tests;
 public sealed class DadAutoPartyConfigurationMigrationTests
 {
     [Fact]
-    public void NativeAppearanceRoundTripRetainsPickerMuteAndUnrelatedSettings()
+    public void NativeAppearanceRoundTripRetainsAllPalettesWavesMuteAndUnrelatedSettings()
     {
         var configuration = Newtonsoft.Json.JsonConvert.DeserializeObject<Configuration>(
             """{"UiLanguage":"ko","PluginEnabled":false,"FixtureUnknown":{"keep":17}}""")!;
         Assert.True(configuration.UiLcarsSoundsMuted);
+        Assert.True(configuration.UiColors.GlassAnimation);
+        Assert.Equal(1f, configuration.UiColors.GlassAnimationSpeed);
         var picker = new AethertekUI.MaterialColorSettings
         {
             Mode = AethertekUI.MaterialColorMode.Picker,
             BackgroundRgb = 0x123456, ControlsRgb = 0xABCDEF, TextRgb = 0xFEDCBA,
+            LcarsBackgroundRgb = 0x101112, LcarsBar1Rgb = 0xD89154,
+            LcarsBar2Rgb = 0xB378CA, LcarsBar3Rgb = 0x8588D7,
+            GlassBackgroundRgb = 0x102732, GlassControlsRgb = 0x4DC9D5, GlassTextRgb = 0xEAF4F8,
+            SpatialBackgroundRgb = 0xDEE4EE, SpatialControlsRgb = 0x6179A3, SpatialTextRgb = 0x1A263B,
+            CyberpunkBackgroundRgb = 0x0C1018, CyberpunkControlsRgb = 0x28D2DF, CyberpunkTextRgb = 0xEFF8FC,
+            GlassAnimation = false, GlassAnimationSpeed = 2.5f,
+            GlassWave1Rgb = 0x48B5C6, GlassWave2Rgb = 0x8C75C8, GlassWave3Rgb = 0xC8739D,
         };
-        foreach (var mode in new[] { AethertekUI.MaterialColorMode.Picker, AethertekUI.MaterialColorMode.Lcars, AethertekUI.MaterialColorMode.Auto })
+        foreach (var mode in Enum.GetValues<AethertekUI.MaterialColorMode>())
         {
             configuration.UiColors = picker with { Mode = mode };
             configuration.UiLcarsSoundsMuted = false;

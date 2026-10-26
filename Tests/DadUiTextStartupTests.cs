@@ -30,7 +30,12 @@ namespace dad.Tests
             Assert.False(string.IsNullOrWhiteSpace(expectedProtection));
             Assert.Equal(expectedAuto, UiText.T("Auto"));
             Assert.Equal(expectedPicker, UiText.T("Picker"));
-            foreach (var caption in new[] { "LCARS", "Mute UI sounds", "Unmute UI sounds", "LCARS panels and outlined controls. Picker colours are retained.", "Audio output is unavailable." })
+            foreach (var caption in new[]
+            {
+                "LCARS", "Mute UI sounds", "Unmute UI sounds", "LCARS panels and outlined controls. Picker colours are retained.", "Audio output is unavailable.",
+                "Glassmorphism", "Spatial", "Cyberpunk", "LCARS bar 1", "LCARS bar 2", "LCARS bar 3", "Reset", "Reset colours",
+                "Animation", "Animation speed (0.1–10x; default 1x)", "Wave colours", "Wave colour 1", "Wave colour 2", "Wave colour 3", "Reset wave colours",
+            })
             {
                 Assert.False(string.IsNullOrWhiteSpace(text.Resources.GetString(caption, false)));
                 Assert.Equal(text.Resources.GetString(caption, false), UiText.T(caption));

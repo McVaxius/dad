@@ -698,7 +698,18 @@ public sealed partial class Plugin : IDalamudPlugin
     {
         var changed = MaterialAppearanceSelector.DrawColors(id, ref colorDraft, ref accentDraft,
             new(UiText.T("Color"), UiText.T("Language"), UiText.T("Teal"), UiText.T("Blue"), UiText.T("Pink"), UiText.T("Custom RGB")),
-            new(UiText.T("Auto"), UiText.T("Picker"), UiText.T("Default"), UiText.T("Background, controls and text follow your theme."), UiText.T("Theme colour"), UiText.T("Choose each colour independently."), UiText.T("Background"), UiText.T("Controls"), UiText.T("Text"), UiText.T("Aa  Preview text"), UiText.T("Control"), UiText.T("Switch to Picker to set each colour yourself."), UiText.T("Switch back to Auto to use the automatic theme.")) { Lcars = UiText.T("LCARS"), LcarsHelp = UiText.T("LCARS panels and outlined controls. Picker colours are retained.") }, Configuration.UiCompact ? 298 : 316);
+            new(UiText.T("Auto"), UiText.T("Picker"), UiText.T("Default"), UiText.T("Background, controls and text follow your theme."), UiText.T("Theme colour"), UiText.T("Choose each colour independently."), UiText.T("Background"), UiText.T("Controls"), UiText.T("Text"), UiText.T("Aa  Preview text"), UiText.T("Control"), UiText.T("Switch to Picker to set each colour yourself."), UiText.T("Switch back to Auto to use the automatic theme."))
+            {
+                Lcars = UiText.T("LCARS"),
+                LcarsHelp = UiText.T("LCARS panels and outlined controls. Picker colours are retained."),
+                Glassmorphism = UiText.T("Glassmorphism"), Spatial = UiText.T("Spatial"), Cyberpunk = UiText.T("Cyberpunk"),
+                LcarsBar1 = UiText.T("LCARS bar 1"), LcarsBar2 = UiText.T("LCARS bar 2"), LcarsBar3 = UiText.T("LCARS bar 3"),
+                Reset = UiText.T("Reset"), ResetColors = UiText.T("Reset colours"),
+                Animation = UiText.T("Animation"), AnimationSpeed = UiText.T("Animation speed (0.1–10x; default 1x)"),
+                WaveColors = UiText.T("Wave colours"),
+                GlassWave1 = UiText.T("Wave colour 1"), GlassWave2 = UiText.T("Wave colour 2"), GlassWave3 = UiText.T("Wave colour 3"),
+                ResetWaveColors = UiText.T("Reset wave colours"),
+            }, new MaterialColorSettings(), MaterialColorSettings.Rgb(DadPresentation.ReferenceAccent), Configuration.UiCompact ? 298 : 316);
         if (!changed) return false;
         Configuration.UiColors = colorDraft;
         Configuration.UiAccentRgb = MaterialColorSettings.ToRgb(accentDraft);
@@ -767,7 +778,7 @@ public sealed partial class Plugin : IDalamudPlugin
             if (!uiTheme.IsLcars) owner.TitleBarButtons.Remove(speaker);
             else if (!owner.TitleBarButtons.Contains(speaker)) owner.TitleBarButtons.Add(speaker);
         }
-        WindowSystem.Draw();
+        using (MaterialSkin.BackdropStyle()) WindowSystem.Draw();
         DrawAppearanceTitleBarPopups();
         foreach (var window in WindowSystem.Windows)
             if (window.IsOpen) ApplyWindowOpacity(window.WindowName);
@@ -779,20 +790,43 @@ public sealed partial class Plugin : IDalamudPlugin
         using var chrome = MaterialWindowChrome.Push();
         ImGui.SetNextWindowSize(new Vector2(460*ImGuiHelpers.GlobalScale,0));
         fontStatusFold.PreDraw("DAD##FontStatus", null, null, false, prepareFontStatusDecorations);
-        var visible = ImGui.Begin("DAD##FontStatus",ImGuiWindowFlags.AlwaysAutoResize);
+        bool visible;
+        using (MaterialSkin.BackdropStyle())
+            visible = ImGui.Begin("DAD##FontStatus",ImGuiWindowFlags.AlwaysAutoResize);
         try
         {
             if (visible)
             {
                 fontStatusDecorations.Paint();
+                MaterialSkin.Backdrop();
                 if (uiTheme.IsLcars) MaterialLcars.Header("DAD");
                 ImGui.TextWrapped(appliedLanguage == "hi" && !loading ? "Hindi UI fonts are unavailable. Use English to continue."
                     : loading ? "Loading UI fonts..." : "UI fonts failed to load. See the plugin log.");
-                using var fontStatusButtons = MaterialLcars.NativeButtonStyle();
-                if (appliedLanguage == "hi" && !loading && ImGui.Button("Use English"))
+                if (appliedLanguage == "hi" && !loading)
                 {
-                    Configuration.UiLanguage = "en";
-                    Configuration.Save();
+                    using var fontStatusButtons = MaterialSkin.NativeButtonStyle();
+                    bool useEnglish;
+                    if (DadPresentation.IsMaterial)
+                    {
+                        var draw = ImGui.GetWindowDrawList();
+                        draw.ChannelsSplit(2);
+                        try
+                        {
+                            draw.ChannelsSetCurrent(1);
+                            using (MaterialSkin.TransparentButtonFace()) useEnglish = ImGui.Button("Use English");
+                            var min = ImGui.GetItemRectMin();
+                            var max = ImGui.GetItemRectMax();
+                            draw.ChannelsSetCurrent(0);
+                            MaterialSkin.PaintButton(min, max);
+                        }
+                        finally { draw.ChannelsMerge(); }
+                    }
+                    else useEnglish = ImGui.Button("Use English");
+                    if (useEnglish)
+                    {
+                        Configuration.UiLanguage = "en";
+                        Configuration.Save();
+                    }
                 }
             }
         }
@@ -6021,8 +6055,13 @@ public sealed partial class Plugin : IDalamudPlugin
                 minimumColumn = Math.Max(minimumColumn, Math.Max(AppearanceLanguageWidth() * scale, languageMinimum));
                 var pickerEditor = Math.Max(100 * scale, ImGui.CalcTextSize("#FFFFFF").X + 2 * ImGui.GetStyle().FramePadding.X)
                     + ImGui.GetFrameHeight() + ImGui.GetStyle().ItemInnerSpacing.X;
-                var pickerLabels = new[] { "Background", "Controls", "Text" }.Max(label => MaterialText.Measure(UiText.T(label)).X);
-                minimumColumn = Math.Max(minimumColumn, pickerLabels + pickerEditor + 2 * ImGui.GetStyle().ItemSpacing.X);
+                var pickerLabels = new[] { "Background", "Controls", "Text", "LCARS bar 1", "LCARS bar 2", "LCARS bar 3",
+                    "Wave colour 1", "Wave colour 2", "Wave colour 3" }.Max(label => MaterialText.Measure(UiText.T(label)).X);
+                var resetWidth = MaterialText.Measure(UiText.T("Reset")).X + 2 * ImGui.GetStyle().FramePadding.X;
+                minimumColumn = Math.Max(minimumColumn, pickerLabels + pickerEditor + resetWidth + 3 * ImGui.GetStyle().ItemSpacing.X);
+                minimumColumn = Math.Max(minimumColumn, new[] { "Reset colours", "Reset wave colours", "Animation",
+                    "Animation speed (0.1–10x; default 1x)", "Wave colours" }.Max(label => MaterialText.Measure(UiText.T(label)).X)
+                    + 2 * ImGui.GetStyle().FramePadding.X);
             }
             MaterialAppearanceTab.Draw("dad-window-appearance-groups", labels, MathF.Ceiling(minimumColumn),
                 DrawThemeAndLanguage, DrawMainWindowControls, DrawOpacity, DrawUnfocused);

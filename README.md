@@ -1,6 +1,6 @@
 # DAD
 
-Window appearance offers **Auto / Picker / LCARS**. Picker colours stay saved when changing modes. LCARS styles the main window, separate Mini and support windows; its UI tones start muted. Settings and each LCARS titlebar speaker share one saved mute choice.
+Window appearance offers **Auto / Picker / LCARS / Glassmorphism / Spatial / Cyberpunk** across Main, Mini, Settings and support windows. Picker and each new material keep independent Background, Controls and Text colours, with individual and palette resets. LCARS has separate background and three bar colours; its UI tones start muted, with one saved mute choice shared by Settings and LCARS titlebar speakers. Glass animation starts enabled, with a numeric speed control and three independently editable wave colours; wave editing also works with animation off.
 
 DAD is a duty planner and multibox coordinator for FFXIV. Build reusable crews, ready the right characters,
 assemble and verify parties, queue supported duties and roulettes, and chain proven presets into schedules.
@@ -54,7 +54,7 @@ Hindi uses installed shaping fonts. The source now leaves other languages usable
 
 Settings owns shared colour, UI language, compact spacing and window transparency/fade; optional Main selectors change the same saved preferences. Main branding and Main/Mini Status titles use the packaged DAD icon in its original colours, including collapsed titles. Configure presets, crews and schedules through their existing pages; appearance choices retain run, job and crew settings.
 
-The main header provides **C** (compact mode), an accent swatch and a language selector.
+The native Main titlebar provides colour and language controls; Appearance settings can also show Compact and Transparency shortcuts.
 Settings mirrors these choices. They are saved in DAD's existing configuration and shared by
 all its windows: English, Deutsch, Français, Español, Italiano, Русский, 日本語, 한국어, 简体中文,
 Tiếng Việt, Português (Brasil), Bahasa Indonesia, Polski, Türkçe and हिन्दी.
@@ -65,7 +65,7 @@ Main/Home, Mini Status and Quick Commands follow the approved DAD regular/compac
 Plan, Schedules, Crew, Clients, Status, Settings, guides, shopping/batch wizards, connection and
 AutoParty windows retain their functional layouts with the shared typography, colours and localization.
 Accent changes recolour decorative surfaces, fields and borders; success, warning and stop colours retain
-independent meanings. Preferences default to `UiLanguage=en`, `UiAccentRgb=0xFFAF74` and `UiCompact=false`.
+independent meanings. Preferences default to `UiLanguage=en`, `UiAccentRgb=0xFFAF74` and `UiCompact=true`.
 
 The UI uses managed Segoe UI regular, semibold and bold fonts, Segoe UI Symbol and Dalamud-owned CJK coverage.
 Hindi uses Windows-shaped Nirmala UI text at the original font-role heights, including retained text editors.

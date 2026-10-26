@@ -21,6 +21,7 @@ internal static class DadPresentation
 
     // Approved DAD-review-v2 / DAD-compact-review-v1: native chrome; logical pixel measurements.
     internal static bool Compact { get; set; }
+    internal static bool IsMaterial => MaterialTheme.Current.IsGlassmorphism || MaterialTheme.Current.IsSpatial || MaterialTheme.Current.IsCyberpunk;
     internal static float HeaderHeight => Compact ? 66 : 72;
     internal static float CardHeight => Compact ? 138 : 158;
     internal static float GuideHeight => Compact ? 54 : 60;
@@ -86,6 +87,7 @@ internal static class DadPresentation
     internal static void Surface(Vector2 min, Vector2 max, bool raised = false)
     {
         if (MaterialTheme.Current.IsLcars) { MaterialLcars.PanelFrame(min, max); return; }
+        if (IsMaterial) { MaterialSkin.PanelFrame(min, max, inset: !raised); return; }
         var c = MaterialTheme.Current.Colors;
         MaterialCanvas.Surface(min, max, raised ? c.SurfaceContainerHigh : c.Surface, c.Background, 4 * MaterialTheme.Metrics.Scale);
         Dalamud.Bindings.ImGui.ImGui.GetWindowDrawList().AddRect(min, max, MaterialCanvas.Color(c.OutlineVariant), 4 * MaterialTheme.Metrics.Scale);

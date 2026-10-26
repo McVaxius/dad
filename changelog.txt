@@ -1,3 +1,10 @@
+2026-10-26 - 2.0.0.9 - Shared material appearance
+
+- Add Glassmorphism, Spatial and Cyberpunk across the existing DAD windows, dialogs and native controls, retaining Auto, Picker, LCARS and all run behavior.
+- Keep independent material palettes and resets, four LCARS colour roles, and Glass wave colours, animation and speed in the existing saved appearance settings.
+- Translate the new controls in all fifteen languages and retain native window actions, fonts, density, motion and transparency behavior.
+- Pin the compatible shared UI library for release builds.
+
 2026-10-25 - 2.0.0.8 - Integrate repaired Daily and lifecycle improvements (PR #9)
 
 - Integrate exact per-client Daily reward proofs and bounded current-reset completion receipts, preserving live inspection when saved evidence is missing, obsolete or inconclusive.

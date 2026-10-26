@@ -65,6 +65,7 @@ public sealed class DadDependenciesWindow : Window, IDisposable
     public override void Draw()
     {
         motion.DrawChrome();
+        MaterialSkin.Backdrop();
         if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         using var controls = MaterialControls.Push(MaterialControlContext.Dense);
         using var rowSpacing = new MaterialStyleScope();

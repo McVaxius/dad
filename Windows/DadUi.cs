@@ -35,7 +35,8 @@ internal static class DadUi
         using (UiText.Font(UiFontRole.BodyStrong))
         {
             ImGui.PushStyleColor(ImGuiCol.Text,MaterialTheme.Current.Colors.OnSurface);
-            UiGui.TextUnformatted(title);
+            if (MaterialTheme.Current.IsCyberpunk) MaterialSkin.Heading(UiText.T(title));
+            else UiGui.TextUnformatted(title);
             ImGui.PopStyleColor();
         }
         if (!string.IsNullOrWhiteSpace(subtitle))
@@ -47,6 +48,7 @@ internal static class DadUi
 
     public static void IconHeading(string title,string subtitle,MaterialIcon icon,bool inlineSubtitle=false)
     {
+        if (MaterialTheme.Current.IsCyberpunk) { Heading(title,subtitle);return; }
         var scale=MaterialTheme.Metrics.Scale;
         var origin=ImGui.GetCursorScreenPos();
         float titleWidth, subtitleWidth;
@@ -99,6 +101,7 @@ internal static class DadUi
         using (UiText.Font(UiFontRole.BodyStrong))
         {
             if (MaterialTheme.Current.IsLcars) MaterialLcars.PanelHeading(UiText.T(title), 1);
+            else if (MaterialTheme.Current.IsCyberpunk) MaterialSkin.Heading(UiText.T(title),1);
             else MaterialSettings.Section(UiText.T(title));
         }
         if (!string.IsNullOrWhiteSpace(subtitle))
@@ -145,15 +148,32 @@ internal static class DadUi
         var text = UiText.T(label);
         var size = MaterialText.Measure(text);
         var height = Math.Max((DadPresentation.Compact ? 32 : 38) * scale, size.Y + 12 * scale);
+        using var skin= DadPresentation.IsMaterial ? MaterialSkin.NativeButtonStyle() : default(MaterialStyleScope);
         using var appearance = new MaterialStyleScope();
         appearance.Color(ImGuiCol.Text, Vector4.Zero);
         appearance.Color(ImGuiCol.Header, MaterialTheme.Current.Colors.PrimaryContainer);
+        if (DadPresentation.IsMaterial)
+        {
+            var colors=MaterialTheme.Current.Colors;
+            var fill=selected?colors.Primary:colors.SurfaceContainer;
+            appearance.Color(ImGuiCol.Button,fill);
+            appearance.Color(ImGuiCol.ButtonHovered,MaterialColor.Layer(fill,colors.OnSurface,.08f));
+            appearance.Color(ImGuiCol.ButtonActive,MaterialColor.Layer(fill,colors.OnSurface,.14f));
+            appearance.Color(ImGuiCol.Header,Vector4.Zero);
+            appearance.Color(ImGuiCol.HeaderHovered,Vector4.Zero);
+            appearance.Color(ImGuiCol.HeaderActive,Vector4.Zero);
+        }
         var clicked = ImGui.Selectable(id, selected, ImGuiSelectableFlags.None,
             new Vector2(Math.Max(1, ImGui.GetContentRegionAvail().X), height));
         var min = ImGui.GetItemRectMin();
         var max = ImGui.GetItemRectMax();
         var color = selected ? MaterialTheme.Current.Colors.Primary : MaterialTheme.Current.Colors.OnSurfaceVariant;
         var draw = ImGui.GetWindowDrawList();
+        if (DadPresentation.IsMaterial)
+        {
+            MaterialSkin.PaintButton(min,max,ImGui.GetStyle().Alpha);
+            color=selected?MaterialTheme.Current.Colors.OnPrimary:MaterialTheme.Current.Colors.OnSurfaceVariant;
+        }
         if (MaterialTheme.Current.IsLcars)
         {
             if (selected) draw.AddRectFilled(min, max, MaterialCanvas.Color(MaterialLcars.Lilac), 6 * scale);
@@ -271,12 +291,16 @@ internal static class DadUi
         var detailOffset=MaterialText.RequiresShaping(UiText.T(title))?Math.Max(22*scale,titleHeight):22*scale;
         var height=Math.Max(logicalHeight*scale,16*scale+detailOffset+detailHeight);
         var size=new Vector2(width,height);
+        using var skin= DadPresentation.IsMaterial ? MaterialSkin.NativeButtonStyle() : default(MaterialStyleScope);
         ImGui.PushStyleColor(ImGuiCol.Text,Vector4.Zero);
         ImGui.PushStyleColor(ImGuiCol.Button,emphasized?colors.PrimaryContainer:colors.SurfaceContainer);
         ImGui.PushStyleColor(ImGuiCol.Border,emphasized?colors.Primary:colors.OutlineVariant);
-        var clicked=ImGui.Button(id,size);
-        ImGui.PopStyleColor(3);
+        bool clicked;
+        using (var face= DadPresentation.IsMaterial ? MaterialSkin.TransparentButtonFace() : default(MaterialStyleScope))
+            clicked=ImGui.Button(id,size);
         var min=ImGui.GetItemRectMin();var max=ImGui.GetItemRectMax();var dl=ImGui.GetWindowDrawList();
+        if (DadPresentation.IsMaterial) MaterialSkin.PaintButton(min,max,ImGui.GetStyle().Alpha);
+        ImGui.PopStyleColor(3);
         dl.PushClipRect(min,max,true);
         var alpha=ImGui.GetStyle().Alpha;
         var iconSize=icon switch { MaterialIcon.Cart=>38f,MaterialIcon.Edit=>40f,_=>30f };
