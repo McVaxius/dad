@@ -386,6 +386,18 @@ public static class DadScheduleRules
     public const int DailyResetHourUtc = 15;
     public const string DuplicatePlanAttachmentMessage = "Maybe you should have hit Duplicate first before making this version. This one has the same ID as an existing Plan in the schedule already.";
 
+    public static bool IsExecutingEntry(
+        DadScheduleDefinition schedule,
+        DadScheduleEntry entry,
+        DadScheduleRunState run)
+        => run.IsActive && !run.DryRun &&
+           !string.IsNullOrWhiteSpace(run.ScheduleId) &&
+           !string.IsNullOrWhiteSpace(run.CurrentEntryId) &&
+           !string.IsNullOrWhiteSpace(run.CurrentGroupId) &&
+           string.Equals(schedule.ScheduleId, run.ScheduleId, StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(entry.EntryId, run.CurrentEntryId, StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(entry.GroupId, run.CurrentGroupId, StringComparison.OrdinalIgnoreCase);
+
     public static TimeSpan? GetElapsed(DadScheduleRunState run, DateTime nowUtc)
     {
         if (string.IsNullOrWhiteSpace(run.RunId) || run.StartedAtUtc == default)

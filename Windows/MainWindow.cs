@@ -387,6 +387,47 @@ public sealed partial class MainWindow : Window, IDisposable
         DadUi.IconBadge(configuration.RunAsServerDad?"Coordinator":"Client",configuration.RunAsServerDad?MaterialIcon.Crown:MaterialIcon.Person,DadUiTone.Accent);
         DadUi.SameLineIfFits(DadUi.BadgeWidth(configuration.PluginEnabled?"Enabled":"Paused"));
         DadUi.Badge(configuration.PluginEnabled?"Enabled":"Paused",configuration.PluginEnabled?DadUiTone.Success:DadUiTone.Neutral);
+        var scheduleSnapshot = plugin.SchedulerService.GetScheduleSnapshot();
+        EnsureScheduleSelection(scheduleSnapshot);
+        var headerSchedule = scheduleSnapshot.Schedules.FirstOrDefault(candidate =>
+            string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
+        DadUi.SameLineIfFits(MaterialText.Measure(UiText.T("Schedule")).X / scale);
+        UiGui.TextUnformatted("Schedule");
+        DadUi.SameLineIfFits(220f);
+        ImGui.SetNextItemWidth(MathF.Max(1f, MathF.Min(220f * scale, ImGui.GetContentRegionAvail().X)));
+        if (MaterialText.BeginCombo("##dad-header-schedule", UiText.T(headerSchedule?.DisplayName ?? "(none)")))
+        {
+            foreach (var candidate in scheduleSnapshot.Schedules)
+            {
+                var selected = string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase);
+                if (UiGui.Selectable($"{candidate.DisplayName}##dad-header-schedule-{candidate.ScheduleId}", selected))
+                {
+                    selectedScheduleId = candidate.ScheduleId;
+                    schedulerScheduleNameBuffer = candidate.DisplayName;
+                }
+                if (selected)
+                    ImGui.SetItemDefaultFocus();
+            }
+            ImGui.EndCombo();
+        }
+        headerSchedule = scheduleSnapshot.Schedules.FirstOrDefault(candidate =>
+            string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
+        var knownGroupIds = configuration.PlannerGroups.Select(static group => group.GroupId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var canRunSchedule = headerSchedule != null &&
+                             plugin.SchedulerService.CanRunScheduleHere(headerSchedule) &&
+                             headerSchedule.Entries.Count > 0 &&
+                             headerSchedule.Entries.All(entry => !string.IsNullOrWhiteSpace(entry.GroupId) && knownGroupIds.Contains(entry.GroupId)) &&
+                             !scheduleSnapshot.ActiveRun.IsActive && !Plugin.IsBusy(runState.VisibleRun);
+        DadUi.SameLineIfFits(DadUi.ButtonWidth("Run now"));
+        ImGui.BeginDisabled(!canRunSchedule);
+        if (UiGui.SmallButton("Run now##dad-header-schedule-run") && headerSchedule != null)
+            plugin.StartScheduleRunFromShell(headerSchedule.ScheduleId, dryRun: false, requestedBy: "schedule-ui");
+        ImGui.EndDisabled();
+        DadUi.SameLineIfFits(DadUi.ButtonWidth("Cancel active schedule"));
+        ImGui.BeginDisabled(!scheduleSnapshot.ActiveRun.IsActive);
+        if (UiGui.SmallButton("Cancel active schedule##dad-header-schedule-cancel"))
+            plugin.CancelScheduleRunFromShell("Schedule cancelled.");
+        ImGui.EndDisabled();
         DadUi.SameLineIfFits(DadUi.IconButtonWidth("Settings"));
         if (DadUi.IconButton("Settings",MaterialIcon.Settings,DadUiTone.Neutral,new Vector2(0,28*scale))) plugin.ToggleConfigUi();
         DadUi.SameLineIfFits(DadUi.IconButtonWidth("Guide"));
@@ -2156,6 +2197,8 @@ public sealed partial class MainWindow : Window, IDisposable
             UiGui.EndCombo();
         }
 
+        schedule = snapshot.Schedules.FirstOrDefault(candidate =>
+            string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
         if (identityFieldsShareRow)
             ImGui.SameLine();
         ImGui.SetNextItemWidth(MathF.Min(260f, MathF.Max(120f, ImGui.GetContentRegionAvail().X)));
@@ -2274,30 +2317,39 @@ public sealed partial class MainWindow : Window, IDisposable
         ImGui.TableSetupColumn("Ordered presets", ImGuiTableColumnFlags.WidthStretch);
 
         ImGui.TableNextColumn();
-        if (DadUi.BeginCard("dad-schedule-ordered-card", flat: true))
-        {
-            DadUi.Heading("ORDERED PRESETS", "Set the exact order and repeat count for each saved preset.");
-            DrawScheduleEntryEditor(
-                schedule,
-                groups,
-                activeScheduleLocked,
-                plugin.GetPlannerUiSnapshot(runState),
-                skipBadges);
-            DadUi.EndCard(flat: true);
-        }
-
-        if (UiGui.CollapsingHeader("MEMBER SHOPPING & FINAL COMMANDS"))
-        {
-            ImGuiP.PushOverrideID(scheduleRoot);
-            DrawMemberAssignmentsEditor(DadShoppingAssociationOwnerKind.Schedule, schedule.ScheduleId,
-                schedule.DisplayName, schedule.ShoppingAssociation, memberSlots, activeScheduleLocked);
-            ImGui.PopID();
-        }
-
-        ImGui.TableNextColumn();
         if (DadUi.BeginCard("dad-schedule-cadence-card", flat: true))
         {
             DadUi.Heading("CADENCE & ACTIONS", "Choose when this chain is eligible, then validate or run it.");
+            ImGui.BeginDisabled(schedule.Entries.Count == 0 || missingPresetCount > 0 || activeScheduleLocked);
+            if (UiGui.SmallButton("Dry-run"))
+                plugin.StartScheduleRunFromShell(schedule.ScheduleId, dryRun: true, requestedBy: "schedule-ui-dry-run");
+            ImGui.EndDisabled();
+            DadUi.SameLineIfFits(DadUi.ButtonWidth("Run now"));
+            ImGui.BeginDisabled(!canRunSchedule);
+            if (UiGui.SmallButton("Run now"))
+                plugin.StartScheduleRunFromShell(schedule.ScheduleId, dryRun: false, requestedBy: "schedule-ui");
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && !canRunSchedule)
+                UiGui.SetTooltip(FormatText(firstBlocker, "Schedule is not ready."));
+            ImGui.EndDisabled();
+            DadUi.SameLineIfFits(DadUi.ButtonWidth("Cancel active schedule"));
+            ImGui.BeginDisabled(!activeScheduleLocked);
+            if (UiGui.SmallButton("Cancel active schedule"))
+                plugin.CancelScheduleRunFromShell("Schedule cancelled from Schedules.");
+            ImGui.EndDisabled();
+            DadUi.SameLineIfFits(DadUi.ButtonWidth("Open Status"));
+            if (UiGui.SmallButton("Open Status"))
+                NavigateToStatus(activeScheduleLocked ? DadStatusWindowTab.CurrentActivity : DadStatusWindowTab.QueueHistory);
+            DadUi.SameLineIfFits(DadUi.ButtonWidth("Resume from failed entry"));
+            ImGui.BeginDisabled(latestFailedRun == null || !retryEligibility.Eligible);
+            if (UiGui.SmallButton("Resume from failed entry") && latestFailedRun != null)
+            {
+                pendingRetryScheduleRunId = latestFailedRun.RunId;
+                openRetryFailedEntryPopup = true;
+            }
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                UiGui.SetTooltip(retryEligibility.Summary);
+            ImGui.EndDisabled();
+
             if (activeScheduleLocked)
                 DadUi.Badge("Locked while a schedule is active", DadUiTone.Warning);
             if (activeRun.IsActive)
@@ -2327,37 +2379,29 @@ public sealed partial class MainWindow : Window, IDisposable
             DrawStatusRow("Last dry-run", lastDryRun == null
                 ? "Not run"
                 : $"{(lastDryRun.Success ? "Ready" : "Blocked")} | {FormatText(lastDryRun.BlockedReason, lastDryRun.Summary)}");
-
-            ImGui.BeginDisabled(schedule.Entries.Count == 0 || missingPresetCount > 0 || activeScheduleLocked);
-            if (UiGui.SmallButton("Dry-run"))
-                plugin.StartScheduleRunFromShell(schedule.ScheduleId, dryRun: true, requestedBy: "schedule-ui-dry-run");
-            ImGui.EndDisabled();
-            ImGui.SameLine();
-            ImGui.BeginDisabled(!canRunSchedule);
-            if (UiGui.SmallButton("Run now"))
-                plugin.StartScheduleRunFromShell(schedule.ScheduleId, dryRun: false, requestedBy: "schedule-ui");
-            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && !canRunSchedule)
-                UiGui.SetTooltip(FormatText(firstBlocker, "Schedule is not ready."));
-            ImGui.EndDisabled();
-            ImGui.SameLine();
-            ImGui.BeginDisabled(!activeScheduleLocked ||
-                                !string.Equals(activeRun.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase));
-            if (UiGui.SmallButton("Cancel"))
-                plugin.CancelScheduleRunFromShell("Schedule cancelled from Schedules.");
-            ImGui.EndDisabled();
-            ImGui.SameLine();
-            if (UiGui.SmallButton("Open Status"))
-                NavigateToStatus(activeScheduleLocked ? DadStatusWindowTab.CurrentActivity : DadStatusWindowTab.QueueHistory);
-            ImGui.BeginDisabled(latestFailedRun == null || !retryEligibility.Eligible);
-            if (UiGui.SmallButton("Resume from failed entry") && latestFailedRun != null)
-            {
-                pendingRetryScheduleRunId = latestFailedRun.RunId;
-                openRetryFailedEntryPopup = true;
-            }
-            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                UiGui.SetTooltip(retryEligibility.Summary);
-            ImGui.EndDisabled();
             DadUi.EndCard(flat: true);
+        }
+
+        ImGui.TableNextColumn();
+        if (DadUi.BeginCard("dad-schedule-ordered-card", flat: true))
+        {
+            DadUi.Heading("ORDERED PRESETS", "Set the exact order and repeat count for each saved preset.");
+            DrawScheduleEntryEditor(
+                schedule,
+                groups,
+                activeRun,
+                activeScheduleLocked,
+                plugin.GetPlannerUiSnapshot(runState),
+                skipBadges);
+            DadUi.EndCard(flat: true);
+        }
+
+        if (UiGui.CollapsingHeader("MEMBER SHOPPING & FINAL COMMANDS"))
+        {
+            ImGuiP.PushOverrideID(scheduleRoot);
+            DrawMemberAssignmentsEditor(DadShoppingAssociationOwnerKind.Schedule, schedule.ScheduleId,
+                schedule.DisplayName, schedule.ShoppingAssociation, memberSlots, activeScheduleLocked);
+            ImGui.PopID();
         }
 
         ImGui.EndTable();
@@ -2647,6 +2691,7 @@ public sealed partial class MainWindow : Window, IDisposable
     private void DrawScheduleEntryEditor(
         DadScheduleDefinition schedule,
         IReadOnlyList<DadPlannerGroup> groups,
+        DadScheduleRunState activeRun,
         bool activeScheduleLocked,
         DadPlannerUiSnapshot plannerSnapshot,
         DadScheduleSkipBadgeProjectionResult skipBadges)
@@ -2712,6 +2757,7 @@ public sealed partial class MainWindow : Window, IDisposable
             var group = groups.FirstOrDefault(candidate =>
                 string.Equals(candidate.GroupId, entry.GroupId, StringComparison.OrdinalIgnoreCase));
             var levelSeekDisplay = plugin.BuildScheduleLevelSeekDisplay(group, plannerSnapshot);
+            var executing = DadScheduleRules.IsExecutingEntry(schedule, entry, activeRun);
             ImGui.TableNextRow();
             if (levelSeekDisplay.IsSkipIndicated)
             {
@@ -2719,6 +2765,8 @@ public sealed partial class MainWindow : Window, IDisposable
                     ImGuiTableBgTarget.RowBg0,
                     ImGui.GetColorU32(DadUi.WithAlpha(DadUi.Warning, 0.12f)));
             }
+            if (executing)
+                ImGui.TableSetBgColor(ImGuiTableBgTarget.RowBg1, ImGui.GetColorU32(DadUi.WithAlpha(DadUi.Accent, 0.22f)));
             ImGui.TableNextColumn();
             UiGui.TextUnformatted((index + 1).ToString(UiText.Current.Culture));
 
@@ -2758,6 +2806,8 @@ public sealed partial class MainWindow : Window, IDisposable
                 }
             }
             ImGui.EndDisabled();
+            if (executing)
+                DadUi.Badge("Running now", DadUiTone.Accent);
             if (skipBadges.Badges.TryGetValue(entry.EntryId, out var skipBadge))
             {
                 DadUi.Badge(skipBadge.Label, DadUiTone.Warning);

@@ -1,3 +1,9 @@
+2026-10-25 - 2.0.0.7 - Schedule controls (I644, I647, I648)
+
+- Add a header schedule picker with separate Run and Cancel active schedule actions. Selecting a schedule only changes the editing selection; execution retains existing admission and cancellation ownership.
+- Put schedule actions above the ordered preset list and wrap them in narrow layouts. Cancel remains available for the actual active schedule even while viewing another schedule.
+- Highlight the executing row by exact schedule, entry and preset identity, preserving repeat progress and skip warnings independently of the editing selection.
+
 2026-10-25 - 2.0.0.6 - Schedule timing (I653)
 
 - Show schedule wall-clock elapsed time, including pauses, and average successful preset duration in Schedule and Current Activity.

@@ -6,6 +6,91 @@ namespace dad.Tests;
 public sealed class DadScheduleRulesTests
 {
     [Fact]
+    public void ExecutingEntryUsesExactIdsInsteadOfStaleIndexOrRepeatedPresetSelection()
+    {
+        var schedule = new DadScheduleDefinition
+        {
+            ScheduleId = "schedule",
+            Entries =
+            [
+                new() { EntryId = "entry-a", GroupId = "preset", RepeatCount = 3 },
+                new() { EntryId = "entry-b", GroupId = "preset", RepeatCount = 3 },
+            ],
+        };
+        var run = new DadScheduleRunState
+        {
+            ScheduleId = "SCHEDULE", CurrentEntryId = "ENTRY-B", CurrentGroupId = "PRESET",
+            Status = DadScheduleRunStatus.Running, Phase = DadScheduleRunPhase.WaitingForDadRun,
+            CurrentEntryIndex = 0, RepeatIteration = 2,
+        };
+
+        var executing = Assert.Single(schedule.Entries, entry => DadScheduleRules.IsExecutingEntry(schedule, entry, run));
+
+        Assert.Same(schedule.Entries[1], executing);
+        var editedSchedule = schedule.Clone();
+        editedSchedule.ScheduleId = "other-schedule";
+        Assert.DoesNotContain(editedSchedule.Entries, entry => DadScheduleRules.IsExecutingEntry(editedSchedule, entry, run));
+        Assert.Equal("ENTRY-B", run.CurrentEntryId);
+        Assert.Equal(2, run.RepeatIteration);
+    }
+
+    [Theory]
+    [InlineData(DadScheduleRunPhase.StartingEntry)]
+    [InlineData(DadScheduleRunPhase.WaitingForScheduler)]
+    [InlineData(DadScheduleRunPhase.WaitingForDadRun)]
+    public void ExecutingEntryFollowsEveryActiveSchedulePhase(DadScheduleRunPhase phase)
+    {
+        var schedule = new DadScheduleDefinition { ScheduleId = "schedule" };
+        var entry = new DadScheduleEntry { EntryId = "entry", GroupId = "preset" };
+        var run = new DadScheduleRunState
+        {
+            ScheduleId = schedule.ScheduleId, CurrentEntryId = entry.EntryId, CurrentGroupId = entry.GroupId,
+            Status = DadScheduleRunStatus.Running, Phase = phase,
+        };
+
+        Assert.True(DadScheduleRules.IsExecutingEntry(schedule, entry, run));
+    }
+
+    [Theory]
+    [InlineData("different-schedule")]
+    [InlineData("different-entry")]
+    [InlineData("different-preset")]
+    [InlineData("missing-schedule")]
+    [InlineData("missing-entry")]
+    [InlineData("missing-preset")]
+    [InlineData("dry-run")]
+    [InlineData("idle")]
+    [InlineData("completed")]
+    [InlineData("cancelled")]
+    [InlineData("blocked")]
+    public void ExecutingEntryNeverMarksUnrelatedUnknownOrTerminalWork(string scenario)
+    {
+        var schedule = new DadScheduleDefinition { ScheduleId = "schedule" };
+        var entry = new DadScheduleEntry { EntryId = "entry", GroupId = "preset" };
+        var run = new DadScheduleRunState
+        {
+            ScheduleId = schedule.ScheduleId, CurrentEntryId = entry.EntryId, CurrentGroupId = entry.GroupId,
+            CurrentEntryIndex = 0, Status = DadScheduleRunStatus.Running, Phase = DadScheduleRunPhase.WaitingForDadRun,
+        };
+        switch (scenario)
+        {
+            case "different-schedule": run.ScheduleId = "other"; break;
+            case "different-entry": run.CurrentEntryId = "other"; break;
+            case "different-preset": run.CurrentGroupId = "other"; break;
+            case "missing-schedule": run.ScheduleId = string.Empty; break;
+            case "missing-entry": run.CurrentEntryId = string.Empty; break;
+            case "missing-preset": run.CurrentGroupId = string.Empty; break;
+            case "dry-run": run.DryRun = true; break;
+            case "idle": run.Status = DadScheduleRunStatus.Idle; break;
+            case "completed": run.Status = DadScheduleRunStatus.Completed; break;
+            case "cancelled": run.Status = DadScheduleRunStatus.Cancelled; break;
+            case "blocked": run.Status = DadScheduleRunStatus.Blocked; break;
+        }
+
+        Assert.False(DadScheduleRules.IsExecutingEntry(schedule, entry, run));
+    }
+
+    [Fact]
     public void ScheduleElapsedIncludesPausesAndStopsAtRecordedCompletion()
     {
         var start = new DateTime(2026, 10, 25, 1, 0, 0, DateTimeKind.Utc);
