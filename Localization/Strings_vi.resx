@@ -8925,4 +8925,8 @@
   <data name="Unmute UI sounds" xml:space="preserve"><value>Bật âm thanh giao diện</value></data>
   <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>Bảng LCARS và điều khiển có viền. Giữ nguyên màu đã chọn.</value></data>
   <data name="Audio output is unavailable." xml:space="preserve"><value>Không có đầu ra âm thanh.</value></data>
+  <data name="schedule_timing_001" xml:space="preserve"><value>Thời gian lịch đã chạy (gồm tạm dừng)</value></data>
+  <data name="schedule_timing_002" xml:space="preserve"><value>Thời lượng trung bình của cấu hình</value></data>
+  <data name="schedule_timing_003" xml:space="preserve"><value>{0} | {1} cấu hình đã hoàn tất trong lịch sử còn lưu</value></data>
+  <data name="schedule_timing_004" xml:space="preserve"><value>Không có cấu hình đã hoàn tất trong lịch sử còn lưu.</value></data>
 </root>

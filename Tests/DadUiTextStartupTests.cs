@@ -39,6 +39,18 @@ namespace dad.Tests
             Assert.Equal(text.Resources.GetString("trust_ui_026", false), UiText.T("NPC leveling"));
             Assert.Equal(text.Resources.GetString("trust_ui_027", false), UiText.T("NPC roster"));
             Assert.Equal(text.Resources.GetString("trust_ui_048", false), UiText.T("Trust presets"));
+            foreach (var (key, caption) in new[]
+            {
+                ("schedule_timing_001", "Schedule elapsed (including pauses)"),
+                ("schedule_timing_002", "Average preset duration"),
+                ("schedule_timing_004", "No completed presets in retained history."),
+            })
+            {
+                Assert.False(string.IsNullOrWhiteSpace(text.Resources.GetString(key, false)));
+                Assert.Equal(text.Resources.GetString(key, false), UiText.T(caption));
+            }
+            Assert.Equal(string.Format(text.Culture, text.Resources.GetString("schedule_timing_003", false)!, "00:20:00", 2),
+                UiText.F("{0} | {1} completed preset(s) in retained history", "00:20:00", 2));
             Assert.Equal(text.Resources.GetString("trust_ui_028", false), UiText.T("NPC target level"));
             Assert.Equal(text.Resources.GetString("trust_ui_032", false), UiText.T("Player-job target level"));
             Assert.Equal(text.Resources.GetString("ui_accounts_enable_selected", false), UiText.T("Enable selected"));

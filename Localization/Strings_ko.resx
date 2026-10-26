@@ -8928,4 +8928,8 @@
   <data name="Unmute UI sounds" xml:space="preserve"><value>UI 소리 켜기</value></data>
   <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>LCARS 패널과 윤곽선 컨트롤입니다. 색상 선택기의 색상은 유지됩니다.</value></data>
   <data name="Audio output is unavailable." xml:space="preserve"><value>오디오 출력을 사용할 수 없습니다.</value></data>
+  <data name="schedule_timing_001" xml:space="preserve"><value>일정 경과 시간 (일시 정지 포함)</value></data>
+  <data name="schedule_timing_002" xml:space="preserve"><value>프리셋 평균 소요 시간</value></data>
+  <data name="schedule_timing_003" xml:space="preserve"><value>{0} | 보관된 기록에서 완료된 프리셋 {1}개</value></data>
+  <data name="schedule_timing_004" xml:space="preserve"><value>보관된 기록에 완료된 프리셋이 없습니다.</value></data>
 </root>

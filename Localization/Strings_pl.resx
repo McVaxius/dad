@@ -8925,4 +8925,8 @@
   <data name="Unmute UI sounds" xml:space="preserve"><value>Włącz dźwięki interfejsu</value></data>
   <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>Panele LCARS i obramowane elementy sterujące. Kolory selektora są zachowane.</value></data>
   <data name="Audio output is unavailable." xml:space="preserve"><value>Wyjście audio jest niedostępne.</value></data>
+  <data name="schedule_timing_001" xml:space="preserve"><value>Czas harmonogramu (łącznie z pauzami)</value></data>
+  <data name="schedule_timing_002" xml:space="preserve"><value>Średni czas ustawienia</value></data>
+  <data name="schedule_timing_003" xml:space="preserve"><value>{0} | ukończone ustawienia w zachowanej historii: {1}</value></data>
+  <data name="schedule_timing_004" xml:space="preserve"><value>Brak ukończonych ustawień w zachowanej historii.</value></data>
 </root>

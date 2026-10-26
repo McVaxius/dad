@@ -8925,4 +8925,8 @@
   <data name="Unmute UI sounds" xml:space="preserve"><value>Ativar sons da interface</value></data>
   <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>Painéis LCARS e controles com contorno. As cores do seletor são mantidas.</value></data>
   <data name="Audio output is unavailable." xml:space="preserve"><value>A saída de áudio está indisponível.</value></data>
+  <data name="schedule_timing_001" xml:space="preserve"><value>Tempo da programação (incluindo pausas)</value></data>
+  <data name="schedule_timing_002" xml:space="preserve"><value>Duração média das predefinições</value></data>
+  <data name="schedule_timing_003" xml:space="preserve"><value>{0} | {1} predefinição(ões) concluída(s) no histórico mantido</value></data>
+  <data name="schedule_timing_004" xml:space="preserve"><value>Nenhuma predefinição concluída no histórico mantido.</value></data>
 </root>

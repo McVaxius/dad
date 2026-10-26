@@ -17,6 +17,72 @@ public sealed class DadScheduleDutyExitRetryRuntimeTests
 {
     private static readonly DateTime Now = new(2026, 10, 19, 3, 0, 0, DateTimeKind.Utc);
 
+    [Theory]
+    [InlineData("completed")]
+    [InlineData("failed")]
+    [InlineData("cancelled")]
+    [InlineData("active")]
+    [InlineData("wrong-request")]
+    [InlineData("wrong-schedule")]
+    [InlineData("wrong-run")]
+    public void PresetTimingPromotesOnlyTheExactSuccessfullyCompletedHandoff(string scenario)
+    {
+        var (scheduler, config, schedule) = Fixture();
+        config.ActiveScheduleRun.ActiveSchedulerJobId = "timed-job";
+        var originalScheduleRun = config.ActiveScheduleRun.Clone();
+        var schedulerState = scheduler.CurrentState;
+        var started = new DadRuntime::dad.Models.DadScheduledCrewJobResult
+        {
+            JobId = "timed-job", Success = true,
+            ScheduleId = scenario == "wrong-schedule" ? "other-schedule" : "schedule",
+            ScheduleRunId = scenario == "wrong-run" ? "other-run" : "schedule-run",
+            FinalPhase = DadRuntime::dad.Models.DadSchedulerPresetPhase.StartedPlanner,
+            StartedAtUtc = Now.AddMinutes(-10), CompletedAtUtc = Now.AddMinutes(-5),
+        };
+        config.SchedulerHistory.Add(started);
+        var run = new RuntimeRun
+        {
+            RequestId = scenario == "wrong-request" ? "other-request" : "failed-run",
+            Status = scenario switch
+            {
+                "failed" => DadRuntime::dad.Models.DadRunStatus.Failed,
+                "cancelled" => DadRuntime::dad.Models.DadRunStatus.Cancelled,
+                "active" => DadRuntime::dad.Models.DadRunStatus.Queued,
+                _ => DadRuntime::dad.Models.DadRunStatus.Completed,
+            },
+            CompletedAtUtc = Now.AddMinutes(10), Summary = "Preset completed.",
+        };
+
+        Invoke(scheduler, "TryProcessWaitingDadRun", schedule, run, Now.AddMinutes(12));
+
+        var retained = Assert.Single(config.SchedulerHistory);
+        Assert.Same(started, retained);
+        Assert.Equal(Now.AddMinutes(-10), retained.StartedAtUtc);
+        Assert.Equal(schedulerState.SchedulerRunId, scheduler.CurrentState.SchedulerRunId);
+        Assert.Equal(schedulerState.Phase, scheduler.CurrentState.Phase);
+        Assert.Empty(config.SchedulerQueue);
+        var timing = DadRuntime::dad.Models.DadScheduleRules.GetCompletedPresetTiming(originalScheduleRun, config.SchedulerHistory);
+        if (scenario == "completed")
+        {
+            Assert.Equal(DadRuntime::dad.Models.DadSchedulerPresetPhase.Completed, retained.FinalPhase);
+            Assert.Equal(run.CompletedAtUtc, retained.CompletedAtUtc);
+            Assert.Equal(TimeSpan.FromMinutes(20), timing.AverageDuration);
+            Assert.Equal(1, timing.SampleCount);
+            Assert.Equal(1, config.ActiveScheduleRun.CurrentEntryIndex);
+            Assert.Equal(1, config.ActiveScheduleRun.CompletedEntryExecutions);
+            Invoke(scheduler, "TryProcessWaitingDadRun", schedule, run, Now.AddMinutes(13));
+            Assert.Single(config.SchedulerHistory);
+            Assert.Equal(1, config.ActiveScheduleRun.CompletedEntryExecutions);
+        }
+        else
+        {
+            Assert.Equal(DadRuntime::dad.Models.DadSchedulerPresetPhase.StartedPlanner, retained.FinalPhase);
+            Assert.Equal(Now.AddMinutes(-5), retained.CompletedAtUtc);
+            Assert.Null(timing.AverageDuration);
+            Assert.Equal(0, timing.SampleCount);
+        }
+    }
+
     [Fact]
     public void RealSchedulerReservesFirstExitFailureAndBlocksSecondWithoutCompletingEntry()
     {

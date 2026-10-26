@@ -8954,4 +8954,8 @@
   <data name="Unmute UI sounds" xml:space="preserve"><value>Включить звуки интерфейса</value></data>
   <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>Панели LCARS и элементы управления с контуром. Выбранные цвета сохраняются.</value></data>
   <data name="Audio output is unavailable." xml:space="preserve"><value>Аудиовыход недоступен.</value></data>
+  <data name="schedule_timing_001" xml:space="preserve"><value>Время расписания (включая паузы)</value></data>
+  <data name="schedule_timing_002" xml:space="preserve"><value>Средняя длительность пресета</value></data>
+  <data name="schedule_timing_003" xml:space="preserve"><value>{0} | завершённых пресетов в сохранённой истории: {1}</value></data>
+  <data name="schedule_timing_004" xml:space="preserve"><value>В сохранённой истории нет завершённых пресетов.</value></data>
 </root>

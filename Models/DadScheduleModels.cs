@@ -386,6 +386,38 @@ public static class DadScheduleRules
     public const int DailyResetHourUtc = 15;
     public const string DuplicatePlanAttachmentMessage = "Maybe you should have hit Duplicate first before making this version. This one has the same ID as an existing Plan in the schedule already.";
 
+    public static TimeSpan? GetElapsed(DadScheduleRunState run, DateTime nowUtc)
+    {
+        if (string.IsNullOrWhiteSpace(run.RunId) || run.StartedAtUtc == default)
+            return null;
+
+        var elapsed = EnsureUtc(run.CompletedAtUtc ?? nowUtc) - EnsureUtc(run.StartedAtUtc);
+        return elapsed < TimeSpan.Zero ? TimeSpan.Zero : elapsed;
+    }
+
+    public static (TimeSpan? AverageDuration, int SampleCount) GetCompletedPresetTiming(
+        DadScheduleRunState run,
+        IEnumerable<DadScheduledCrewJobResult>? schedulerHistory)
+    {
+        if (run.DryRun || string.IsNullOrWhiteSpace(run.ScheduleId) || string.IsNullOrWhiteSpace(run.RunId))
+            return (null, 0);
+
+        var durations = (schedulerHistory ?? [])
+            .Where(result =>
+                result.Success && result.FinalPhase == DadSchedulerPresetPhase.Completed &&
+                (result.JobType is DadSchedulerJobType.ScheduledPreset or DadSchedulerJobType.LevelingOperation) &&
+                string.IsNullOrWhiteSpace(result.ParentOperationJobId) &&
+                result.SkipKind == DadSchedulerSkipKind.None &&
+                string.Equals(result.ScheduleId, run.ScheduleId, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(result.ScheduleRunId, run.RunId, StringComparison.OrdinalIgnoreCase) &&
+                result.StartedAtUtc != default && result.CompletedAtUtc >= result.StartedAtUtc)
+            .Select(static result => (double)(result.CompletedAtUtc - result.StartedAtUtc).Ticks)
+            .ToList();
+        return durations.Count == 0
+            ? (null, 0)
+            : (TimeSpan.FromTicks((long)durations.Average()), durations.Count);
+    }
+
     public static DadScheduleAttachmentResult AttachSavedPlan(
         DadScheduleDefinition schedule,
         DadPlannerGroup group,

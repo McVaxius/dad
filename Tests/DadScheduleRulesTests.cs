@@ -6,6 +6,98 @@ namespace dad.Tests;
 public sealed class DadScheduleRulesTests
 {
     [Fact]
+    public void ScheduleElapsedIncludesPausesAndStopsAtRecordedCompletion()
+    {
+        var start = new DateTime(2026, 10, 25, 1, 0, 0, DateTimeKind.Utc);
+        var run = new DadScheduleRunState
+        {
+            RunId = "timed-run", StartedAtUtc = start, UpdatedAtUtc = start.AddMinutes(5),
+            Status = DadScheduleRunStatus.Running, Phase = DadScheduleRunPhase.WaitingForScheduler,
+        };
+
+        Assert.Equal(TimeSpan.FromHours(2), DadScheduleRules.GetElapsed(run, start.AddHours(2)));
+        Assert.Equal(start.AddMinutes(5), run.UpdatedAtUtc);
+        run.CompletedAtUtc = start.AddHours(3);
+        Assert.Equal(TimeSpan.FromHours(3), DadScheduleRules.GetElapsed(run, start.AddHours(5)));
+    }
+
+    [Fact]
+    public void ScheduleElapsedDoesNotInventAnUnknownStart()
+    {
+        var now = new DateTime(2026, 10, 25, 1, 0, 0, DateTimeKind.Utc);
+        Assert.Null(DadScheduleRules.GetElapsed(new DadScheduleRunState(), now));
+        Assert.Null(DadScheduleRules.GetElapsed(new DadScheduleRunState { RunId = "timed-run", StartedAtUtc = default }, now));
+        Assert.Equal(TimeSpan.Zero, DadScheduleRules.GetElapsed(
+            new DadScheduleRunState { RunId = "timed-run", StartedAtUtc = now.AddMinutes(1) }, now));
+    }
+
+    [Fact]
+    public void CompletedPresetAverageUsesExecutionDurationsAndRetainedSampleCount()
+    {
+        var run = new DadScheduleRunState { RunId = "timed-run", ScheduleId = "schedule", CompletedEntryExecutions = 318 };
+        var first = TimingResult();
+        var second = TimingResult();
+        second.JobId = "leveling-job";
+        second.JobType = DadSchedulerJobType.LevelingOperation;
+        second.CompletedAtUtc = second.StartedAtUtc.AddMinutes(30);
+
+        var timing = DadScheduleRules.GetCompletedPresetTiming(run, [first, second]);
+
+        Assert.Equal(TimeSpan.FromMinutes(20), timing.AverageDuration);
+        Assert.Equal(2, timing.SampleCount);
+        Assert.Equal(318, run.CompletedEntryExecutions);
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("cancelled")]
+    [InlineData("skipped")]
+    [InlineData("handoff")]
+    [InlineData("unsuccessful")]
+    [InlineData("other-schedule")]
+    [InlineData("other-run")]
+    [InlineData("child")]
+    [InlineData("roster-update")]
+    [InlineData("unknown-start")]
+    [InlineData("reversed-time")]
+    [InlineData("dry-run")]
+    public void CompletedPresetAverageExcludesUnfinishedUnrelatedAndInvalidSamples(string scenario)
+    {
+        var run = new DadScheduleRunState { RunId = "timed-run", ScheduleId = "schedule" };
+        var result = TimingResult();
+        switch (scenario)
+        {
+            case "failed": result.FinalPhase = DadSchedulerPresetPhase.Blocked; break;
+            case "cancelled": result.FinalPhase = DadSchedulerPresetPhase.Cancelled; break;
+            case "skipped": result.FinalPhase = DadSchedulerPresetPhase.Skipped; break;
+            case "handoff": result.FinalPhase = DadSchedulerPresetPhase.StartedPlanner; break;
+            case "unsuccessful": result.Success = false; break;
+            case "other-schedule": result.ScheduleId = "other"; break;
+            case "other-run": result.ScheduleRunId = "other"; break;
+            case "child": result.JobType = DadSchedulerJobType.LevelingChild; result.ParentOperationJobId = "outer"; break;
+            case "roster-update": result.JobType = DadSchedulerJobType.RosterUpdate; break;
+            case "unknown-start": result.StartedAtUtc = default; break;
+            case "reversed-time": result.CompletedAtUtc = result.StartedAtUtc.AddMinutes(-1); break;
+            case "dry-run": run.DryRun = true; break;
+        }
+
+        var timing = DadScheduleRules.GetCompletedPresetTiming(run, [result]);
+
+        Assert.Null(timing.AverageDuration);
+        Assert.Equal(0, timing.SampleCount);
+        Assert.Null(DadScheduleRules.GetCompletedPresetTiming(run, []).AverageDuration);
+    }
+
+    private static DadScheduledCrewJobResult TimingResult()
+        => new()
+        {
+            JobId = "timed-job", ScheduleId = "schedule", ScheduleRunId = "timed-run",
+            JobType = DadSchedulerJobType.ScheduledPreset, Success = true, FinalPhase = DadSchedulerPresetPhase.Completed,
+            StartedAtUtc = new DateTime(2026, 10, 25, 1, 0, 0, DateTimeKind.Utc),
+            CompletedAtUtc = new DateTime(2026, 10, 25, 1, 10, 0, DateTimeKind.Utc),
+        };
+
+    [Fact]
     public void NormalizeScheduleClampsRepeatCountsAndFillsIds()
     {
         var schedule = DadScheduleRules.NormalizeSchedule(new DadScheduleDefinition

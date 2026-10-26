@@ -1254,10 +1254,24 @@ public sealed partial class MainWindow : Window, IDisposable
         DrawStatusRow("Running now", DadScheduleCursorFormatter.Format(activeRun, snapshot.Schedules));
         DrawStatusRow("State", $"{activeRun.Status} / {activeRun.Phase}");
         DrawStatusRow("Progress", $"{activeRun.CompletedEntryExecutions}/{activeRun.TotalEntryExecutions} preset run(s)");
+        DrawScheduleTiming(activeRun, plugin.SchedulerService.GetQueueSnapshot().RecentResults, snapshot.GeneratedAtUtc);
         if (!string.IsNullOrWhiteSpace(activeRun.BlockedReason))
             DrawStatusRow("Blocker", activeRun.BlockedReason);
         if (DadUi.Button("Cancel active schedule", DadUiTone.Danger))
             plugin.CancelScheduleRunFromShell("Schedule cancelled from Status / Current Activity.");
+    }
+
+    private static void DrawScheduleTiming(
+        DadScheduleRunState run,
+        IEnumerable<DadScheduledCrewJobResult> schedulerHistory,
+        DateTime nowUtc)
+    {
+        var elapsed = DadScheduleRules.GetElapsed(run, nowUtc);
+        var timing = DadScheduleRules.GetCompletedPresetTiming(run, schedulerHistory);
+        DrawStatusRow("Schedule elapsed (including pauses)", elapsed.HasValue ? FormatSchedulerElapsed(elapsed.Value) : "-");
+        DrawStatusRow("Average preset duration", timing.AverageDuration.HasValue
+            ? UiText.F("{0} | {1} completed preset(s) in retained history", FormatSchedulerElapsed(timing.AverageDuration.Value), timing.SampleCount)
+            : "No completed presets in retained history.");
     }
 
     private void DrawStatusReadiness(
@@ -2242,11 +2256,12 @@ public sealed partial class MainWindow : Window, IDisposable
                     RequestedBy = "schedule-ui-retry",
                 },
                 Plugin.IsBusy(runState.VisibleRun));
+        var queue = plugin.SchedulerService.GetQueueSnapshot();
         var skipBadges = DadScheduleSkipBadgeProjection.Build(
             schedule,
             activeRun,
             snapshot.RecentResults,
-            plugin.SchedulerService.GetQueueSnapshot().RecentResults);
+            queue.RecentResults);
         var openRetryFailedEntryPopup = false;
         if (!ImGui.BeginTable(
                 "dad-schedule-workspace",
@@ -2286,7 +2301,10 @@ public sealed partial class MainWindow : Window, IDisposable
             if (activeScheduleLocked)
                 DadUi.Badge("Locked while a schedule is active", DadUiTone.Warning);
             if (activeRun.IsActive)
+            {
                 DrawStatusRow("Running now", DadScheduleCursorFormatter.Format(activeRun, snapshot.Schedules));
+                DrawScheduleTiming(activeRun, queue.RecentResults, snapshot.GeneratedAtUtc);
+            }
 
             if (UiGui.CollapsingHeader("Cadence"))
             {

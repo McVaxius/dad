@@ -8925,4 +8925,8 @@
   <data name="Unmute UI sounds" xml:space="preserve"><value>Arayüz seslerini aç</value></data>
   <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>LCARS panelleri ve çerçeveli denetimler. Seçicideki renkler korunur.</value></data>
   <data name="Audio output is unavailable." xml:space="preserve"><value>Ses çıkışı kullanılamıyor.</value></data>
+  <data name="schedule_timing_001" xml:space="preserve"><value>Programın geçen süresi (duraklamalar dahil)</value></data>
+  <data name="schedule_timing_002" xml:space="preserve"><value>Ortalama ön ayar süresi</value></data>
+  <data name="schedule_timing_003" xml:space="preserve"><value>{0} | tutulan geçmişte tamamlanan {1} ön ayar</value></data>
+  <data name="schedule_timing_004" xml:space="preserve"><value>Tutulan geçmişte tamamlanan ön ayar yok.</value></data>
 </root>

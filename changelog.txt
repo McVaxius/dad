@@ -1,3 +1,8 @@
+2026-10-25 - 2.0.0.6 - Schedule timing (I653)
+
+- Show schedule wall-clock elapsed time, including pauses, and average successful preset duration in Schedule and Current Activity.
+- Base averages on confirmed completions in existing retained history for the current schedule run, with the sample count displayed. Failed, cancelled, skipped and nested child runs do not count.
+
 2026-10-25 - 2.0.0.5 - Patched native runtime requirement (I660)
 
 - Require Microsoft.NETCore.App 10.0.14 for the standalone Headless executable, including framework-dependent launches and self-contained runtime-pack selection. Preserve protocol framing and unrelated dependency versions.

@@ -8925,4 +8925,8 @@
   <data name="Unmute UI sounds" xml:space="preserve"><value>Aktifkan suara antarmuka</value></data>
   <data name="LCARS panels and outlined controls. Picker colours are retained." xml:space="preserve"><value>Panel LCARS dan kontrol bergaris tepi. Warna pemilih tetap disimpan.</value></data>
   <data name="Audio output is unavailable." xml:space="preserve"><value>Keluaran audio tidak tersedia.</value></data>
+  <data name="schedule_timing_001" xml:space="preserve"><value>Waktu jadwal berjalan (termasuk jeda)</value></data>
+  <data name="schedule_timing_002" xml:space="preserve"><value>Durasi rata-rata preset</value></data>
+  <data name="schedule_timing_003" xml:space="preserve"><value>{0} | {1} preset selesai dalam riwayat tersimpan</value></data>
+  <data name="schedule_timing_004" xml:space="preserve"><value>Tidak ada preset selesai dalam riwayat tersimpan.</value></data>
 </root>

@@ -5525,6 +5525,16 @@ public sealed class DadSchedulerService
             return true;
         }
 
+        if (FindSchedulerResult(state.ActiveSchedulerJobId) is
+            { JobType: DadSchedulerJobType.ScheduledPreset, FinalPhase: DadSchedulerPresetPhase.StartedPlanner, Success: true } started &&
+            string.Equals(started.ScheduleId, state.ScheduleId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(started.ScheduleRunId, state.RunId, StringComparison.OrdinalIgnoreCase))
+        {
+            started.FinalPhase = DadSchedulerPresetPhase.Completed;
+            started.CompletedAtUtc = run.CompletedAtUtc ?? now;
+            started.Summary = run.Summary;
+        }
+
         var advanced = DadScheduleRules.AdvanceAfterEntry(
             state,
             schedule.Entries,
