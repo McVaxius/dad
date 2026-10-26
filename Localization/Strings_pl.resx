@@ -8838,8 +8838,8 @@
   <data name="recovery_021" xml:space="preserve"><value>Ochrona przed błędami lobby jest włączona.</value></data>
   <data name="ui_layout_manage" xml:space="preserve"><value>Zarz?dzanie</value></data>
   <data name="ui_layout_rules" xml:space="preserve"><value>Zasady</value></data>
-  <data name="ui_layout_theme_language" xml:space="preserve"><value>Motyw i j?zyk</value></data>
-  <data name="ui_layout_main_controls" xml:space="preserve"><value>Elementy okna g??wnego</value></data>
+  <data name="ui_layout_theme_language" xml:space="preserve"><value>Motyw i język</value></data>
+  <data name="ui_layout_main_controls" xml:space="preserve"><value>Elementy okna głównego</value></data>
   <data name="ui_layout_opacity" xml:space="preserve"><value>Krycie okna</value></data>
   <data name="ui_layout_unfocused" xml:space="preserve"><value>Bez fokusu</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Konfiguracja, zakupy i pomoc</value></data>

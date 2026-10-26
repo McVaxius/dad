@@ -8840,8 +8840,8 @@
   <data name="ui_layout_rules" xml:space="preserve"><value>Kurallar</value></data>
   <data name="ui_layout_theme_language" xml:space="preserve"><value>Tema ve dil</value></data>
   <data name="ui_layout_main_controls" xml:space="preserve"><value>Ana pencere denetimleri</value></data>
-  <data name="ui_layout_opacity" xml:space="preserve"><value>Pencere opakl???</value></data>
-  <data name="ui_layout_unfocused" xml:space="preserve"><value>Odak d???ndayken</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>Pencere opaklığı</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>Odak dışındayken</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Kurulum, al??veri? ve yard?m</value></data>
   <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Seçilenleri etkinleştir</value></data>
   <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Seçilenleri devre dışı bırak</value></data>

@@ -8838,10 +8838,10 @@
   <data name="recovery_021" xml:space="preserve"><value>Bảo vệ lỗi sảnh đang bật.</value></data>
   <data name="ui_layout_manage" xml:space="preserve"><value>Qu?n l?</value></data>
   <data name="ui_layout_rules" xml:space="preserve"><value>Quy t?c</value></data>
-  <data name="ui_layout_theme_language" xml:space="preserve"><value>Giao di?n v? ng?n ng?</value></data>
-  <data name="ui_layout_main_controls" xml:space="preserve"><value>?i?u khi?n c?a s? ch?nh</value></data>
-  <data name="ui_layout_opacity" xml:space="preserve"><value>?? m? c?a s?</value></data>
-  <data name="ui_layout_unfocused" xml:space="preserve"><value>Khi kh?ng ???c ch?n</value></data>
+  <data name="ui_layout_theme_language" xml:space="preserve"><value>Giao diện và ngôn ngữ</value></data>
+  <data name="ui_layout_main_controls" xml:space="preserve"><value>Điều khiển cửa sổ chính</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>Độ mờ cửa sổ</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>Khi không được chọn</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Thi?t l?p, mua s?m v? tr? gi?p</value></data>
   <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Bật mục đã chọn</value></data>
   <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Tắt mục đã chọn</value></data>

@@ -1,3 +1,7 @@
+2026-10-26 - 2.0.0.10 - Restore translated Appearance captions
+
+- Restore accented grouped Appearance captions in French, Italian, Vietnamese, Polish and Turkish.
+
 2026-10-26 - 2.0.0.9 - Shared material appearance
 
 - Add Glassmorphism, Spatial and Cyberpunk across the existing DAD windows, dialogs and native controls, retaining Auto, Picker, LCARS and all run behavior.

@@ -8878,8 +8878,8 @@ Tempo di recupero di</value>
   <data name="ui_layout_rules" xml:space="preserve"><value>Regole</value></data>
   <data name="ui_layout_theme_language" xml:space="preserve"><value>Tema e lingua</value></data>
   <data name="ui_layout_main_controls" xml:space="preserve"><value>Controlli della finestra principale</value></data>
-  <data name="ui_layout_opacity" xml:space="preserve"><value>Opacit? della finestra</value></data>
-  <data name="ui_layout_unfocused" xml:space="preserve"><value>Quando non ? attiva</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>Opacità della finestra</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>Quando non è attiva</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Configurazione, acquisti e aiuto</value></data>
   <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Abilita selezionati</value></data>
   <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Disabilita selezionati</value></data>

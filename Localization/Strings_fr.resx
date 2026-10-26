@@ -8880,10 +8880,10 @@ Les lignes</value>
   <data name="recovery_021" xml:space="preserve"><value>La protection du lobby est activée.</value></data>
   <data name="ui_layout_manage" xml:space="preserve"><value>Gestion</value></data>
   <data name="ui_layout_rules" xml:space="preserve"><value>R?gles</value></data>
-  <data name="ui_layout_theme_language" xml:space="preserve"><value>Th?me et langue</value></data>
-  <data name="ui_layout_main_controls" xml:space="preserve"><value>Commandes de la fen?tre principale</value></data>
-  <data name="ui_layout_opacity" xml:space="preserve"><value>Opacit? des fen?tres</value></data>
-  <data name="ui_layout_unfocused" xml:space="preserve"><value>Lorsque la fen?tre est inactive</value></data>
+  <data name="ui_layout_theme_language" xml:space="preserve"><value>Thème et langue</value></data>
+  <data name="ui_layout_main_controls" xml:space="preserve"><value>Commandes de la fenêtre principale</value></data>
+  <data name="ui_layout_opacity" xml:space="preserve"><value>Opacité des fenêtres</value></data>
+  <data name="ui_layout_unfocused" xml:space="preserve"><value>Lorsque la fenêtre est inactive</value></data>
   <data name="ui_layout_home_setup_help" xml:space="preserve"><value>Configuration, achats et aide</value></data>
   <data name="ui_accounts_enable_selected" xml:space="preserve"><value>Activer la sélection</value></data>
   <data name="ui_accounts_disable_selected" xml:space="preserve"><value>Désactiver la sélection</value></data>
