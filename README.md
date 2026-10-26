@@ -22,6 +22,15 @@ integrations, and everyday commands.
 - Runs presets immediately or in ordered manual and daily-reset schedules.
 - Keeps future planner lanes visibly separate from activities that have guarded live execution today.
 
+Cancelling an accepted LAN multibox run now keeps its exact client assignments until cleanup finishes:
+stop the run-owned workers, disband through frozen Slot1, confirm every follower has left or is solo,
+then release run contexts and scheduler wake ownership. Schedule Cancel reaches its exact active planner run;
+new execution waits for cleanup acknowledgements. Missing or unsafe clients remain visible blockers, not a
+reason to rebind identities or force a duty exit. Repeated Cancel does not restart cleanup, and cancelled
+runs do not submit successful-round completion actions. This orderly Cancel boundary does not replace the
+existing immediate emergency **Stop All** behavior or registered-island cleanup. Targeted automated coverage
+and a plugin build do not establish four-client live acceptance.
+
 Questionable leveling interruptions select a curated Duty Support dungeon automatically for the equipped class/job,
 using its actual level, equipped item level and duty unlocks. Before reading item level, DAD equips recommended gear
 and updates the valid current gearset once. Preparation errors or a five-second timeout log once and continue the duty
@@ -76,6 +85,12 @@ runtime data. The lab substitutes game/native observations, IPC responses and th
 queue, handler and update-order decisions remain shared. AutoParty's production registration, pairing, directory,
 mailbox, security and SQLite services use a simulated Discord HTTP provider on loopback. No running game client or
 Discord bot is needed. Virtual results do not establish live game or Discord acceptance.
+
+The focused I305 fixtures seed coordinator routing after exact local and authenticated remote wake ownership is
+acknowledged. Production presence and normal lifecycle updates run, but planner/scheduler admission and party formation
+remain outside these fixtures. Ordinary Cancel stays held when a crashed member's party settlement is unproved;
+explicit emergency Stop All verifies process cleanup without proving orderly party teardown. `unexecutedSteps` lists
+unbound update callbacks, not coverage of startup phases.
 
 Headless requires Microsoft.NETCore.App 10.0.14 or later on the .NET 10 branch, including its self-contained runtime pack,
 for the native Brotli security fix. The plugin requires the same patched .NET 10 host and rejects startup before creating
@@ -545,7 +560,15 @@ Visual layout and this live Discord/game test require separate acceptance; headl
   while DAD/Scheduler/Schedule mutation is safe. One session-only exact Undo is available until any Plan or Schedule
   changes; drift refuses Undo instead of overwriting newer work. Per-template Schedules are pool-major; the optional
   combined Schedule is pool, crew, then template order. A `DailyReset` template may set **Daily** on every generated
-  primary row; leaving that option off preserves the template's existing row flags. The existing reward probe remains
+  primary row; leaving that option off preserves the template's existing row flags.
+  For a four-account roulette setup, select two rotating accounts and two anchors with exact per-pool
+  choices. **Use all matching characters** optionally derives each pool's crew count from its smallest selected
+  rotating lane; excluded characters stay excluded, extras are reported unused, and an empty lane blocks generation.
+  Manual counts remain available. **Keep template account slots** is initially selected when a chosen template has
+  exactly the selected account set: each account retains its own slot, job, role and options regardless of lane order.
+  Ambiguous or changed account mappings block Preview; unchecking uses the original rotating-then-anchor order.
+  Expand a generated Plan in Preview to review its exact characters, slots, jobs and roles before Apply.
+  The existing reward probe remains
   unchanged, so no checked rows means no probe and any
   unchecked, unknown, not-received, stale, contradictory, or unproven result still runs the ordinary preset.
 - With `/dad debug` enabled, saved preset rows expose an explicit Alliance `A` through `G` assignment. Substitutes inherit
@@ -685,6 +708,30 @@ ID to distinguish the running DLL from an older build. Review reports for person
 
 ## Operator status and cancellation
 
+- A worker that temporarily loses post-AR/world readiness just before queue-leader admission can now return an exact
+  **not accepted** readiness deferral. The Coordinator retains the same immutable command and already-accepted workers,
+  rechecks at two-second intervals and waits only until the original participant-ready deadline (normally 300 seconds).
+  Admission and native preparation still require fresh safety; no repair, queue or executor action is replayed while
+  waiting. Wrong identities/jobs/roles, cancelled runs, payload collisions, contradictory/old acknowledgements and legacy
+  untyped rejections remain failures. This handles the readiness race, not an unverified claim that NPC repair itself failed.
+
+- New-run account binding excludes remote sessions explicitly marked Stale, even when an old plugin socket still
+  routes. A current session is not made ambiguous by old heartbeat-timed-out instances of the same account. Two
+  genuinely current sessions still block admission. Existing frozen-run discovery and exact cancellation retain
+  their original session context; this does not redirect owned work, close connections or fabricate cleanup proof.
+
+- A complete local game-client restart no longer leaves scheduler wake, early-job, reward-probe or coordinator
+  process-owned cancellation waiting forever for the dead session. Transport retains bounded, in-memory evidence
+  of the exact live local worker PID and process start identity. Only an offline route plus OS-confirmed original
+  process termination (including PID reuse) retires that process-owned cleanup; it is not a worker acknowledgement
+  and never redirects old commands to a replacement. Connection loss, same-process plugin reload, remote machines,
+  missing evidence and access-denied process checks remain blocking. Native party teardown still requires its own
+  guarded exact-roster proof; process death does not prove that the party disbanded. No cancelled schedule resumes
+  automatically and no unrelated automation settings are rewritten.
+- Stop All includes pending scheduler and coordinator cancellation in its completion decision, not just current
+  worker and takeover replies. Repeated acknowledgement polls retry retained cleanup without replaying broad Stop
+  All mutations. Unresolved cleanup stays visibly pending/partial instead of claiming success from current clients.
+
 - `/dad status` keeps its existing behavior and prints the live shell report to chat.
 - `/dad mini` toggles a compact, manually opened status window. It renders cached authority, run, scheduler,
   slot, queue, worker-heartbeat, failure, and Stop-all acknowledgement state without polling peers from Draw.
@@ -762,13 +809,45 @@ ID to distinguish the running DLL from an older build. Review reports for person
   untargeted rows stay normal.
 - The selected Schedule's ordered preset rows show `SKIPPED` badges for exact skips in its active or latest non-dry run,
   aggregate repeated skips, explain them on hover, and disclose when bounded history retains fewer row details than the run's total skip count.
-- Daily Roulette preset rows expose a per-character **Daily** checkbox, default off. It is consulted only when that
-  preset runs as a `DailyReset` Schedule entry. For an entry with a LevelSeek target, DAD first loads every worker,
-  acknowledges requested jobs, and re-evaluates LevelSeek: a proven target skips without querying Daily, while below or
-  unknown evidence reaches the same eligible Daily check. Entries without targets retain the existing early Daily path.
-  DAD wakes and inspects checked effective characters one at a time, never wakes unchecked rows for inspection, and
-  skips only when every checked character has two matching native reads at least 250 milliseconds apart after Duty
-  Finder proves the exact live roulette selection. DAD opens and hydrates Duty Finder when it owns a closed window, then
+- Daily Roulette preset rows expose a per-character **Daily** checkbox, default off. It applies to direct preset
+  starts, manual Schedule entries and `DailyReset` entries. An already proven offline LevelSeek target skips immediately
+  without querying Daily. Otherwise Daily inspection runs early, including for entries with level targets, before
+  ordinary party assembly, AutoParty authorization, or queue dispatch: only checked
+  characters are woken for inspection; unchecked supporters are not required to form a party first.
+  If Daily is unclaimed or unknown, ordinary readiness/job assignment resumes and frozen LevelSeek targets are still
+  re-evaluated after every exact worker and requested job is ready, before dispatch.
+  DAD prepares remaining checked effective characters concurrently on independent clients, never wakes unchecked rows
+  for inspection, and runs the short exact reward inspections in order. Only one checked character per known worker
+  is prepared at a time, even while an earlier ready character's UI inspection is pending; already-proved rows are not
+  woken again. Without a current persisted receipt, DAD requires each checked character's own exact client to report two matching UI reward observations at least
+  250 milliseconds apart after Duty Finder proves the exact live roulette selection. The ready `JournalDetail` must
+  match the exact localized roulette title. The same visible status label can display both claimed and unclaimed:
+  DAD compares its complete normalized text against the client's local Addon sheet rows 102588 (received) and 16469
+  (unclaimed). Visibility alone, arbitrary text and substring matches are never completion proof. Missing/hidden,
+  unrecognized or contradictory labels are unknown and cannot skip. `IsRouletteComplete` remains diagnostic only.
+  When Daily is open, unknown, or times out, ordinary preparation retains exact checked-row wake tokens, pinned workers
+  and already-issued reset/relog acknowledgements rather than replaying them from the preflight's original snapshot.
+  Frozen plan settings are preserved and ordinary readiness still revalidates every row before dispatch.
+  `Configuration.DailyRouletteCompletions` durably remembers exact account/character/Content ID/roulette evidence until
+  the canonical next Daily reset at 15:00 UTC. A successful exact UI Received probe or a successfully completed Daily
+  worker with its **own** matching native `DutyCompleted` witness creates a receipt. A leader's completion never credits
+  a follower without its own witness; started, abandoned, failed, cancelled, unrelated-duty and legacy witness-less
+  worker results do not count. Before any wake, current receipts satisfy only the corresponding checked rows; all checked
+  rows must be proved to skip, and only missing proofs require live inspection. Receipts survive schedule/plugin restarts,
+  but never cross a reset, identity change or roulette change. Runs/probes spanning reset are conservatively not credited;
+  an in-flight preflight crossing reset cannot skip. No ambiguous old history is backfilled. The ledger deduplicates and
+  retains at most 4096 current-period records, uses normal configuration persistence with an immediate flush, and warns
+  if durable saving cannot be confirmed. Unknown evidence still takes the ordinary live path. Native gameplay acceptance
+  of the new completion-receipt path remains distinct from unit/build/deployment verification.
+  UI replies and UI-based receipts additionally require status-text proof version 2. Old visibility-only replies cannot
+  skip, and old UI receipts are ignored immediately even before their eventual pruning; valid native completed-duty
+  receipts are preserved. No live configuration rewrite is needed to invalidate old UI proof. Probe logs include the
+  actual matched localized status text and proof version, so open vs claimed decisions can be audited.
+  Each probe is authenticated and bound to the exact worker/account/character/Content ID; the Coordinator only aggregates
+  checked-row results. Inspection replies and cancellation acknowledgements are timestamp-validated against the clock
+  captured after transport returns, so a fresh synchronous local reply is not rejected as being in the future.
+  Strict response identity and freshness limits remain unchanged. The Coordinator's
+  own character need not be checked. DAD opens and hydrates Duty Finder when it owns a closed window, then
   closes only that owned window; a pre-existing window is preserved and is read only when it is already on the exact
   roulette. Any missing native state or route, identity or live-list drift, UI failure, timeout, stale or contradictory
   reply, unknown state, or not-received result runs the preset normally. A preflight that has started does not restart
@@ -869,14 +948,20 @@ ID to distinguish the running DLL from an older build. Review reports for person
   VERMAXION must freshly report `Idle` or be confirmed `NotLoaded`, and Lifestream must be readable, idle, and freshly prove
   `CanAutoLogin`. If AutoRetainer Multi Mode is on, DAD disables and verifies it once, then recaptures every gate; if
   already off, it skips that mutation. DAD then calls only the acknowledged
-  `Lifestream.ConnectAndLogin(Name, HomeWorld)` IPC. Accepted calls never replay; explicit `false` may retry only after
-  five seconds and complete fresh proof; an exception or uncertain result blocks without replay. Exact
+  `Lifestream.ConnectAndLogin(Name, HomeWorld)` IPC. An accepted call is not proof of arrival: if it returns to a fresh
+  exclusive ready `_TitleMenu`, DAD may retry after five continuously safe idle seconds, without an attempt cap while
+  the same exact wake operation remains authorized. The original worker/account route and target stay frozen; every
+  dispatch forces a final safety recapture. Any busy/unsafe observation, observation gap, clock rollback, or coordinator
+  loss resets that idle window. Active login/Character Select/loading is wait-only; cancellation or target arrival stops
+  retries. Explicit `false` may retry after five seconds and complete fresh proof; an exception or uncertain result
+  blocks without replay. Multi Mode disable and movie Escape do not repeat for login retries. Exact
   `MovieStaffList` may receive one Escape only while Multi Mode is already off, AutoRetainer and Lifestream are
   readable and idle, and VERMAXION is freshly idle or confirmed absent. Login still waits for a later fresh valid
   `_TitleMenu`. Busy or unreadable automation keeps
-  waiting without a new timeout. This title-login acceptance policy is separate from the guarded in-world relog retry
-  above; a visiting source character's frozen identity, home destination, and relog target stay visible throughout
-  Data Center return travel.
+  waiting without a new timeout. This recovery handles an existing active title-login order; it does not add automatic
+  detection or recovery of a new disconnect during an already running duty. It remains separate from the guarded
+  in-world relog retry above; a visiting source character's frozen identity, home destination, and relog target stay
+  visible throughout Data Center return travel.
 - The v2 wire format uses string reservation states (`Pending`, `Granting`, `Granted`, `Released`, `Rejected`). DAD
   also accepts the legacy VERMAXION numeric values `0` through `4` in that order. Unknown/malformed states fail
   closed; verified-idle compatibility is reserved for genuine v2 IPC unavailability, not invalid v2 responses. If

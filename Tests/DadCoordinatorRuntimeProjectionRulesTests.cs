@@ -7,6 +7,54 @@ namespace dad.Tests;
 public sealed class DadCoordinatorRuntimeProjectionRulesTests
 {
     [Fact]
+    public void StaleButRoutableSessionsCannotMakeAFreshAccountAmbiguousAtAdmission()
+    {
+        var local = Participant("local", "account-local", true);
+        var fresh = Participant("fresh", "account-remote", false);
+        var oldOne = Participant("old-one", "account-remote", false);
+        var oldTwo = Participant("old-two", "account-remote", false);
+        oldOne.State = oldTwo.State = DadParticipantState.Stale;
+        oldOne.IsAvailable = oldTwo.IsAvailable = false;
+        var projected = DadCoordinatorRuntimeProjectionRules.BuildOnlineParticipantSet(local,
+            [oldOne, fresh, oldTwo], _ => true); // All three sockets still route, as in the issue report.
+        Assert.Equal(new[] { "local", "fresh" }, projected.Select(p => p.WorkerSessionId.Value));
+        var manifest = new DadRunSlotManifest { Slots = [new DadFrozenRunSlot
+        {
+            SlotId = "Slot1", AccountKey = new("account-remote"), RequiredJobId = 19,
+        }] };
+        Assert.True(DadRunSlotManifestRules.TryBindWorkerSessions(manifest, projected, out var bound, out var blocker), blocker);
+        Assert.Equal("fresh", bound.Slots[0].WorkerSessionId.Value);
+        // Defensive binding must also reject stale duplicates when a caller supplies unfiltered projections.
+        Assert.True(DadRunSlotManifestRules.TryBindWorkerSessions(manifest, [oldOne, fresh, oldTwo], out bound, out blocker), blocker);
+        Assert.Equal("fresh", bound.Slots[0].WorkerSessionId.Value);
+    }
+
+    [Fact]
+    public void StaleOnlyAccountCannotBeAdmittedEvenWhenItsSocketStillRoutes()
+    {
+        var old = Participant("old", "account-remote", false);
+        old.State = DadParticipantState.Stale;
+        var manifest = new DadRunSlotManifest { Slots = [new DadFrozenRunSlot
+        {
+            SlotId = "Slot1", AccountKey = new("account-remote"), RequiredJobId = 19,
+        }] };
+        Assert.False(DadRunSlotManifestRules.TryBindWorkerSessions(manifest, [old], out _, out var blocker));
+        Assert.Contains("cannot bind", blocker);
+    }
+
+    [Fact]
+    public void ExistingFrozenRunRetainsItsExactStaleContextAndNeverSubstitutesTheFreshSession()
+    {
+        var local = Participant("local", "account-local", true);
+        var old = Participant("old", "account-remote", false);
+        old.State = DadParticipantState.Stale;
+        var projected = DadCoordinatorRuntimeProjectionRules.BuildFrozenParticipantSet(local,
+            [old, Participant("fresh", "account-remote", false)], new HashSet<string> { "old" }, _ => true);
+        Assert.Equal("old", Assert.Single(projected).WorkerSessionId.Value);
+        Assert.Equal(DadParticipantState.Stale, projected[0].State);
+    }
+
+    [Fact]
     public void LocalPresenceSuppressesItsMirroredHubRow()
     {
         var local = Participant("worker-w", "account-w", isLocal: true);

@@ -364,6 +364,20 @@ public static class DadSchedulerRoutingRules
                 "This slot verified reset and can schedule its relog independently.");
         }
 
+        if (slot.TakeoverPhase == DadWakeTakeoverPhase.Ready &&
+            (!slot.Ready || !slot.CorrectCharacter || slot.MultiModeEnabled ||
+             !HasLatestSafeTakeoverProjection(slot)))
+        {
+            // The wake mutation is terminal, but its readiness observation is not.
+            // The scheduler's existing status cadence refreshes proof without GO.
+            return new DadWakeSlotPipelineDecision(
+                true,
+                DadWakeTakeoverMessageKind.Status,
+                DadWakeCommitKind.None,
+                null,
+                "Takeover completed; refresh current readiness without repeating reset or relog.");
+        }
+
         if (slot.TakeoverPhase is DadWakeTakeoverPhase.Ready or DadWakeTakeoverPhase.Blocked or DadWakeTakeoverPhase.Cancelled)
         {
             return new DadWakeSlotPipelineDecision(

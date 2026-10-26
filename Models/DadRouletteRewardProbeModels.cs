@@ -69,6 +69,8 @@ public sealed class DadRouletteRewardProbeResultDto
     public DateTime RequestedAtUtc { get; set; }
     public DateTime RespondedAtUtc { get; set; } = DateTime.UtcNow;
     public DadRouletteRewardProbeOutcome Outcome { get; set; }
+    // 0/legacy means visibility-only; only version 2 proves the localized status text.
+    public int RewardTextProofVersion { get; set; }
     public int ReceivedRewardCount { get; set; }
     public int MaxRewardCount { get; set; }
     public bool DutyFinderOpenedByDad { get; set; }
@@ -112,6 +114,11 @@ public sealed class DadRouletteRewardProbeResultDto
 
 public static class DadRouletteRewardProbeIdentityRules
 {
+    public const int CurrentRewardTextProofVersion = 2;
+
+    public static bool HasCurrentReceivedTextProof(DadRouletteRewardProbeResultDto result)
+        => result.Outcome == DadRouletteRewardProbeOutcome.Received &&
+           result.RewardTextProofVersion == CurrentRewardTextProofVersion;
     public static readonly TimeSpan MaximumResponseAge = TimeSpan.FromSeconds(10);
 
     public static bool IsValid(DadRouletteRewardProbeRequestDto? request)
@@ -119,9 +126,7 @@ public static class DadRouletteRewardProbeIdentityRules
            Enum.IsDefined(request.Operation) &&
            !string.IsNullOrWhiteSpace(request.OperationId) &&
            !string.IsNullOrWhiteSpace(request.SchedulerRunId) &&
-           !string.IsNullOrWhiteSpace(request.ScheduleId) &&
-           !string.IsNullOrWhiteSpace(request.ScheduleRunId) &&
-           !string.IsNullOrWhiteSpace(request.ScheduleEntryId) &&
+           HasCoherentScheduleIdentity(request.ScheduleId, request.ScheduleRunId, request.ScheduleEntryId) &&
            !string.IsNullOrWhiteSpace(request.SlotId) &&
            !request.RouteWorkerSessionId.IsEmpty &&
            !request.AccountKey.IsEmpty &&
@@ -130,6 +135,10 @@ public static class DadRouletteRewardProbeIdentityRules
            request.RouletteId is > 0 and <= byte.MaxValue &&
            !string.IsNullOrWhiteSpace(request.RouletteKey) &&
            request.RequestedAtUtc != default;
+
+    internal static bool HasCoherentScheduleIdentity(string? scheduleId, string? runId, string? entryId)
+        => (string.IsNullOrWhiteSpace(scheduleId) && string.IsNullOrWhiteSpace(runId) && string.IsNullOrWhiteSpace(entryId)) ||
+           (!string.IsNullOrWhiteSpace(scheduleId) && !string.IsNullOrWhiteSpace(runId) && !string.IsNullOrWhiteSpace(entryId));
 
     public static bool Matches(
         DadRouletteRewardProbeRequestDto? request,
@@ -410,7 +419,7 @@ internal static class DadRouletteRewardDiagnosticFormatting
         var failure = string.IsNullOrWhiteSpace(result.Failure)
             ? "(none)"
             : Sanitize(result.Failure);
-        return $"[dad] Duty Roulette reward state roulette={result.RouletteId} " +
+        return $"[dad] Duty Roulette reward state roulette={result.RouletteId} source=JournalDetail " +
                $"name=\"{Sanitize(result.RouletteName)}\" " +
                $"raw IsRouletteComplete={FormatRaw(result.FirstRawIsComplete)}/{FormatRaw(result.SecondRawIsComplete)} " +
                $"interpreted=\"{Interpret(result.Outcome)}\" failure=\"{failure}\"";
@@ -462,10 +471,9 @@ public static class DadDailyRewardPreflightRules
         DadQueueTarget? target,
         int checkedSlotCount)
         => activityMode == DadPlannerActivityMode.DailyRoulette &&
-           scheduleCadence == DadScheduleCadence.DailyReset &&
-           !string.IsNullOrWhiteSpace(scheduleId) &&
-           !string.IsNullOrWhiteSpace(scheduleRunId) &&
-           !string.IsNullOrWhiteSpace(scheduleEntryId) &&
+           Enum.IsDefined(scheduleCadence) &&
+           DadRouletteRewardProbeIdentityRules.HasCoherentScheduleIdentity(scheduleId, scheduleRunId, scheduleEntryId) &&
+           (scheduleCadence == DadScheduleCadence.Manual || !string.IsNullOrWhiteSpace(scheduleId)) &&
            target is { Kind: DadQueueTargetKind.Roulette, RouletteId: > 0 and <= byte.MaxValue } &&
            !string.IsNullOrWhiteSpace(target.Key) &&
            checkedSlotCount > 0;

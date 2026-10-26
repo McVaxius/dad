@@ -131,6 +131,9 @@ public sealed class DadWorkerExecutionAck
     public string RunId { get; set; } = string.Empty;
     public DadWorkerSessionId WorkerSessionId { get; set; } = new(string.Empty);
     public bool Accepted { get; set; }
+    // Exact pre-admission response only: no queue/executor acceptance occurred.
+    // Legacy peers omit this and retain their existing rejection semantics.
+    public bool RuntimeReadinessDeferred { get; set; }
     public string Summary { get; set; } = string.Empty;
     public DadWorkerExecutionStatus Status { get; set; } = new();
 }

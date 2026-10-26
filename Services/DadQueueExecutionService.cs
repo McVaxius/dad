@@ -24,6 +24,9 @@ public sealed class DadQueueExecutionService
     private DadModuleId activeReportedModuleId = DadModuleId.None;
     public bool HasOwnedGatheringWork => gatherPartyExecutor.HasOwnedWork;
 
+    internal bool HasParticipantDutyCompleted(DadLocalDutyResolvedContent content, DateTime startedAtUtc)
+        => localDutyQueueService.HasParticipantDutyCompleted(content, startedAtUtc);
+
     public DadQueueExecutionService(
         DadModuleRegistry moduleRegistry,
         DadMogtomeIpcService mogtomeIpcService,

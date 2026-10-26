@@ -30,6 +30,8 @@ internal interface IDadAuthenticatedAutoPartyWakeTarget
 public sealed class DadWakeTakeoverService : IDisposable
 {
     private static readonly TimeSpan OperationRetention = TimeSpan.FromHours(1);
+    private static readonly TimeSpan TitleLoginRetryIdleDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan TitleLoginRetryMaxObservationGap = TimeSpan.FromSeconds(15);
     private readonly IDadWakeTakeoverTarget target;
     private readonly Func<string> reservationTokenFactory;
     private readonly Func<DateTime> utcNow;
@@ -323,6 +325,7 @@ public sealed class DadWakeTakeoverService : IDisposable
             }
 
             operation.CoordinatorAvailable = false;
+            ResetTitleLoginRetryProof(operation);
             operation.RelogRetryGate.Reset();
             operation.HomeWorldReturnGate.ResetIdleProof();
 
@@ -520,7 +523,8 @@ public sealed class DadWakeTakeoverService : IDisposable
 
     private DadWakeTakeoverResultDto? PrepareAutoRetainerTitleIdleLogin(
         OperationState operation,
-        DadWakeTakeoverTargetSnapshot snapshot)
+        DadWakeTakeoverTargetSnapshot snapshot,
+        bool retryAccepted = false)
     {
         var titleFlowObserved = operation.TitleIdleOwnershipProven ||
                                 operation.TitleMovieDismissalAttempted ||
@@ -530,6 +534,7 @@ public sealed class DadWakeTakeoverService : IDisposable
 
         if (!operation.CoordinatorAvailable)
         {
+            ResetTitleLoginRetryProof(operation);
             operation.Summary = "AutoRetainer title login is paused because the coordinator route is unavailable; no command was issued.";
             operation.UpdatedAtUtc = utcNow();
             return BuildResult(operation, snapshot);
@@ -599,6 +604,7 @@ public sealed class DadWakeTakeoverService : IDisposable
 
         if (!DadTitleIdleLoginRules.CanContinueOwnedAttempt(snapshot))
         {
+            ResetTitleLoginRetryProof(operation);
             operation.Summary = DadTitleIdleLoginRules.BuildWaitSummary(snapshot);
             operation.UpdatedAtUtc = utcNow();
             return BuildResult(operation, snapshot);
@@ -643,7 +649,8 @@ public sealed class DadWakeTakeoverService : IDisposable
             !DadTitleIdleLoginRules.CanContinueOwnedAttempt(snapshot) ||
             snapshot.MultiModeEnabled)
         {
-            if (operation.TitleIdleMultiModeDisabledByDad &&
+            ResetTitleLoginRetryProof(operation);
+            if (!retryAccepted && operation.TitleIdleMultiModeDisabledByDad &&
                 !DadTitleIdleLoginRules.HasExactPostDisableSurface(snapshot))
             {
                 operation.TitleIdlePostMutationInvalidated = true;
@@ -651,6 +658,22 @@ public sealed class DadWakeTakeoverService : IDisposable
             operation.Summary = DadTitleIdleLoginRules.BuildWaitSummary(snapshot);
             operation.UpdatedAtUtc = utcNow();
             return BuildResult(operation, snapshot);
+        }
+
+        if (operation.TitleIdleLoginAttemptCount > 0 &&
+            !string.Equals(operation.TitleIdleLoginRouteIdentity, BuildTitleLoginRouteIdentity(snapshot), StringComparison.OrdinalIgnoreCase))
+        {
+            return Block(operation, "The frozen title-login worker/account route changed; no login will replay.", cleanup: true);
+        }
+
+        if (retryAccepted)
+        {
+            // A second forced capture must still prove the complete idle window.
+            // Keep the accepted latch until this last pre-command proof succeeds.
+            if (!CanRetryAcceptedTitleLogin(operation, snapshot))
+                return BuildResult(operation, snapshot);
+            operation.TitleIdleRelogCommandAttempted = false;
+            operation.RelogCommandAttempted = false;
         }
 
         if (operation.TitleIdleNextLoginAttemptUtc.HasValue && utcNow() < operation.TitleIdleNextLoginAttemptUtc.Value)
@@ -662,10 +685,12 @@ public sealed class DadWakeTakeoverService : IDisposable
 
         if (!operation.TitleIdleRelogCommandAttempted)
         {
-            // Mark before invoking: an exception is uncertain and must never replay. Only an
-            // explicit false proves that Lifestream did not enqueue the login and permits retry.
+            // Mark before invoking: uncertainty remains terminal. Accepted work may
+            // retry only after a later complete safe-title idle window proves an abort.
             operation.TitleIdleRelogCommandAttempted = true;
             operation.RelogCommandAttempted = true;
+            operation.TitleIdleLoginRouteIdentity = BuildTitleLoginRouteIdentity(snapshot);
+            ResetTitleLoginRetryProof(operation);
             operation.AnyTakeoverMutation = true;
             operation.TitleIdleLoginAttemptCount++;
             DadLifestreamLoginResult login;
@@ -683,6 +708,7 @@ public sealed class DadWakeTakeoverService : IDisposable
             {
                 operation.TitleIdleRelogCommandAttempted = false;
                 operation.RelogCommandAttempted = false;
+                operation.Phase = DadWakeTakeoverPhase.AwaitingArHook;
                 operation.TitleIdleNextLoginAttemptUtc = utcNow() + TimeSpan.FromSeconds(5);
                 operation.Summary = $"{login.Summary} DAD will retry only after the five-second cadence and a fresh exact title/route/AutoRetainer/VERMAXION/Lifestream/CanAutoLogin proof.";
                 operation.UpdatedAtUtc = utcNow();
@@ -703,9 +729,51 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.Phase = DadWakeTakeoverPhase.WaitingForCharacter;
         operation.CommitKind = DadWakeCommitKind.Relog;
         operation.Acknowledgement = DadWakeAcknowledgementState.Executed;
-        operation.Summary = $"Lifestream accepted the exact title login for {operation.ActiveRequest.CharacterKey}; waiting for world readiness without replay.";
+        operation.Summary = $"Lifestream accepted title login attempt {operation.TitleIdleLoginAttemptCount} for {operation.ActiveRequest.CharacterKey}; waiting for arrival or a fresh safe idle title retry window.";
         operation.UpdatedAtUtc = utcNow();
         return BuildResult(operation, snapshot);
+    }
+
+    private bool CanRetryAcceptedTitleLogin(OperationState operation, DadWakeTakeoverTargetSnapshot snapshot)
+    {
+        if (!operation.CoordinatorAvailable || operation.TitleIdlePostMutationInvalidated ||
+            snapshot.MultiModeEnabled || !DadTitleIdleLoginRules.CanContinueOwnedAttempt(snapshot))
+        {
+            ResetTitleLoginRetryProof(operation);
+            operation.Summary = !operation.CoordinatorAvailable
+                ? "Accepted title login is waiting for the coordinator; no duplicate login was issued."
+                : $"Accepted title login attempt {operation.TitleIdleLoginAttemptCount} remains pending. {DadTitleIdleLoginRules.BuildWaitSummary(snapshot)}";
+            operation.UpdatedAtUtc = utcNow();
+            return false;
+        }
+        if (!string.Equals(operation.TitleIdleLoginRouteIdentity, BuildTitleLoginRouteIdentity(snapshot), StringComparison.OrdinalIgnoreCase))
+        {
+            Block(operation, "The frozen title-login worker/account route changed; no login will replay.", cleanup: true);
+            return false;
+        }
+        var now = utcNow();
+        if (!operation.TitleIdleRetryLastObservationUtc.HasValue ||
+            now < operation.TitleIdleRetryLastObservationUtc.Value ||
+            now - operation.TitleIdleRetryLastObservationUtc.Value > TitleLoginRetryMaxObservationGap)
+        {
+            operation.TitleIdleRetrySafeSinceUtc = now;
+        }
+        operation.TitleIdleRetryLastObservationUtc = now;
+        if (operation.TitleIdleRetrySafeSinceUtc.HasValue &&
+            now - operation.TitleIdleRetrySafeSinceUtc.Value >= TitleLoginRetryIdleDelay)
+            return true;
+        operation.Summary = $"Accepted title login attempt {operation.TitleIdleLoginAttemptCount} returned to idle TitleMenu; waiting for five continuously fresh safe idle seconds before attempt {operation.TitleIdleLoginAttemptCount + 1}.";
+        operation.UpdatedAtUtc = now;
+        return false;
+    }
+
+    private static string BuildTitleLoginRouteIdentity(DadWakeTakeoverTargetSnapshot snapshot)
+        => $"{snapshot.Participant.WorkerSessionId.Value}|{snapshot.Participant.ManagedAccountKey.Value}";
+
+    private static void ResetTitleLoginRetryProof(OperationState operation)
+    {
+        operation.TitleIdleRetrySafeSinceUtc = null;
+        operation.TitleIdleRetryLastObservationUtc = null;
     }
 
     private DadWakeTakeoverResultDto PrepareFromVermaxionAuthorization(
@@ -1200,6 +1268,16 @@ public sealed class DadWakeTakeoverService : IDisposable
             return;
         }
         var participant = snapshot.Participant;
+        if (operation.TitleIdleRelogCommandAttempted)
+        {
+            if (!HasCompleteLiveIdentity(participant))
+            {
+                if (CanRetryAcceptedTitleLogin(operation, snapshot))
+                    PrepareAutoRetainerTitleIdleLogin(operation, snapshot, retryAccepted: true);
+                return;
+            }
+            ResetTitleLoginRetryProof(operation);
+        }
         if (!HasCompleteLiveIdentity(participant))
         {
             operation.RelogRetryGate.Reset();
@@ -1560,22 +1638,24 @@ public sealed class DadWakeTakeoverService : IDisposable
     }
 
     private DadWakeTakeoverTargetSnapshot Capture(OperationState operation, bool forceExternalRefresh = false)
+        => operation.LastSnapshot = ReadSnapshot(operation, forceExternalRefresh);
+
+    private DadWakeTakeoverTargetSnapshot ReadSnapshot(OperationState operation, bool forceExternalRefresh = false)
     {
         try
         {
-            operation.LastSnapshot = target.Capture(
-                                         BuildReservationScopedRequest(operation),
-                                         forceExternalRefresh) ??
-                                     new DadWakeTakeoverTargetSnapshot();
+            return target.Capture(
+                       BuildReservationScopedRequest(operation),
+                       forceExternalRefresh) ??
+                   new DadWakeTakeoverTargetSnapshot();
         }
         catch (Exception ex)
         {
-            operation.LastSnapshot = new DadWakeTakeoverTargetSnapshot
+            return new DadWakeTakeoverTargetSnapshot
             {
                 AutoRetainerStatus = $"Wake takeover target snapshot failed: {ex.Message}",
             };
         }
-        return operation.LastSnapshot;
     }
 
     private bool TryAllocateReservationAttemptToken(OperationState operation, out string error)
@@ -1693,6 +1773,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         operation.TitleIdleRelogCommandAttempted = false;
         operation.TitleIdleLoginAttemptCount = 0;
         operation.TitleIdleNextLoginAttemptUtc = null;
+        operation.TitleIdleLoginRouteIdentity = string.Empty;
+        ResetTitleLoginRetryProof(operation);
         operation.Summary = $"Takeover epoch {operation.Epoch} queued for a fresh reservation after retryable outcome: {reason} Next reserve attempt begins after the five-second cadence.";
         operation.UpdatedAtUtc = operation.EpochStartedAtUtc;
         diagnostic?.Invoke(
@@ -1945,10 +2027,22 @@ public sealed class DadWakeTakeoverService : IDisposable
         string? summary = null,
         DadWakeAcknowledgementState? acknowledgement = null)
     {
-        snapshot ??= operation.LastSnapshot;
         var phase = operation.Phase;
+        // Ready records that the one-shot takeover finished, not that its final
+        // safety observation remains current forever. Poll current truth without
+        // advancing/rearming the terminal operation or replacing its cleanup snapshot
+        // with global ownership that may now belong to a newer operation.
+        snapshot ??= phase == DadWakeTakeoverPhase.Ready
+            ? ReadSnapshot(operation, forceExternalRefresh: true)
+            : operation.LastSnapshot;
+        var currentTargetBlocker = phase == DadWakeTakeoverPhase.Ready
+            ? ValidateCoreTarget(snapshot, operation.ActiveRequest)
+            : string.Empty;
+        var currentTargetValid = string.IsNullOrWhiteSpace(currentTargetBlocker) &&
+                                 snapshot.ClientRouteConnected && snapshot.AccountMatches &&
+                                 snapshot.CharacterKnownToAccount;
         var status = phase == DadWakeTakeoverPhase.Ready
-            ? DadWakeTakeoverStatus.Ready
+            ? currentTargetValid ? DadWakeTakeoverStatus.Ready : DadWakeTakeoverStatus.Pending
             : phase is DadWakeTakeoverPhase.Blocked or DadWakeTakeoverPhase.Cancelled
                 ? DadWakeTakeoverStatus.Blocked
                 : phase >= DadWakeTakeoverPhase.RelogCommitted
@@ -1962,7 +2056,9 @@ public sealed class DadWakeTakeoverService : IDisposable
             CharacterKey = operation.Request.CharacterKey,
             OperationToken = operation.Request.OperationToken,
             Phase = phase,
-            Stage = ResolveStage(operation, snapshot),
+            Stage = phase == DadWakeTakeoverPhase.Ready && !currentTargetValid
+                ? DadWakeTakeoverStage.WaitingForClient
+                : ResolveStage(operation, snapshot),
             Status = status,
             CommitKind = operation.CommitKind,
             ExecutionTimeUtc = operation.ExecutionTimeUtc,
@@ -1986,7 +2082,9 @@ public sealed class DadWakeTakeoverService : IDisposable
             TakeoverVerifiedUtc = operation.ResetIssuedUtc,
             RelogIssuedUtc = operation.RelogIssuedUtc,
             ReadyUtc = operation.ReadyUtc,
-            Summary = summary ?? operation.Summary,
+            Summary = phase == DadWakeTakeoverPhase.Ready && !currentTargetValid
+                ? $"Takeover completed previously; waiting for current target safety: {(!string.IsNullOrWhiteSpace(currentTargetBlocker) ? currentTargetBlocker : "client route/account/character catalog proof is unavailable.")}"
+                : summary ?? operation.Summary,
             BlockedReason = operation.BlockedReason,
             Snapshot = snapshot.Participant?.Clone() ?? new DadParticipantSnapshot(),
         };
@@ -2198,6 +2296,9 @@ public sealed class DadWakeTakeoverService : IDisposable
         public bool TitleIdleRelogCommandAttempted { get; set; }
         public int TitleIdleLoginAttemptCount { get; set; }
         public DateTime? TitleIdleNextLoginAttemptUtc { get; set; }
+        public string TitleIdleLoginRouteIdentity { get; set; } = string.Empty;
+        public DateTime? TitleIdleRetrySafeSinceUtc { get; set; }
+        public DateTime? TitleIdleRetryLastObservationUtc { get; set; }
         public bool OriginalMultiModeStateCaptured { get; set; }
         public bool OriginalMultiModeEnabled { get; set; }
         public bool AnyTakeoverMutation { get; set; }

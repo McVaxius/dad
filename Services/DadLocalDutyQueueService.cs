@@ -519,6 +519,10 @@ public sealed class DadLocalDutyQueueService : IDisposable, IDadLocalDutyQueueGa
             : lastDutyCompletedUtc >= runStartedAtUtc &&
               lastDutyCompletedTerritoryId == content.TerritoryType;
 
+    public bool HasParticipantDutyCompleted(DadLocalDutyResolvedContent content, DateTime runStartedAtUtc)
+        => content.TargetKind == DadQueueTargetKind.Roulette &&
+           participantRouletteTerritoryGate.MatchesCompletion(lastDutyCompletedTerritoryId, lastDutyCompletedUtc, runStartedAtUtc);
+
     public bool IsQueued()
         => native.Condition(ConditionFlag.InDutyQueue) ||
            native.Condition(ConditionFlag.WaitingForDuty) ||

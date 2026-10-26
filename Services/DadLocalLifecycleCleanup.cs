@@ -65,15 +65,21 @@ internal sealed class DadLocalLifecycleCleanup(
             else
             {
                 // Repeated delivery of the same operation is the cleanup acknowledgement poll. All
-                // broad stop mutations already ran; only retry DAD-owned takeover lease release.
+                // broad stop mutations already ran; only poll retained cleanup owners.
                 result = recorded!.Clone();
                 wake = WakeTakeoverService.StopAll(reason);
             }
 
+            RunCoordinatorService.UpdateCancellationCleanup();
+            SchedulerService.UpdatePendingTakeoverCancellations();
+            SchedulerService.UpdatePendingEarlyAssignmentCancellations();
+            SchedulerService.UpdatePendingRewardProbeCancellations();
             result.UpdatedAtUtc = DadClock.UtcNow;
             var gatherCleanupUnresolved = QueueExecutionService.HasOwnedGatheringWork;
-            result.LocalCleanupCompleted = !wake.CleanupPending && !gatherCleanupUnresolved;
-            result.State = gatherCleanupUnresolved ? DadStopAllWorkerState.Rejected : wake.CleanupPending
+            var cleanupPending = wake.CleanupPending || SchedulerService.HasPendingCancellationCleanup ||
+                                 RunCoordinatorService.HasPendingCancellationCleanup;
+            result.LocalCleanupCompleted = !cleanupPending && !gatherCleanupUnresolved;
+            result.State = gatherCleanupUnresolved ? DadStopAllWorkerState.Rejected : cleanupPending
                 ? DadStopAllWorkerState.Expected
                 : DadStopAllWorkerState.Acknowledged;
             result.CancelledWakeTakeovers = Math.Max(result.CancelledWakeTakeovers, wake.CancelledCount);
@@ -84,7 +90,7 @@ internal sealed class DadLocalLifecycleCleanup(
             var summary = hasRecordedResult
                 ? result.Summary
                 : $"{result.Summary} {wake.Summary}";
-            result.Summary = WithStopAllCleanupState(summary, wake.CleanupPending);
+            result.Summary = WithStopAllCleanupState(summary, cleanupPending);
             if (gatherCleanupUnresolved)
                 result.Summary += " Owned GBR cleanup remains unresolved. Review the error before another explicit Stop All.";
             DadStopAllStatusRules.NormalizeLocalResult(result);
@@ -111,7 +117,7 @@ internal sealed class DadLocalLifecycleCleanup(
 
     private static string WithStopAllCleanupState(string summary, bool cleanupPending)
     {
-        const string pendingSuffix = " DAD-owned takeover cleanup is pending; acknowledgement will follow after all temporary leases release.";
+        const string pendingSuffix = " DAD-owned cancellation cleanup is pending (scheduler/coordinator/takeover); acknowledgement requires exact completion or proof that the original local worker process exited. A disconnected or unreadable worker remains blocking.";
         summary = (summary ?? string.Empty).Trim();
         if (summary.EndsWith(pendingSuffix.TrimStart(), StringComparison.Ordinal))
             summary = summary[..^pendingSuffix.TrimStart().Length].TrimEnd();

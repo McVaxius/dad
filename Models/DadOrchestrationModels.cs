@@ -622,6 +622,8 @@ public sealed class DadModuleExecutionStatusDto
     public int MaxRetryAttempts { get; set; }
     // Structured evidence, not a timeout guess or a failure-message substring.
     public bool DutyExitedWithoutCompletion { get; set; }
+    // Exact local DutyCompleted witness. Old peers omit it and cannot create a Daily receipt.
+    public DateTime? DutyCompletedAtUtc { get; set; }
     // Coordinator evidence: the failed run's exact party was fully torn down
     // before releasing its authenticated participant assignments.
     public bool DutyExitPartyTeardownCompleted { get; set; }
@@ -648,6 +650,7 @@ public sealed class DadModuleExecutionStatusDto
         RetryAttempt = RetryAttempt,
         MaxRetryAttempts = MaxRetryAttempts,
         DutyExitedWithoutCompletion = DutyExitedWithoutCompletion,
+        DutyCompletedAtUtc = DutyCompletedAtUtc,
         DutyExitPartyTeardownCompleted = DutyExitPartyTeardownCompleted,
         StartedAtUtc = StartedAtUtc,
         UpdatedAtUtc = UpdatedAtUtc,

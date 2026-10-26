@@ -260,6 +260,15 @@ public sealed partial class Plugin : IDalamudPlugin
             () => PluginInterface.SavePluginConfig(Configuration),
             onFailure: OnConfigurationPersistenceFailure);
         Configuration.AttachPersistenceCoordinator(configurationPersistence);
+        // Translation/theme initialization can fail. Do it before acquiring native
+        // callbacks or opening transport sockets: Dalamud cannot call Dispose on
+        // a plugin instance whose constructor never completed.
+        ApplyAppearance();
+        var obsoleteDailyProofs = Configuration.DailyRouletteCompletions?.Count(row => row != null &&
+            row.Proof == DadDailyRouletteProof.RewardReceived &&
+            row.RewardTextProofVersion != DadRouletteRewardProbeIdentityRules.CurrentRewardTextProofVersion) ?? 0;
+        if (obsoleteDailyProofs > 0)
+            Log.Warning("[dad] Ignoring {Count} obsolete visibility-only Daily receipts; these cannot skip entries and require fresh exact localized status inspection.", obsoleteDailyProofs);
         if (configurationChanged)
             Configuration.Save();
         var historyChanged = Configuration.RunHistory == null;
@@ -270,8 +279,6 @@ public sealed partial class Plugin : IDalamudPlugin
         EnsureClientAccountId();
         ConfigManager = new ConfigManager(PluginInterface, Log);
         ConfigManager.EnsureAccountSelected(Configuration.ClientAccountId, "Dad client");
-        // Validate UI resources before creating services that register native hooks or callbacks.
-        ApplyAppearance();
         DependencyService = new DadDependencyService(PluginInterface, Log);
         ExternalPluginCapabilityService = new DadExternalPluginCapabilityService();
         XadbClient = new DadXadbClient(PluginInterface, Log);
@@ -509,6 +516,7 @@ public sealed partial class Plugin : IDalamudPlugin
         SchedulerService.ConfigureLevelingMode(
             (source, iteration, minimum) => BuildLevelingChild(source, BuildPlannerPool(), iteration, minimum),
             () => RunCoordinatorService.CancelActiveRun());
+        DadRuntimeHandlers.ConfigureScheduledRunCancellation(SchedulerService, RunCoordinatorService);
         SchedulerService.ConfigureAutoPartyAuthorizationGate(
             AutoPartyService.EvaluateSchedulerAuthorization);
         SchedulerService.ConfigureAdmissionBlocker(GetSchedulerAdmissionBlocker);

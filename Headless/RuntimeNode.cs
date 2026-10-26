@@ -331,6 +331,7 @@ internal sealed class RuntimeNode : IDisposable
             partyInvite, partyTeardown, queue, worker, planner, log,
             () => configuration.AutoParty.RemoteBindings, autoParty?.Bridge);
         scheduler.ConfigureLevelingMode(BuildLevelingChild, () => coordinator.CancelActiveRun());
+        DadRuntimeHandlers.ConfigureScheduledRunCancellation(scheduler, coordinator);
         if (autoParty != null)
         {
             autoParty.Service.ConfigureOwnerStop(_ => coordinator.CancelActiveRun());
@@ -603,7 +604,7 @@ internal sealed class RuntimeNode : IDisposable
             case "seed-routing":
                 // Focused reproduction setup at the existing routing boundary. This
                 // deliberately makes no claim about scheduler or discovery coverage.
-                SeedRouting(DadIpcJson.Deserialize<List<DadParticipantSnapshot>>(command.GetProperty("participants").GetRawText())!);
+                controlResult = new { routingReady = SeedRouting(DadIpcJson.Deserialize<List<DadParticipantSnapshot>>(command.GetProperty("participants").GetRawText())!) };
                 break;
             case "snapshot": break;
             case "replay-member-completion":
@@ -731,13 +732,12 @@ internal sealed class RuntimeNode : IDisposable
             pool, group, planner, queue, presence.BuildLiveSafetySnapshot);
     }
 
-    private void SeedRouting(List<DadParticipantSnapshot> participants)
+    private bool SeedRouting(List<DadParticipantSnapshot> participants)
     {
         if (!configuration.RunAsServerDad || coordinator.IsBusy) throw new InvalidOperationException("Routing setup requires an idle coordinator.");
         foreach (var participant in participants)
         {
             participant.IsLocalClient = participant.WorkerSessionId == presence.WorkerSessionId;
-            participant.RunId = "lab-i305";
             participant.ClaimState = DadClaimState.Granted;
             participant.LeaseState = DadParticipantLeaseState.Granted;
         }
@@ -763,13 +763,53 @@ internal sealed class RuntimeNode : IDisposable
         };
         if (!DadRunSlotManifestRules.TryCreate(plan, out var manifest, out var blocker)) throw new InvalidOperationException(blocker);
         for (var i = 0; i < participants.Count; i++) manifest.Slots[i].WorkerSessionId = participants[i].WorkerSessionId;
-        Set("activePlan", plan); Set("activeSlotManifest", manifest); Set("activeModuleIndex", 0);
+        var assignments = (DadRemoteAssignmentTracker)Field("remoteAssignmentTracker").GetValue(coordinator)!;
+        if (Field("activePlan").GetValue(coordinator) == null)
+        {
+            assignments.BeginAttempt(plan.Request.RequestId);
+            presence.MarkCoordinator(plan.Request.RequestId, plan.Orchestration.AuthorityMode, "Focused routing assignment setup.");
+            Set("activePlan", plan); Set("activeSlotManifest", manifest); Set("activeModuleIndex", 0);
+        }
+        else
+        {
+            plan = (DadRunPlan)Field("activePlan").GetValue(coordinator)!;
+            manifest = (DadRunSlotManifest)Field("activeSlotManifest").GetValue(coordinator)!;
+        }
         var active = (List<DadParticipantSnapshot>)Field("activeParticipants").GetValue(coordinator)!;
-        active.AddRange(participants);
+        if (active.Count == 0) active.AddRange(participants);
+        // Routing setup still requires genuine run ownership. Use the same local
+        // handler, authenticated remote wake requests and exact response validator
+        // as participant discovery; never manufacture presence assignment fields.
+        for (var index = 0; index < active.Count; index++)
+        {
+            var participant = active[index];
+            var slot = manifest.Slots.Single(value => value.WorkerSessionId == participant.WorkerSessionId);
+            if (assignments.IsAccepted(plan.Request.RequestId, slot)) continue;
+            var request = new DadWakeRequestDto
+            {
+                RunId = plan.Request.RequestId, AuthorityWorkerSessionId = presence.WorkerSessionId,
+                AuthorityMode = plan.Orchestration.AuthorityMode, ModuleId = plan.CompositeModuleId,
+                RequiredAccountKey = slot.AccountKey, RequiredCharacterKey = slot.CharacterKey,
+                RequiredContentId = slot.ContentId, RequiredJobId = slot.RequiredJobId,
+                AssignedSlotId = slot.SlotId, RequirePostArReady = plan.Orchestration.RequirePostArReady,
+            };
+            var response = participant.IsLocalClient ? presence.HandleWakeRequest(request) : transport.SendWakeRequest(participant, request);
+            if (response == null) assignments.MarkPending(plan.Request.RequestId, slot);
+            else if (assignments.Observe(plan.Request.RequestId, slot, response, clock.Now.UtcDateTime).Disposition == DadRemoteAssignmentDisposition.Accepted)
+            {
+                var assigned = response.Snapshot.Clone();
+                assigned.IsLocalClient = participant.IsLocalClient;
+                assigned.ClaimState = participant.ClaimState;
+                assigned.LeaseState = participant.LeaseState;
+                active[index] = assigned;
+            }
+        }
+        if (!manifest.Slots.All(slot => assignments.IsAccepted(plan.Request.RequestId, slot))) return false;
         var result = coordinator.CurrentResult;
         result.RequestId = plan.Request.RequestId; result.Status = DadRunStatus.Running; result.Phase = DadRunPhase.QueuePreparing;
         result.ModuleId = DadModuleId.PremadeDuty;
         events.Enqueue("setup:production-coordinator-routing-boundary");
+        return true;
     }
 
     private static FieldInfo Field(string name) => typeof(DadCoordinatorService).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)

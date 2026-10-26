@@ -213,7 +213,7 @@ internal sealed class DadPresetCrewEditor
             }
             else if (header == "Daily" && ImGui.IsItemHovered())
             {
-                UiGui.SetTooltip("Per-row opt-in: on a DailyReset Schedule only, inspect this effective character and skip the entry only when every checked row already received the selected roulette reward.");
+                UiGui.SetTooltip("Per-row opt-in: inspect this character on its own DAD client, including direct presets and manual schedules. Skip only when every checked row already received the selected roulette reward.");
             }
             else if (header == "Alliance" && ImGui.IsItemHovered())
             {
@@ -940,7 +940,7 @@ internal sealed class DadPresetCrewEditor
         }
         if (ImGui.IsItemHovered())
         {
-            UiGui.SetTooltip("Default off. Used only by a Daily Roulette preset running through a DailyReset Schedule. Uncertain reward truth runs the preset normally.");
+            UiGui.SetTooltip("Default off. For Daily Roulette presets, inspect this character on its own client before running, including manual schedules and direct starts. Every checked row must have received the reward; uncertain truth runs normally.");
         }
     }
 

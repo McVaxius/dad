@@ -67,6 +67,7 @@ public sealed class DadTransportService : IDisposable
     private readonly object roleGate = new();
     private readonly object localParticipantGate = new();
     private readonly DadHubSessionRegistry<DadHubConnection> serverSessions = new();
+    private readonly DadWorkerProcessLifetime workerProcessLifetimes = new();
     private readonly ConcurrentDictionary<string, DisconnectedParticipant> disconnectedParticipants = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<DadHubFrame>> pendingRequests = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Task> operations = new(StringComparer.Ordinal);
@@ -214,6 +215,9 @@ public sealed class DadTransportService : IDisposable
                 workerSessionId.Value,
                 StringComparison.OrdinalIgnoreCase));
     }
+
+    internal bool HasWorkerProcessExited(DadWorkerSessionId workerSessionId)
+        => workerProcessLifetimes?.HasExited(workerSessionId) == true && !IsWorkerOnline(workerSessionId);
 
     public void RestartListener() => RestartTransport();
 
@@ -968,13 +972,20 @@ public sealed class DadTransportService : IDisposable
     public DadWorkerExecutionAck? SendWorkerExecutionCommand(
         DadParticipantSnapshot participant,
         DadWorkerExecutionCommand command)
+        => SendWorkerExecutionCommand(participant, command, out _);
+
+    internal DadWorkerExecutionAck? SendWorkerExecutionCommand(
+        DadParticipantSnapshot participant,
+        DadWorkerExecutionCommand command,
+        out bool queuedOrInFlight)
     {
         var operationKey = $"worker-command:{participant.WorkerSessionId.Value}:{command.CommandId}";
         var acknowledgement = TryRequest<DadWorkerExecutionCommand, DadWorkerExecutionAck>(
             participant.WorkerSessionId,
             MessageWorkerExecutionCommand,
             command,
-            operationKey);
+            operationKey,
+            out queuedOrInFlight);
         return DadWorkerStatusPollingRules.SelectCommandAcknowledgement(acknowledgement, command);
     }
 
@@ -2584,15 +2595,32 @@ public sealed class DadTransportService : IDisposable
         string messageType,
         TRequest request,
         string operationKey)
+        => TryRequest<TRequest, TResponse>(targetWorkerSessionId, messageType, request, operationKey, out _);
+
+    private TResponse? TryRequest<TRequest, TResponse>(
+        DadWorkerSessionId targetWorkerSessionId,
+        string messageType,
+        TRequest request,
+        string operationKey,
+        out bool queuedOrInFlight)
     {
+        queuedOrInFlight = false;
         var completed = TryTakeCompleted<TResponse>(operationKey);
         if (completed != null)
+        {
+            queuedOrInFlight = true;
             return completed;
+        }
 
-        if (operations.ContainsKey(operationKey) || !CanQueueOperation(targetWorkerSessionId))
+        if (operations.ContainsKey(operationKey))
+        {
+            queuedOrInFlight = true;
+            return default;
+        }
+        if (!CanQueueOperation(targetWorkerSessionId))
             return default;
 
-        QueueOperation<TRequest, TResponse>(
+        queuedOrInFlight = QueueOperation<TRequest, TResponse>(
             operationKey,
             targetWorkerSessionId,
             messageType,
@@ -4225,6 +4253,9 @@ public sealed class DadTransportService : IDisposable
     private void SetTransportRoster(IReadOnlyList<DadParticipantSnapshot> participants)
     {
         var sorted = SortParticipants(participants);
+        foreach (var participant in sorted)
+            if (IsWorkerOnline(participant.WorkerSessionId))
+                workerProcessLifetimes.Observe(participant);
         var signature = BuildTransportRosterSignature(sorted);
         var semanticChange = !string.Equals(signature, transportRosterSignature, StringComparison.Ordinal);
         CurrentTransport.KnownParticipants = sorted;
