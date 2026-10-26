@@ -235,6 +235,15 @@ public sealed partial class Plugin : IDalamudPlugin
 
     public Plugin()
     {
+        var hostRuntime = Environment.Version;
+        if (hostRuntime.Major != 10 || hostRuntime < new Version(10, 0, 14))
+        {
+            throw new NotSupportedException(
+                $"DAD requires the Dalamud/XIVLauncher .NET 10 host runtime 10.0.14 or later " +
+                $"to address CVE-2026-111497. Current host runtime: {hostRuntime}. " +
+                "Update Dalamud/XIVLauncher and restart FFXIV.");
+        }
+
         prepareFontStatusDecorations = fontStatusDecorations.Prepare;
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         var autoPartyIdentityStore = new DadAutoPartyDpapiEndpointIdentityStore(

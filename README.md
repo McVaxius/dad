@@ -77,6 +77,12 @@ queue, handler and update-order decisions remain shared. AutoParty's production 
 mailbox, security and SQLite services use a simulated Discord HTTP provider on loopback. No running game client or
 Discord bot is needed. Virtual results do not establish live game or Discord acceptance.
 
+Headless requires Microsoft.NETCore.App 10.0.14 or later on the .NET 10 branch, including its self-contained runtime pack,
+for the native Brotli security fix. The plugin requires the same patched .NET 10 host and rejects startup before creating
+services on an older or unsupported runtime. It uses the runtime supplied by Dalamud/XIVLauncher; rebuilding the DLL or
+updating system dotnet cannot update that host runtime. Update Dalamud/XIVLauncher and restart FFXIV before loading DAD
+on an affected host.
+
 ### Development prerequisites and checkout paths
 
 - Clone both [DAD](https://github.com/McVaxius/dad) and [AutoParty](https://github.com/McVaxius/Autoparty).

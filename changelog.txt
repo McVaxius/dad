@@ -1,3 +1,9 @@
+2026-10-25 - 2.0.0.5 - Patched native runtime requirement (I660)
+
+- Require Microsoft.NETCore.App 10.0.14 for the standalone Headless executable, including framework-dependent launches and self-contained runtime-pack selection. Preserve protocol framing and unrelated dependency versions.
+- Reject hosted plugin startup before service creation unless the loaded .NET 10 runtime is at least 10.0.14, preventing unpatched native Brotli decoding across courier, bootstrap and nested-profile paths.
+- Document the separate host boundary: the Dalamud plugin uses the runtime supplied by Dalamud/XIVLauncher; its DLL cannot replace that runtime.
+
 2026-10-25 - 2.0.0.4 - Failed-entry confirmation (I652)
 
 - Open the existing Resume from failed entry confirmation after the schedule tables close, preserving the popup identity, failed-run selection and eligibility checks.

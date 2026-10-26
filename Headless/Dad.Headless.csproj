@@ -11,6 +11,7 @@
     <DalamudLibPath Condition="'$(DALAMUD_HOME)' != ''">$(DALAMUD_HOME)/</DalamudLibPath>
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Update="Microsoft.NETCore.App" RuntimeFrameworkVersion="10.0.14" />
     <ProjectReference Include="../../../aethertekUI/src/AethertekUI/AethertekUI.csproj" />
     <Compile Include="../Configuration.cs;../PluginInfo.cs;../Models/*.cs;../Services/*.cs" />
     <Compile Remove="../Services/DadIpcService.cs" />
