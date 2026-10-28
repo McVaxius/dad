@@ -108,7 +108,8 @@ public sealed class DadNativePartyInviteAttemptTracker
         bool partyListContainsContentId,
         DateTime nowUtc,
         IDadNativePartyInviteDispatcher dispatcher,
-        out string blocker)
+        out string blocker,
+        DadNativePartyInviteType? forcedInviteType = null)
     {
         blocker = Validate(target);
         if (!string.IsNullOrWhiteSpace(blocker))
@@ -146,7 +147,7 @@ public sealed class DadNativePartyInviteAttemptTracker
             return null;
 
         state.AttemptNumber++;
-        var inviteType = DadNativePartyInviteRules.SelectInviteType(state.FrozenTarget, state.AttemptNumber);
+        var inviteType = forcedInviteType ?? DadNativePartyInviteRules.SelectInviteType(state.FrozenTarget, state.AttemptNumber);
         var dispatchResult = inviteType switch
         {
             DadNativePartyInviteType.SameWorld => dispatcher.InviteSameWorld(
@@ -510,26 +511,35 @@ public sealed class DadPartyInvitationAcceptanceTracker
         bool partyListContainsExpectedContentId,
         DateTime nowUtc)
     {
+        return EvaluateAcceptance(invitation, partyListContainsExpectedContentId, nowUtc) == "eligible";
+    }
+
+    internal string EvaluateAcceptance(
+        DadPendingPartyInvitation invitation,
+        bool partyListContainsExpectedContentId,
+        DateTime nowUtc)
+    {
         if (partyListContainsExpectedContentId)
         {
             ConfirmPartyMembership(invitation);
-            return false;
+            return "membership-confirmed";
         }
 
-        if (partyConfirmed || expectedInviter == null || !invitation.IsPresent)
-            return false;
+        if (partyConfirmed) return "awaiting-validated-reassembly";
+        if (expectedInviter == null) return "not-armed";
+        if (!invitation.IsPresent) return "no-native-invitation";
         if (confirmedInvitationTimes.Contains(invitation.InviteTime))
-            return false;
+            return "consumed-invitation";
         if (invitation == baseline)
-            return false;
+            return "run-baseline-invitation";
         if (!string.Equals(invitation.InviterName, expectedInviter.CharacterName, StringComparison.Ordinal) ||
             invitation.InviterWorldId != expectedInviter.WorldId)
         {
-            return false;
+            return "inviter-name-or-world-mismatch";
         }
 
         nowUtc = EnsureUtc(nowUtc);
-        return invitation != lastAttemptedInvitation || nowUtc >= nextAttemptAtUtc;
+        return invitation != lastAttemptedInvitation || nowUtc >= nextAttemptAtUtc ? "eligible" : "retry-cadence";
     }
 
     public void RecordAttempt(DadPendingPartyInvitation invitation, DateTime attemptedAtUtc)

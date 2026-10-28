@@ -12,6 +12,64 @@ namespace dad.Tests;
 public sealed class DadPartyInviteReassemblyRuntimeTests
 {
     [Fact]
+    public void PassiveDebugObservationNeverArmsOrAcceptsAnInvitation()
+    {
+        using var f = new Fixture(debug: true);
+        f.Invite(102);
+        f.Pulse();
+        Assert.Equal(0, f.Accepts);
+        Assert.Contains("present=True", f.DiagnosticReport());
+        Assert.Contains("expectedArmed=False", f.DiagnosticReport());
+        Assert.DoesNotContain("Synthetic Leader", f.DiagnosticReport());
+        Assert.False(f.Arm());
+        f.Pulse();
+        Assert.Equal(1, f.Accepts);
+        Assert.Contains("respond request=same-run", f.DiagnosticReport());
+        f.SetMembers(100, 200);
+        f.Pulse();
+        Assert.Contains("membership-confirmed", f.DiagnosticReport());
+    }
+
+    [Theory]
+    [InlineData("Cross", 100ul)]
+    [InlineData("Serial", 100ul)]
+    [InlineData("Reverse", 300ul)]
+    public void GatewayUsesScopedCrossWorldPolicyAndRealSerialMembership(string mode, ulong first)
+    {
+        using var f = new Fixture(debug: true);
+        f.SetMembers(200);
+        f.StartComparison(mode, 100, 300);
+        var attempt = f.Send(first);
+        Assert.NotNull(attempt);
+        Assert.Equal(M.DadNativePartyInviteType.CrossWorldContentId, attempt.InviteType);
+        var other = first == 100 ? 300ul : 100ul;
+        if (mode != "Cross")
+        {
+            Assert.Null(f.Send(other));
+            f.SetMembers(200, first);
+        }
+        Assert.NotNull(f.Send(other));
+        f.Call("Reset");
+        f.Advance(5);
+        Assert.Null(f.Send(first));
+        Assert.NotNull(f.Send(first, "unrelated-run"));
+    }
+
+    [Fact]
+    public void AdmissionResetPreservesOnlyTheExplicitExactComparison()
+    {
+        using var f = new Fixture(debug: true);
+        f.SetMembers(200);
+        f.StartComparison("Reverse", 100, 300);
+        f.CallInternal("ResetForRun", "same-run");
+        Assert.Null(f.Send(100));
+        Assert.Equal(M.DadNativePartyInviteType.CrossWorldContentId, f.Send(300)?.InviteType);
+        f.CallInternal("ResetForRun", "other-run");
+        Assert.Null(f.Send(100));
+        Assert.Contains("policy revoked", f.DiagnosticReport());
+    }
+
+    [Fact]
     public void SameRunReassemblyAcceptsFreshExactInvitationAfterStableSolo()
     {
         using var f = new Fixture();
@@ -311,7 +369,7 @@ public sealed class DadPartyInviteReassemblyRuntimeTests
         };
         public int Accepts => events.Count(e => e == "native:accept-invitation");
 
-        public Fixture()
+        public Fixture(bool debug = false)
         {
             var assembly = typeof(M.DadExpectedPartyInviter).Assembly;
             clockProperty = assembly.GetType("dad.DadClock")!.GetProperty("Provider", BindingFlags.Static | BindingFlags.NonPublic)!;
@@ -324,7 +382,7 @@ public sealed class DadPartyInviteReassemblyRuntimeTests
             var conditions = Proxy<ICondition>((method, args) => method.Name == "get_Item" ? UnsafeConditions.Contains(args[0]!.ToString()!) : throw new InvalidOperationException(method.Name));
             var log = DispatchProxy.Create<IPluginLog, DadScheduleDutyExitRetryRuntimeTests.QuietLog>();
             gateway = Activator.CreateInstance(assembly.GetType("dad.Services.InfoProxyPartyInviteGateway")!,
-                [new DadRuntime::dad.Configuration(), framework, player, null, conditions, log, native])!;
+                [new DadRuntime::dad.Configuration { DebugUiEnabled = debug, PluginEnabled = true }, framework, player, null, conditions, log, native])!;
             Call("BeginParticipantRun", Expected.RunId);
         }
 
@@ -352,6 +410,24 @@ public sealed class DadPartyInviteReassemblyRuntimeTests
             => native.GetType().GetProperty("Members")!.SetValue(native,
                 ids.Select(id => new M.DadPartyMemberSnapshot { ContentId = id, IsLocalPlayer = id == 200 }).ToList());
         public void SetCrossRealm(bool value) => native.GetType().GetProperty("CrossRealm")!.SetValue(native, value);
+        private object Diagnostics => gateway.GetType().GetProperty("Diagnostics", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(gateway)!;
+        public string DiagnosticReport() => (string)Diagnostics.GetType().GetMethod("Report", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(Diagnostics, null)!;
+        public void StartComparison(string mode, params ulong[] targets)
+        {
+            var type = Diagnostics.GetType().Assembly.GetType("dad.Models.DadInviteTestMode")!;
+            Diagnostics.GetType().GetMethod("Start", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(Diagnostics,
+                [Expected.RunId, Enum.Parse(type, mode), targets, clock.Now.UtcDateTime]);
+        }
+        public M.DadNativePartyInviteAttempt? Send(ulong id, string? run = null)
+        {
+            object?[] args = [new M.DadNativePartyInviteTarget
+            {
+                RunId = run ?? Expected.RunId, SlotId = id == 100 ? "Slot2" : "Slot3", AccountKey = new("account-" + id),
+                CharacterKey = new("Synthetic Target@World"), ContentId = id, CharacterName = "Synthetic Target", WorldId = 21,
+                WorkerSessionId = new("worker-" + id),
+            }, false, null];
+            return (M.DadNativePartyInviteAttempt?)gateway.GetType().GetMethod("TryInvite")!.Invoke(gateway, args);
+        }
         public void Advance(double seconds) => clock.Now = clock.Now.AddSeconds(seconds);
         public void ObserveSoloForTwoSeconds()
         {
@@ -364,6 +440,7 @@ public sealed class DadPartyInviteReassemblyRuntimeTests
         }
         public void Pulse() => Call("UpdateAcceptance");
         public void Call(string method, params object?[] args) => gateway.GetType().GetMethod(method)!.Invoke(gateway, args);
+        public void CallInternal(string method, params object?[] args) => gateway.GetType().GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(gateway, args);
         public void Dispose() => clockProperty.SetValue(null, previousClock);
     }
 

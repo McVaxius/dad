@@ -1,5 +1,38 @@
 # DAD
 
+### Manual invite timing comparison (debug only)
+
+Enable `/dad debug on` on every crew client, select a saved regular-party preset on its Slot1 coordinator,
+and leave every selected character online, ready and solo, outside duties/queues. Stop schedules first.
+The comparison uses the existing authenticated **Crew Formation** path and holds at **GroupReady**;
+it never queues a dungeon. It rejects offline/registered-island/alliance rosters and does not persist
+the test policy or change the saved preset. Requested jobs and character-load instructions are disabled
+on the runtime copy for this timing comparison.
+Formation-only requests keep module `None` through preparation and coordinator admission even when
+the saved preset carries a roulette/dungeon task. Runtime cloning restores the formation flag before
+normalization. The invite comparison also clears requested jobs from resolved preview rows, so scheduler
+binding cannot restore them; ordinary presets retain their job preparation and task module behavior.
+
+- `/dad test invites mixed`: unchanged alternating same-world/cross-world baseline, normal slot order.
+- `/dad test invites cross`: cross-world Content ID only, normal parallel slot order.
+- `/dad test invites serial`: cross-world only, one recipient at a time in Slot2→SlotN order.
+- `/dad test invites reverse`: the same sequential test in SlotN→Slot2 order.
+- `/dad test invites status`: local result; `/dad report` includes the bounded UTC timeline.
+- `/dad test invites stop`: revoke the comparison and cancel only its exact owned formation using existing cleanup.
+
+Each sequential step waits for authoritative membership, not a successful native return. Runs are capped
+at 120 seconds including preparation; debug/plugin disable, reset and cancellation revoke their request-scoped
+policy. After a successful test use `stop`, wait for cleanup and all members to be solo, then start the next mode.
+No automatic cycling or fresh run occurs on reload. Existing identity, invitation freshness, prompt ownership
+and five-second retry guards remain in force. Normal runs retain their original invite strategy.
+
+Debug-enabled clients passively keep up to 256 in-memory invite events (no new disk logger). Reports distinguish
+native send return, receiver invitation visibility/eligibility, response attempts and confirmed membership.
+Native success is **not** proof of delivery. Export `/dad report` separately on the sender and receivers to compare
+the same request IDs and UTC timestamps; no new automatic report collection or clock synchronization is provided.
+Names and Content IDs are omitted from this new timeline; recipient numbers follow the chosen test order.
+Real game/server cooldown behavior still requires a manual in-game comparison.
+
 Window appearance offers **Auto / Picker / LCARS / Glassmorphism / Spatial / Cyberpunk** across Main, Mini, Settings and support windows. Picker and each new material keep independent Background, Controls and Text colours, with individual and palette resets. LCARS has separate background and three bar colours; its UI tones start muted, with one saved mute choice shared by Settings and LCARS titlebar speakers. Glass animation starts enabled, with a numeric speed control and three independently editable wave colours; wave editing also works with animation off.
 
 DAD is a duty planner and multibox coordinator for FFXIV. Build reusable crews, ready the right characters,

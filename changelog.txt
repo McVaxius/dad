@@ -1,3 +1,9 @@
+2026-10-28 - Debug invite comparisons and formation assignment consistency
+
+- Add opt-in mixed, cross-world, serial and reverse invite comparisons for an exact already-online regular crew. Hold at GroupReady without queuing a duty, retain native identity and safety guards, and revoke the request-scoped policy on stop, reset, debug disable or timeout.
+- Include a bounded in-memory sender/receiver timeline in anonymized issue reports. Native return values do not prove invitation delivery or membership. Ordinary runs retain their existing invite strategy.
+- Keep formation-only module assignments consistent through runtime cloning and coordinator admission. Clear requested jobs and load actions only in invite comparison runtime copies; preserve saved presets and ordinary task preparation.
+
 2026-10-28 - Party recovery and cold Duty Support startup
 
 - Allow explicitly requested same-run party reassembly after a disband, retaining the exact inviter and stable solo proof. Treat native InviteTime as an opaque invitation identity instead of an increasing counter so shorter-lived invitations do not stall behind earlier deadlines; reject consumed identities and log bounded concrete wait reasons.

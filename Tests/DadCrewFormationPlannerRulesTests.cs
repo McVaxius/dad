@@ -13,6 +13,70 @@ public sealed class DadCrewFormationPlannerRulesTests
     private const string PeerCharacter = "Peer Example@Alpha";
     private const ulong PeerContentId = 2002;
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void TaskBearingFormationKeepsOneAssignmentContractAcrossPreparationAndPlanning(int taskKind)
+    {
+        var request = BuildRequest();
+        if (taskKind != 1) request.DailyMsq = new DadDailyMsqTask();
+        if (taskKind != 0) request.Dungeon = new DadDungeonTask();
+        request.Orchestration.ModuleTarget = DadModuleId.DailyMsq;
+        request.Orchestration.RequiredRosterCharacters[0].RequiredJobId = 19;
+        request.Orchestration.RequiredRosterCharacters[1].RequiredJobId = 32;
+        request.ApplyOrchestrationDefaults();
+        var frozen = DadAutoPartyRuntimeRequestRules.ClonePreservingRuntimeMetadata(request);
+        var slots = frozen.Orchestration.RequiredRosterCharacters.Select((row, index) => new DadSchedulerSlotState
+        {
+            SlotId = $"Slot{index + 1}", RequiredAccountKey = row.AccountKey,
+            RequiredCharacterKey = row.CharacterKey, RequiredJobId = row.RequiredJobId,
+        }).ToList();
+        var authority = new DadWorkerSessionId("synthetic-authority");
+        var early = DadEarlyRequestedJobAssignmentRules.Build(frozen, slots, authority);
+        var plannedRequest = DadAutoPartyRuntimeRequestRules.ClonePreservingRuntimeMetadata(frozen);
+        var planner = new DadPlannerService(new DadPresetProviderService(), new DadModuleRegistry(),
+            new Configuration { ClientAccountId = LeaderAccount });
+        var plan = planner.BuildPlan(plannedRequest, BuildPool(true, true), out var blocker,
+            requireLiveReadiness: true, liveLocalRuntimeTruth: BuildLiveCoordinatorTruth());
+        Assert.NotNull(plan);
+        Assert.Empty(blocker);
+        Assert.Equal(DadModuleId.None, plan.CompositeModuleId);
+
+        var ledger = new DadImmutableCommandRegistry();
+        foreach (var assignment in early)
+        {
+            var incoming = assignment.Clone();
+            incoming.ModuleId = plan.CompositeModuleId;
+            var commandId = $"{assignment.RunId}:{assignment.AssignedSlotId}:synthetic-worker:job-assignment";
+            var originalPayload = DadIpcJson.Serialize(assignment);
+            var incomingPayload = DadIpcJson.Serialize(incoming);
+            Assert.Equal(DadImmutableCommandDisposition.Accepted,
+                ledger.Register(commandId, originalPayload, originalPayload, "same-route").Disposition);
+            Assert.Equal(DadImmutableCommandDisposition.Duplicate,
+                ledger.Register(commandId, incomingPayload, incomingPayload, "same-route").Disposition);
+            incoming.RequiredJobId = 40;
+            var changedPayload = DadIpcJson.Serialize(incoming);
+            Assert.Equal(DadImmutableCommandDisposition.Collision,
+                ledger.Register(commandId, changedPayload, changedPayload, "same-route").Disposition);
+        }
+        Assert.Equal(DadModuleId.None, request.Orchestration.ModuleTarget);
+        Assert.Equal(DadModuleId.None, frozen.Orchestration.ModuleTarget);
+        Assert.Equal(DadModuleId.None, plannedRequest.Orchestration.ModuleTarget);
+    }
+
+    [Fact]
+    public void OrdinaryTaskStillInfersDailyModule()
+    {
+        var request = BuildRequest();
+        request.Orchestration.AutoPartyFormationOnly = false;
+        request.DailyMsq = new DadDailyMsqTask();
+        request.ApplyOrchestrationDefaults();
+        Assert.Equal(DadModuleId.DailyMsq, request.Orchestration.ModuleTarget);
+        var clone = DadAutoPartyRuntimeRequestRules.ClonePreservingRuntimeMetadata(request);
+        Assert.Equal(DadModuleId.DailyMsq, clone.Orchestration.ModuleTarget);
+    }
+
     [Fact]
     public void FormationPlan_IgnoresQueuePayloadAndSatisfiedStopPolicy()
     {

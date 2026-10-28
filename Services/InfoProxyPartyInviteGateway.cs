@@ -21,6 +21,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     private readonly IDadPartyNativeAccess? native;
     private readonly DadNativePartyInviteAttemptTracker inviteAttempts = new();
     private readonly DadPartyInvitationAcceptanceTracker acceptance = new();
+    internal DadInviteDiagnostics Diagnostics { get; } = new();
     private string activeParticipantRunId = string.Empty;
     private DadExpectedPartyInviter? pendingExpectedInviter;
     private DadParticipantPartyDepartureController? departureController;
@@ -58,7 +59,8 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     {
         RequireFrameworkThread();
         runId = runId?.Trim() ?? string.Empty;
-        if (!string.Equals(activeParticipantRunId, runId, StringComparison.OrdinalIgnoreCase))
+        var newRun = !string.Equals(activeParticipantRunId, runId, StringComparison.OrdinalIgnoreCase);
+        if (newRun)
         {
             activeParticipantRunId = runId;
             pendingExpectedInviter = null;
@@ -75,7 +77,10 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             ResetReassemblyObservation();
         }
 
-        acceptance.BeginRun(runId, ReadPendingInvitation());
+        var baseline = ReadPendingInvitation();
+        if (configuration.DebugUiEnabled && newRun)
+            Diagnostics.Observe(DadClock.UtcNow, $"receiver-run request={runId} baselinePresent={baseline.IsPresent} baselineInviteTime={baseline.InviteTime}", "run");
+        acceptance.BeginRun(runId, baseline);
     }
 
     public bool TryArmAcceptance(DadExpectedPartyInviter inviter, out string blocker)
@@ -173,6 +178,15 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         out string blocker)
     {
         RequireFrameworkThread();
+        DadNativePartyInviteType? forcedType = null;
+        if (string.Equals(Diagnostics.RunId, target.RunId, StringComparison.Ordinal) &&
+            !Diagnostics.Allows(target.RunId, target.ContentId,
+                ReadAuthoritativePartyMembers().Select(member => member.ContentId).ToArray(),
+                DadClock.UtcNow, configuration.DebugUiEnabled && configuration.PluginEnabled, out forcedType))
+        {
+            blocker = string.Empty; // A sequential recipient is pending, not a failed participant.
+            return null;
+        }
         var runtimeTarget = new DadNativePartyInviteTarget
         {
             RunId = target.RunId,
@@ -192,12 +206,18 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             // when a future runtime source can establish exact same-applicable-instance truth.
             SameApplicableInstanceExact = target.SameApplicableInstanceExact,
         };
-        return inviteAttempts.TryDispatch(
+        var attempt = inviteAttempts.TryDispatch(
             runtimeTarget,
             partyListContainsContentId,
             DadClock.UtcNow,
             this,
-            out blocker);
+            out blocker,
+            forcedType);
+        if (configuration.DebugUiEnabled && attempt != null)
+            Diagnostics.Record(DadClock.UtcNow, $"send request={target.RunId} slot={target.SlotId} type={attempt.InviteType} attempt={attempt.AttemptNumber} nativeReturn={attempt.DispatchResult} delivery=unproven");
+        if (configuration.DebugUiEnabled && partyListContainsContentId)
+            Diagnostics.Observe(DadClock.UtcNow, $"sender-member request={target.RunId} slot={target.SlotId} joined=true", "member-" + target.SlotId);
+        return attempt;
     }
 
     internal DadAuthenticatedIslandInviteResult? TryInviteAuthenticatedIsland(
@@ -304,6 +324,13 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     public void UpdateAcceptance()
     {
         RequireFrameworkThread();
+        if (configuration.DebugUiEnabled)
+        {
+            var pending = ReadPendingInvitation();
+            var inviter = pendingExpectedInviter ?? acceptance.ExpectedInviter;
+            Diagnostics.Observe(DadClock.UtcNow,
+                $"receive request={activeParticipantRunId} present={pending.IsPresent} inviteTime={pending.InviteTime} inviterWorld={pending.InviterWorldId} expectedArmed={acceptance.ExpectedInviter != null} expectedNameMatch={inviter != null && string.Equals(pending.InviterName, inviter.CharacterName, StringComparison.Ordinal)} expectedWorldMatch={inviter != null && pending.InviterWorldId == inviter.WorldId} departurePending={departureController != null}", "pending");
+        }
         if (departureController != null)
         {
             var departure = AdvanceParticipantDeparture();
@@ -340,7 +367,10 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             if (reassemblyAcceptancePending && !safeSolo)
                 return;
         }
-        if (!acceptance.ShouldAccept(invitation, partyContainsInviter, nowUtc))
+        var eligibility = acceptance.EvaluateAcceptance(invitation, partyContainsInviter, nowUtc);
+        if (configuration.DebugUiEnabled)
+            Diagnostics.Observe(nowUtc, $"acceptance request={activeParticipantRunId} decision={eligibility} partyContainsInviter={partyContainsInviter}", "eligibility");
+        if (eligibility != "eligible")
             return;
 
         var proxy = native == null ? InfoProxyPartyInvite.Instance() : null;
@@ -414,6 +444,8 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         }
 
         acceptance.RecordAttempt(invitation, nowUtc);
+        if (configuration.DebugUiEnabled)
+            Diagnostics.Record(nowUtc, $"respond request={expected.RunId} inviteTime={invitation.InviteTime} restored={restoreDispatched} nativeReturn={nativeResponded} directYes={directYes} membership=unproven");
         log.Information(
             "[dad] Native party acceptance request={RequestId} account={AccountKey} character={CharacterKey} contentId={ContentId} world={WorldId} worker={WorkerSessionId} inviteTime={InviteTime} restored={Restored} nativeResponded={NativeResponded} directYes={DirectYes} partyList={PartyListResult}.",
             expected.RunId,
@@ -430,7 +462,18 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     }
 
     public void Reset()
+        => ResetCore(preserveComparison: false);
+
+    // Admission resets the normal invite state before the first assembly tick. Preserve only
+    // an explicitly armed comparison for that exact newly admitted request, never on cleanup.
+    internal void ResetForRun(string runId)
+        => ResetCore(preserveComparison: Diagnostics.Active &&
+            string.Equals(Diagnostics.RunId, runId, StringComparison.Ordinal));
+
+    private void ResetCore(bool preserveComparison)
     {
+        if (!preserveComparison)
+            Diagnostics.Finish(DadClock.UtcNow, "Gateway reset; comparison policy revoked.");
         inviteAttempts.Clear();
         acceptance.Clear();
         activeParticipantRunId = string.Empty;
@@ -650,6 +693,12 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
            !condition[ConditionFlag.InCombat] &&
            !condition[ConditionFlag.Casting] &&
            !condition[ConditionFlag.TradeOpen];
+
+    internal bool IsInviteTestSafe()
+        => IsWorldStable() &&
+           !condition[ConditionFlag.BoundByDuty] && !condition[ConditionFlag.BoundByDuty56] &&
+           !condition[ConditionFlag.InDutyQueue] && !condition[ConditionFlag.WaitingForDuty] &&
+           !condition[ConditionFlag.WaitingForDutyFinder];
 
     private static DadPendingPartyInvitation ReadPendingInvitation(InfoProxyPartyInvite* proxy)
         => proxy == null

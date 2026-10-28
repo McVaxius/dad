@@ -212,7 +212,7 @@ public sealed partial class Plugin : IDalamudPlugin
     private IReadOnlyList<DadLevelingJobDescriptor>? levelingJobCatalog;
     private bool standaloneCrewDisbandActive;
     private string standaloneCrewDisbandSummary = "No standalone disband is active.";
-    private const string LocalNpcProjectionBuildMarker = "lp-duty-exit-retry-20261019-07";
+    private const string LocalNpcProjectionBuildMarker = "invite-diagnostics-20261028-02";
     private readonly DateTime pluginLoadedAtUtc = DateTime.UtcNow;
 
     private sealed class DebouncedUiWrite
@@ -4918,6 +4918,8 @@ public sealed partial class Plugin : IDalamudPlugin
     public void SetDebugUiEnabled(bool enabled)
     {
         Configuration.DebugUiEnabled = enabled;
+        if (!enabled)
+            StopInviteDiagnostics("Debug mode disabled.");
         Configuration.Save();
         setupWizardWindow.OnDebugUiChanged();
         InvalidatePlannerPreviewCache("debug UI changed");
@@ -5364,6 +5366,13 @@ public sealed partial class Plugin : IDalamudPlugin
             return;
         }
 
+        if (trimmed.Equals("test invites", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("test invites ", StringComparison.OrdinalIgnoreCase))
+        {
+            RunInviteDiagnosticsCommand(trimmed["test invites".Length..]);
+            return;
+        }
+
         if (trimmed.Equals("test profiles", StringComparison.OrdinalIgnoreCase))
         {
             RunProfileDiagnosticsFromShell();
@@ -5799,6 +5808,11 @@ public sealed partial class Plugin : IDalamudPlugin
                 "```",
             };
 
+            lines.Add("## Invite comparison and local receiver timeline (bounded; UTC)");
+            lines.Add("Native return does not prove delivery or membership. Recipient numbers follow the selected test order; normal sends retain slot labels. Receiver names/Content IDs are not recorded.");
+            lines.Add("```text");
+            lines.Add(PartyInviteGateway.Diagnostics.Report());
+            lines.Add("```");
             var anonymized = DadIssueReport.Anonymize(string.Join("\n", lines), DadIssueReport.BuildAnonymizationMap(pool, Configuration, PresenceService));
             var path = Path.Combine(PluginInterface.ConfigDirectory.FullName, $"dad-issue-report-{DateTime.UtcNow:yyyyMMdd-HHmmss}.md");
             File.WriteAllText(path, anonymized);
@@ -5925,7 +5939,7 @@ public sealed partial class Plugin : IDalamudPlugin
         ["SchedulerUpdate"] = () => DadRuntimeHandlers.UpdateScheduler(Configuration, SchedulerService,
             RunCoordinatorService, standaloneCrewDisbandActive, () => GetVisibleRunState().VisibleRun,
             ResolvePlannerGroup, BuildSchedulerPlannerPreview, StartScheduledPlannerRequest),
-        ["Coordinator"] = () => { RunCoordinatorService.Update(); UpdateGatherPreview(); },
+        ["Coordinator"] = () => { UpdateInviteDiagnostics(); RunCoordinatorService.Update(); UpdateGatherPreview(); },
         ["AutoPartyRuntimeBindings"] = ReconcileAutoPartyRuntimeBindings,
         ["CrewToolsDisband"] = UpdateStandaloneCrewDisband,
         ["CompletionActions"] = () => DadCompletionActionRunner.Update(Configuration, Log),

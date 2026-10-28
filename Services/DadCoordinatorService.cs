@@ -501,7 +501,7 @@ public sealed partial class DadCoordinatorService
         workerReadinessWaits.Clear();
         groupReadyFrenRiderActivatedSlots.Clear();
         finalizationCancellationScopeOverride = null;
-        partyInviteGateway.Reset();
+        partyInviteGateway.ResetForRun(plan.Request.RequestId);
         partyTeardownService.Reset();
         successfulPartyBoundarySettled = false;
         activePartyTeardownInstructions = [];

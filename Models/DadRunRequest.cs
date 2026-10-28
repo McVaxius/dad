@@ -226,7 +226,13 @@ public sealed class DadRunRequest
         Orchestration.PreferredLeaderCharacterKey = new DadCharacterKey((Orchestration.PreferredLeaderCharacterKey.Value ?? string.Empty).Trim());
         Orchestration.AutoPartyProposalId = (Orchestration.AutoPartyProposalId ?? string.Empty).Trim();
 
-        if (Orchestration.ModuleTarget == DadModuleId.None)
+        // A formation-only request may retain the selected preset's task payload for
+        // previewing. It must still use the same None module as its coordinator plan.
+        if (Orchestration.AutoPartyFormationOnly)
+        {
+            Orchestration.ModuleTarget = DadModuleId.None;
+        }
+        else if (Orchestration.ModuleTarget == DadModuleId.None)
         {
             Orchestration.ModuleTarget = GetConfiguredTaskCount() switch
             {
