@@ -459,6 +459,7 @@ public sealed class DadPartyInvitationAcceptanceTracker
     // Native InviteTime is an opaque invitation identity, not a sequence number:
     // different invitation kinds can expose different future deadlines.
     private readonly HashSet<uint> confirmedInvitationTimes = [];
+    private readonly HashSet<uint> unconfirmedInvitationTimes = [];
 
     public int AttemptCount { get; private set; }
 
@@ -479,6 +480,7 @@ public sealed class DadPartyInvitationAcceptanceTracker
         firstRealAttemptAtUtc = null;
         partyConfirmed = false;
         confirmedInvitationTimes.Clear();
+        unconfirmedInvitationTimes.Clear();
         AttemptCount = 0;
     }
 
@@ -547,6 +549,8 @@ public sealed class DadPartyInvitationAcceptanceTracker
         AttemptCount++;
         firstRealAttemptAtUtc ??= EnsureUtc(attemptedAtUtc);
         lastAttemptedInvitation = invitation;
+        if (invitation.IsPresent)
+            unconfirmedInvitationTimes.Add(invitation.InviteTime);
         nextAttemptAtUtc = EnsureUtc(attemptedAtUtc) + RetryInterval;
     }
 
@@ -601,8 +605,10 @@ public sealed class DadPartyInvitationAcceptanceTracker
             return false;
 
         partyConfirmed = true;
-        if (lastAttemptedInvitation.IsPresent)
-            confirmedInvitationTimes.Add(lastAttemptedInvitation.InviteTime);
+        // Membership can arrive after multiple responses. Retire every identity from
+        // that assembly, while allowing normal cadence retries before confirmation.
+        confirmedInvitationTimes.UnionWith(unconfirmedInvitationTimes);
+        unconfirmedInvitationTimes.Clear();
         if (expectedInviter != null && invitation.IsPresent &&
             string.Equals(invitation.InviterName, expectedInviter.CharacterName, StringComparison.Ordinal) &&
             invitation.InviterWorldId == expectedInviter.WorldId)
@@ -622,6 +628,7 @@ public sealed class DadPartyInvitationAcceptanceTracker
         firstRealAttemptAtUtc = null;
         partyConfirmed = false;
         confirmedInvitationTimes.Clear();
+        unconfirmedInvitationTimes.Clear();
         AttemptCount = 0;
     }
 

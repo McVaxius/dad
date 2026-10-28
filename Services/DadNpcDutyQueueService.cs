@@ -410,8 +410,9 @@ public sealed partial class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQue
             if (!native.AgentAvailable(content.Mode) || !native.AddonReady(content.Mode))
             {
                 var now = DadClock.UtcNow;
-                if (dutySupportWindowWaitStartedUtc == null || now < dutySupportWindowWaitStartedUtc.Value)
-                    dutySupportWindowWaitStartedUtc = now;
+                if (dutySupportWindowWaitStartedUtc is { } started && now < started)
+                    return Failed(content, "Duty Support window initialization stopped because the clock moved backwards.");
+                dutySupportWindowWaitStartedUtc ??= now;
                 if (now - dutySupportWindowWaitStartedUtc.Value >= DutySupportWindowTimeout)
                     return Failed(content, "Duty Support window initialization timed out after 30 seconds; native agent data or the ready window is still unavailable.");
 

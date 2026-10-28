@@ -1,3 +1,9 @@
+2026-10-28 - 2.0.1.0 - Reviewed party and Duty Support recovery (PR #10)
+
+- Retain every invitation identity responded to before membership confirmation, so earlier responses cannot be replayed during same-run reassembly. Preserve cadence retries until confirmation.
+- Fail Duty Support initialization safely when the clock moves backwards, without refreshing the wait budget or opening the window again.
+- Add regression coverage for multiple pre-confirmation invitation identities in either order and initialization clock rollback.
+
 2026-10-28 - Debug invite comparisons and formation assignment consistency
 
 - Add opt-in mixed, cross-world, serial and reverse invite comparisons for an exact already-online regular crew. Hold at GroupReady without queuing a duty, retain native identity and safety guards, and revoke the request-scoped policy on stop, reset, debug disable or timeout.

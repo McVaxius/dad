@@ -143,6 +143,39 @@ public sealed class DadPartyInviteReassemblyRuntimeTests
         Assert.Equal(2, f.Accepts);
     }
 
+    [Theory]
+    [InlineData(100u, 102u)]
+    [InlineData(102u, 100u)]
+    public void EveryRespondedIdentityBeforeMembershipIsConsumedOnConfirmation(uint first, uint second)
+    {
+        using var f = new Fixture();
+        Assert.False(f.Arm());
+        f.Invite(first);
+        f.Pulse();
+        f.Invite(second);
+        f.Pulse();
+        Assert.Equal(2, f.Accepts);
+        f.SetMembers(100, 200);
+        f.Pulse();
+        Assert.True(f.Arm());
+
+        f.DisbandWithInvitation(first);
+        f.Pulse();
+        f.ObserveSoloForTwoSeconds();
+        Assert.False(f.Arm());
+        f.Pulse();
+        Assert.Equal(2, f.Accepts);
+
+        f.Invite(103);
+        Assert.False(f.Arm());
+        f.Invite(first); // Also reject replay after a fresh invitation reopens acceptance.
+        f.Pulse();
+        Assert.Equal(2, f.Accepts);
+        f.Invite(103);
+        f.Pulse();
+        Assert.Equal(3, f.Accepts);
+    }
+
     [Fact]
     public void FreshLowerIdentityStillRequiresExplicitAssemblyAuthorization()
     {

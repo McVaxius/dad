@@ -83,6 +83,20 @@ public sealed class DadNpcStartupRecoveryRuntimeTests
         Assert.Equal(0, f.Registers);
     }
 
+    [Fact]
+    public void InitializationClockRollbackFailsWithoutRefreshingBudgetOrOpeningAgain()
+    {
+        using var f = new QueueFixture();
+        Assert.True(f.Pulse().IsActive);
+        Set(f.Queue, "dutySupportWindowWaitStartedUtc", DateTime.UtcNow.AddMinutes(1));
+        Set(f.Queue, "nextOpenAttemptUtc", DateTime.MinValue);
+        var pulse = f.Pulse();
+        Assert.Equal(S.DadNpcDutyQueuePulseKind.Failed, pulse.Kind);
+        Assert.Contains("clock", pulse.FailureReason, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, f.Opens);
+        Assert.Equal(0, f.Registers);
+    }
+
     [Theory]
     [InlineData(M.DadPlannerActivityMode.DutySupport, false)]
     [InlineData(M.DadPlannerActivityMode.DutySupport, true)]
