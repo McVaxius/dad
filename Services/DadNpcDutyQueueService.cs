@@ -74,6 +74,7 @@ public sealed class DadNpcDutyQueuePulse
 public sealed partial class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQueueGateway
 {
     private static readonly TimeSpan OpenThrottle = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DutySupportWindowTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan SelectThrottle = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan RegisterThrottle = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ConfirmThrottle = TimeSpan.FromSeconds(1);
@@ -82,6 +83,7 @@ public sealed partial class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQue
     private readonly IDadDutyFinderNativeAccess game;
     private readonly IDadNpcDutyNativeAccess native;
     private DateTime nextOpenAttemptUtc = DateTime.MinValue;
+    private DateTime? dutySupportWindowWaitStartedUtc;
     private DateTime nextSelectAttemptUtc = DateTime.MinValue;
     private DateTime nextRegisterAttemptUtc = DateTime.MinValue;
     private DateTime nextConfirmAttemptUtc = DateTime.MinValue;
@@ -403,11 +405,17 @@ public sealed partial class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQue
     {
         try
         {
-            if (!native.AgentAvailable(DadNpcDutyQueueMode.DutySupport))
-                return Failed(content, "AgentDawnStory is unavailable.");
-
-            if (!native.AddonReady(content.Mode))
+            // DawnStory.Data is allocated lazily. Opening the UI must precede requiring that data.
+            // Short-circuit the readiness probe so an absent agent can never be dereferenced.
+            if (!native.AgentAvailable(content.Mode) || !native.AddonReady(content.Mode))
             {
+                var now = DadClock.UtcNow;
+                if (dutySupportWindowWaitStartedUtc is { } started && now < started)
+                    return Failed(content, "Duty Support window initialization stopped because the clock moved backwards.");
+                dutySupportWindowWaitStartedUtc ??= now;
+                if (now - dutySupportWindowWaitStartedUtc.Value >= DutySupportWindowTimeout)
+                    return Failed(content, "Duty Support window initialization timed out after 30 seconds; native agent data or the ready window is still unavailable.");
+
                 if (!native.MainCommandEnabled(content.Mode))
                     return Active(content, DadNpcDutyQueuePulseKind.Waiting, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, "Waiting for Duty Support main command to become available.", "Duty Support main command is unavailable.");
 
@@ -420,6 +428,7 @@ public sealed partial class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQue
                 return Active(content, DadNpcDutyQueuePulseKind.OpenedDutySupport, DadRunPhase.QueuePreparing, DadParticipantState.QueuePending, $"Opening Duty Support for {content.DutyName}.");
             }
 
+            dutySupportWindowWaitStartedUtc = null;
             if (native.ExpansionCount(content.Mode) <= content.ExVersion)
                 return Failed(content, $"{content.DutyName} requires expansion row {content.ExVersion}, but Duty Support does not report that expansion unlocked.");
 
@@ -705,6 +714,7 @@ public sealed partial class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQue
     {
         activeMode = mode;
         nextOpenAttemptUtc = DateTime.MinValue;
+        dutySupportWindowWaitStartedUtc = null;
         nextSelectAttemptUtc = DateTime.MinValue;
         nextRegisterAttemptUtc = DateTime.MinValue;
         nextConfirmAttemptUtc = DateTime.MinValue;
@@ -723,6 +733,7 @@ public sealed partial class DadNpcDutyQueueService : IDisposable, IDadNpcDutyQue
     {
         queueOwnership.Release();
         nextOpenAttemptUtc = DateTime.MinValue;
+        dutySupportWindowWaitStartedUtc = null;
         nextSelectAttemptUtc = DateTime.MinValue;
         nextRegisterAttemptUtc = DateTime.MinValue;
         nextConfirmAttemptUtc = DateTime.MinValue;

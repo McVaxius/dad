@@ -1,9 +1,55 @@
 # DAD
 
+### Manual invite timing comparison (debug only)
+
+Enable `/dad debug on` on every crew client, select a saved regular-party preset on its Slot1 coordinator,
+and leave every selected character online, ready and solo, outside duties/queues. Stop schedules first.
+The comparison uses the existing authenticated **Crew Formation** path and holds at **GroupReady**;
+it never queues a dungeon. It rejects offline/registered-island/alliance rosters and does not persist
+the test policy or change the saved preset. Requested jobs and character-load instructions are disabled
+on the runtime copy for this timing comparison.
+Formation-only requests keep module `None` through preparation and coordinator admission even when
+the saved preset carries a roulette/dungeon task. Runtime cloning restores the formation flag before
+normalization. The invite comparison also clears requested jobs from resolved preview rows, so scheduler
+binding cannot restore them; ordinary presets retain their job preparation and task module behavior.
+
+- `/dad test invites mixed`: unchanged alternating same-world/cross-world baseline, normal slot order.
+- `/dad test invites cross`: cross-world Content ID only, normal parallel slot order.
+- `/dad test invites serial`: cross-world only, one recipient at a time in Slot2→SlotN order.
+- `/dad test invites reverse`: the same sequential test in SlotN→Slot2 order.
+- `/dad test invites status`: local result; `/dad report` includes the bounded UTC timeline.
+- `/dad test invites stop`: revoke the comparison and cancel only its exact owned formation using existing cleanup.
+
+Each sequential step waits for authoritative membership, not a successful native return. Runs are capped
+at 120 seconds including preparation; debug/plugin disable, reset and cancellation revoke their request-scoped
+policy. After a successful test use `stop`, wait for cleanup and all members to be solo, then start the next mode.
+No automatic cycling or fresh run occurs on reload. Existing identity, invitation freshness, prompt ownership
+and five-second retry guards remain in force. Normal runs retain their original invite strategy.
+
+Debug-enabled clients passively keep up to 256 in-memory invite events (no new disk logger). Reports distinguish
+native send return, receiver invitation visibility/eligibility, response attempts and confirmed membership.
+Native success is **not** proof of delivery. Export `/dad report` separately on the sender and receivers to compare
+the same request IDs and UTC timestamps; no new automatic report collection or clock synchronization is provided.
+Names and Content IDs are omitted from this new timeline; recipient numbers follow the chosen test order.
+Real game/server cooldown behavior still requires a manual in-game comparison.
+
 Window appearance offers **Auto / Picker / LCARS / Glassmorphism / Spatial / Cyberpunk** across Main, Mini, Settings and support windows. Picker and each new material keep independent Background, Controls and Text colours, with individual and palette resets. LCARS has separate background and three bar colours; its UI tones start muted, with one saved mute choice shared by Settings and LCARS titlebar speakers. Glass animation starts enabled, with a numeric speed control and three independently editable wave colours; wave editing also works with animation off.
 
 DAD is a duty planner and multibox coordinator for FFXIV. Build reusable crews, ready the right characters,
 assemble and verify parties, queue supported duties and roulettes, and chain proven presets into schedules.
+
+Party recovery preserves the frozen run and inviter. If assembly is interrupted by a disband, another validated
+JoinParty instruction can reopen acceptance after sustained safe solo proof; passive party loss does not.
+Native InviteTime values identify invitations rather than order them, so a shorter invitation lifetime cannot
+stall a new invitation behind an earlier larger value. Consumed invitation identities remain blocked, and
+bounded `Party reassembly wait` logs expose the actual blocker. During teardown, missing runtime identity waits
+up to 60 seconds without party actions; contradictory identity or timeout still fails closed.
+
+Cold Duty Support starts open the native window before requiring initialized agent data. Opens are throttled
+and initialization is bounded to 30 seconds. Saved Wake/relog NPC presets may prepare the exact offline character
+when requested-job levels are unknown; fresh job and duty-level checks still precede execution. Explicit zero
+or insufficient levels, invalid/limited jobs, ambiguous identities and Already-online-only policies remain
+blocking. Proven offline LevelSeek targets still skip before logging in.
 
 Saved presets and schedules have **Member shopping & final commands** rows. Each exact member can have an optional ADS list, an independent final slash command, or both. Empty choices are off. **Apply this row to all members** copies the choices to the displayed rows; each row retains its own identity and shopping credits. The shopping wizard also updates one member without replacing the others.
 

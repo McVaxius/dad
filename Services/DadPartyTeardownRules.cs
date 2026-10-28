@@ -123,13 +123,20 @@ public sealed class DadPartyTeardownController
                                      observation.LocalContentId != 0 &&
                                      (actualMembers.Count == 0 ||
                                       (actualMembers.Count == 1 && actualMembers.Contains(observation.LocalContentId)));
-        if (observation.LocalContentId == 0 ||
-            expectedLocalContentId == 0 ||
-            observation.LocalContentId != expectedLocalContentId)
+        if (expectedLocalContentId == 0 ||
+            (observation.LocalContentId != 0 && observation.LocalContentId != expectedLocalContentId))
         {
             return new DadPartyTeardownDecision(
                 DadPartyTeardownAction.Fail,
                 "The local character no longer matches the exact frozen teardown identity.");
+        }
+
+        if (observation.LocalContentId == 0)
+        {
+            soloConfirmedSinceUtc = null;
+            return observation.NowUtc < startedAtUtc || observation.NowUtc - startedAtUtc >= Timeout
+                ? new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, "Party teardown timed out waiting for readable native character identity.")
+                : new DadPartyTeardownDecision(DadPartyTeardownAction.None, "Waiting for readable native character identity before party teardown.");
         }
 
         if (mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader &&

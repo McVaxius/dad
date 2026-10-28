@@ -141,6 +141,22 @@ Local-only runs stay on one DAD instance. Multibox runs use one **Coordinator Da
 
 Clients on the same machine can use loopback transport. LAN setups require the same DAD build on every client and a matching shared secret.
 
+### Party recovery boundaries
+
+During assembly, a follower that joined and then lost its party can rejoin the same run only after another
+validated `JoinParty` instruction for the unchanged frozen inviter. Require one continuously observed second
+of exact original-character solo state outside duties, queues and unsafe world conditions. Passive party loss
+does not authorize rejoining. A native invitation must match the frozen name/world and have an identity not
+already consumed by this run. Native `InviteTime` is not an increasing sequence: different invitation lifetimes
+can produce smaller values for later invitations. Observation gaps reset solo proof; safety is checked again
+before accepting. `Party reassembly wait` diagnostics report concrete blockers at bounded intervals.
+
+During managed teardown, temporarily unreadable character or Content ID evidence waits up to 60 seconds without
+party actions or successful solo acknowledgement. Keep the original authenticated authority, worker, slot,
+account and character frozen. Readable contradictions, changed instructions, clock rollback and timeout fail
+closed. Restored identity must pass ordinary live/native checks. Cancel/reset clears the wait; this recovery
+does not log in clients or replay a completed dungeon.
+
 ## How A Run Works
 
 1. You select a saved preset and choose **Recheck readiness (does not run)**.

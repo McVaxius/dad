@@ -6,6 +6,33 @@ namespace dad.Tests;
 public sealed class DadPartyTeardownRulesTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TemporarilyUnreadableNativeIdentityWaitsWithoutSpendingCommands(bool leader)
+    {
+        var now = DateTime.UtcNow;
+        var controller = leader
+            ? new DadPartyTeardownController([1UL, 2UL], 1, now, false, "")
+            : FollowerController(now);
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now, local: 0)).Action);
+        Assert.Equal(0, controller.CommandAttempts);
+        Assert.Equal(DadPartyTeardownAction.SendBreakup,
+            controller.Pulse(Observation(now.AddSeconds(2), local: leader ? 1UL : 2UL)).Action);
+    }
+
+    [Fact]
+    public void UnreadableNativeIdentityHasABoundedDeadlineAndCannotUseSoloProof()
+    {
+        var now = DateTime.UtcNow;
+        var controller = FollowerController(now);
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now, local: 0, members: [])).Action);
+        var result = controller.Pulse(Observation(now.AddSeconds(60), local: 0, members: []));
+        Assert.Equal(DadPartyTeardownAction.Fail, result.Action);
+        Assert.Contains("timed out", result.Summary);
+        Assert.Equal(0, controller.CommandAttempts);
+    }
+
+    [Theory]
     [InlineData(DadPartyTeardownMutationMode.DisbandAsLeader, false)]
     [InlineData(DadPartyTeardownMutationMode.DisbandAsLeader, true)]
     [InlineData(DadPartyTeardownMutationMode.LeaveAsFollower, false)]

@@ -624,16 +624,18 @@ public sealed class DadPresetProviderService
             ? BuildGroupSlotAssignments(availableCharacters, effectiveSelectedGroup, lane)
             : BuildSlotAssignments(availableCharacters, lane, requestedPartySize);
         var stopPolicy = BuildResolvedStopPolicy(options.StopPolicy, selectedCharacters, availableCharacters);
-        var stopPolicyBlockers = BuildStopPolicyBlockers(stopPolicy, selectedCharacters, availableCharacters);
+        var stopPolicyBlockers = BuildStopPolicyBlockers(stopPolicy, selectedCharacters, availableCharacters, effectiveSelectedGroup);
         var groupBlockers = BuildPlannerGroupBlockers(
             effectiveSelectedGroup,
             selectedCharacters,
-            availableCharacters);
+            availableCharacters,
+            out var requestedJobReadinessBlockers);
         var localNpcEligibilityBlockers = BuildLocalNpcEligibilityBlockers(
             options.ActivityMode,
             selectedDuty,
             selectedCharacters,
-            availableCharacters);
+            availableCharacters,
+            effectiveSelectedGroup);
         var leaderSlot = selectedCharacters.FirstOrDefault(static slot => DadPlannerSlotRules.IsLeaderSlot(slot.SlotId));
         var leaderCandidate = leaderSlot == null || string.IsNullOrWhiteSpace(leaderSlot.CharacterKey)
             ? null
@@ -693,6 +695,7 @@ public sealed class DadPresetProviderService
         runOnlyBlockers.AddRange(localNpcEligibilityBlockers);
         staticBlockers.AddRange(wakeValidation.StaticBlockers);
         readinessBlockers.AddRange(slot1Blockers.Where(IsLiveReadinessBlocker));
+        readinessBlockers.AddRange(requestedJobReadinessBlockers);
         readinessBlockers.AddRange(wakeValidation.ReadinessBlockers);
         var validation = DadCrewToolsRules.EvaluateFormationAdmission(
             formationOnly,
@@ -1787,7 +1790,8 @@ public sealed class DadPresetProviderService
     private static List<string> BuildStopPolicyBlockers(
         DadRunStopPolicy stopPolicy,
         IReadOnlyList<DadPresetCharacterSlot> selectedSlots,
-        IReadOnlyList<DadAcquiredCharacter> availableCharacters)
+        IReadOnlyList<DadAcquiredCharacter> availableCharacters,
+        DadPlannerGroup? selectedGroup)
     {
         stopPolicy.Normalize();
         if (stopPolicy.Mode != DadPlannerStopMode.TargetLevel)
@@ -1827,6 +1831,11 @@ public sealed class DadPresetProviderService
             return blockers;
         }
 
+        var targetSlot = selectedSlots.FirstOrDefault(slot =>
+            string.Equals(slot.CharacterKey, targetKey, StringComparison.OrdinalIgnoreCase));
+        if (targetSlot != null && ShouldDeferNpcRequestedJobEvidence(selectedGroup, targetSlot, availableCharacters))
+            return blockers; // The same requested-job readiness wait owns the unknown target-level evidence.
+
         var currentLevel = DadRosterCharacterMerge.ResolveCurrentLevel(
             targetCharacter.JobLevels,
             targetCharacter.CurrentJobId,
@@ -1847,7 +1856,8 @@ public sealed class DadPresetProviderService
         DadPlannerActivityMode activityMode,
         DadPlannerDutyOption? selectedDuty,
         IReadOnlyList<DadPresetCharacterSlot> selectedSlots,
-        IReadOnlyList<DadAcquiredCharacter> availableCharacters)
+        IReadOnlyList<DadAcquiredCharacter> availableCharacters,
+        DadPlannerGroup? selectedGroup)
     {
         if (!IsLocalNpcLane(activityMode) || selectedDuty == null)
             return [];
@@ -1857,8 +1867,11 @@ public sealed class DadPresetProviderService
         if (selectedSlot == null)
             return [];
 
+        if (ShouldDeferNpcRequestedJobEvidence(selectedGroup, selectedSlot, availableCharacters))
+            return []; // The exact character must be woken and its requested job freshly verified first.
+
         var character = availableCharacters.FirstOrDefault(candidate =>
-            string.Equals(candidate.CharacterKey, selectedSlot.CharacterKey, StringComparison.OrdinalIgnoreCase));
+            MatchesSelectedSlot(candidate, selectedSlot));
         if (character == null)
             return [];
 
@@ -2928,8 +2941,10 @@ public sealed class DadPresetProviderService
     private static List<string> BuildPlannerGroupBlockers(
         DadPlannerGroup? selectedGroup,
         IReadOnlyList<DadPresetCharacterSlot> selectedSlots,
-        IReadOnlyList<DadAcquiredCharacter> availableCharacters)
+        IReadOnlyList<DadAcquiredCharacter> availableCharacters,
+        out List<string> requestedJobReadinessBlockers)
     {
+        requestedJobReadinessBlockers = [];
         if (selectedGroup == null)
             return [];
 
@@ -2969,6 +2984,12 @@ public sealed class DadPresetProviderService
                 : !slot.RequiredCharacterKey.IsEmpty
                     ? slot.RequiredCharacterKey.Value
                     : "unresolved character";
+            if (ShouldDeferNpcRequestedJobEvidence(selectedGroup, slot, availableCharacters))
+            {
+                requestedJobReadinessBlockers.Add(
+                    $"Slot {slot.SlotId} requested job #{requiredJobId} for '{characterLabel}' has unknown offline level data; wake the exact character and verify its job and level before starting.");
+                continue;
+            }
             var blocker = DadPlannerRequestedJobValidationRules.Validate(slot, availableCharacters) switch
             {
                 DadPlannerRequestedJobValidationFailure.None => string.Empty,
@@ -2999,6 +3020,26 @@ public sealed class DadPresetProviderService
         }
 
         return blockers;
+    }
+
+    private static bool ShouldDeferNpcRequestedJobEvidence(
+        DadPlannerGroup? selectedGroup,
+        DadPresetCharacterSlot slot,
+        IReadOnlyList<DadAcquiredCharacter> availableCharacters)
+    {
+        if (selectedGroup == null || !IsLocalNpcLane(selectedGroup.ActivityMode) ||
+            ResolveSelectedWakePolicy(selectedGroup, slot) != DadSchedulerWakePolicy.LaunchIfOffline ||
+            slot.RequiredJobId is not { } job || DadRosterCharacterMerge.IsLimitedJob(job) ||
+            DadPlannerRequestedJobValidationRules.Validate(slot, availableCharacters) != DadPlannerRequestedJobValidationFailure.JobUnavailable)
+            return false;
+
+        var exact = availableCharacters.Where(character => MatchesSelectedSlot(character, slot)).Take(2).ToList();
+        // Missing is not the same as an explicit zero/unlearned job. Never relax live validation,
+        // borrow another character's levels, or invent a roster/Content ID to authorize a wake.
+        return exact.Count == 1 &&
+               exact[0].Source == DadCharacterSource.XadbOnly &&
+               !exact[0].JobLevels.ContainsKey(job) &&
+               !(exact[0].CurrentJobId == job && exact[0].CurrentLevel.HasValue);
     }
 
     private List<string> BuildSharedIdentityBlockers(DadPlannerGroup? selectedGroup)

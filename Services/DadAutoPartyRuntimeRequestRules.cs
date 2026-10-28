@@ -10,7 +10,6 @@ internal static class DadAutoPartyRuntimeRequestRules
         source.ApplyOrchestrationDefaults();
         var clone = DadIpcJson.DeserializeRaw<DadRunRequest>(DadIpcJson.Serialize(source))
                     ?? throw new InvalidOperationException("Dad runtime request clone failed.");
-        clone.ApplyOrchestrationDefaults();
         CopyRuntimeIdentities(
             source.Orchestration.PreferredRosterCharacters,
             clone.Orchestration.PreferredRosterCharacters);
@@ -19,6 +18,8 @@ internal static class DadAutoPartyRuntimeRequestRules
             clone.Orchestration.RequiredRosterCharacters);
         clone.Orchestration.AutoPartyProposalId = source.Orchestration.AutoPartyProposalId;
         clone.Orchestration.AutoPartyFormationOnly = source.Orchestration.AutoPartyFormationOnly;
+        // Restore nonserialized formation identity before defaults infer a task module.
+        clone.ApplyOrchestrationDefaults();
         return clone;
     }
 
