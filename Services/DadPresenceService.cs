@@ -45,6 +45,8 @@ public sealed class DadPresenceService
     private DateTime nextOceTravelCapacityRefreshUtc = DateTime.MinValue;
     private string lastTravelTransition = string.Empty;
     private string partyTeardownRunId = string.Empty;
+    private DateTime? partyTeardownIdentityWaitStartedUtc;
+    private string partyTeardownIdentityWaitPayload = string.Empty;
     private string authenticatedAutoPartyRunId = string.Empty;
     private string authenticatedAutoPartySlotId = string.Empty;
     private bool requestedJobPreparationBypassesPostAr;
@@ -473,6 +475,10 @@ public sealed class DadPresenceService
             };
         }
 
+        var teardownIdentityWait = CheckPartyTeardownIdentityWait(instruction);
+        if (teardownIdentityWait != null)
+            return teardownIdentityWait;
+
         if (instruction.InstructionKind == DadAssemblyInstructionKind.ActivateFrenRider)
         {
             var authorityBlocker = ValidateFrozenPartyInstruction(instruction);
@@ -851,6 +857,11 @@ public sealed class DadPresenceService
         var decision = partyTeardownService.Update();
         var complete = decision.Action == DadPartyTeardownAction.Complete;
         var failed = decision.Action == DadPartyTeardownAction.Fail;
+        if (complete || failed)
+        {
+            partyTeardownIdentityWaitStartedUtc = null;
+            partyTeardownIdentityWaitPayload = string.Empty;
+        }
         CurrentParticipant.State = complete
             ? DadParticipantState.AssemblyConfirmed
             : failed
@@ -875,7 +886,73 @@ public sealed class DadPresenceService
         };
     }
 
-    private string ValidateFrozenPartyInstruction(DadAssemblyInstructionDto instruction)
+    // A loading/relog observation is not proof of a different character. Keep the
+    // original assignment and a bounded wait; never enter the native teardown
+    // service until runtime identity is readable and matches it again.
+    private DadRunStepResultDto? CheckPartyTeardownIdentityWait(DadAssemblyInstructionDto instruction)
+    {
+        if (instruction.InstructionKind is not (DadAssemblyInstructionKind.DisbandParty or DadAssemblyInstructionKind.LeaveParty))
+            return null;
+
+        var missingIdentity = CurrentParticipant.ActiveCharacterKey.IsEmpty || CurrentParticipant.Character.ContentId == 0;
+        if (!missingIdentity && partyTeardownIdentityWaitStartedUtc == null)
+            return null;
+
+        var leader = instruction.InstructionKind == DadAssemblyInstructionKind.DisbandParty;
+        var target = instruction.InviteTargets.FirstOrDefault(target =>
+            string.Equals(target.WorkerSessionId.Value, WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(target.SlotId, instruction.SlotId, StringComparison.OrdinalIgnoreCase));
+        var expectedAccount = leader ? instruction.FrozenInviter.AccountKey : target?.AccountKey ?? new(string.Empty);
+        var expectedCharacter = leader ? instruction.FrozenInviter.CharacterKey : target?.CharacterKey ?? new(string.Empty);
+        var expectedContentId = leader ? instruction.FrozenInviter.ContentId : target?.ContentId ?? 0;
+        var blocker = ValidateFrozenPartyInstruction(instruction, validateLiveCharacter: false);
+        if (string.IsNullOrWhiteSpace(blocker) &&
+            (currentAuthorityWorkerSessionId.IsEmpty || instruction.AuthorityWorkerSessionId.IsEmpty ||
+             !string.Equals(currentAuthorityWorkerSessionId.Value, instruction.AuthorityWorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) ||
+             !string.Equals(assignedSlotId, instruction.SlotId, StringComparison.OrdinalIgnoreCase) ||
+             expectedAccount.IsEmpty || expectedCharacter.IsEmpty || expectedContentId == 0 ||
+             !DadRosterIdentity.SameAccount(requiredAccountKey, expectedAccount) ||
+             !DadRosterIdentity.SameAccount(CurrentParticipant.ManagedAccountKey, expectedAccount) ||
+             requiredContentId != expectedContentId ||
+             !string.Equals(requiredCharacterKey.Value, expectedCharacter.Value, StringComparison.OrdinalIgnoreCase) ||
+             !string.Equals(instruction.RequiredCharacterKey.Value, expectedCharacter.Value, StringComparison.OrdinalIgnoreCase) ||
+             (!CurrentParticipant.ActiveCharacterKey.IsEmpty &&
+              !string.Equals(CurrentParticipant.ActiveCharacterKey.Value, expectedCharacter.Value, StringComparison.OrdinalIgnoreCase)) ||
+             (CurrentParticipant.Character.ContentId != 0 && CurrentParticipant.Character.ContentId != expectedContentId)))
+            blocker = "Teardown identity wait contradicts the original frozen worker, authority, slot, account, character or Content ID.";
+
+        var payload = DadIpcJson.Serialize(instruction);
+        if (string.IsNullOrWhiteSpace(blocker) && partyTeardownIdentityWaitStartedUtc != null &&
+            !string.Equals(partyTeardownIdentityWaitPayload, payload, StringComparison.Ordinal))
+            blocker = "The frozen teardown instruction changed during its identity wait.";
+
+        var now = DadClock.UtcNow;
+        var timedOut = partyTeardownIdentityWaitStartedUtc is { } started &&
+                       (now < started || now - started >= DadPartyTeardownController.Timeout);
+        if (timedOut && string.IsNullOrWhiteSpace(blocker))
+            blocker = "Party teardown timed out waiting for the exact runtime character identity.";
+
+        if (string.IsNullOrWhiteSpace(blocker) && !missingIdentity)
+            return null; // The ordinary full live-identity/native checks still run.
+
+        var deferred = string.IsNullOrWhiteSpace(blocker);
+        if (deferred && partyTeardownIdentityWaitStartedUtc == null)
+        {
+            partyTeardownIdentityWaitStartedUtc = now;
+            partyTeardownIdentityWaitPayload = payload;
+        }
+        var summary = deferred ? "Waiting up to 60 seconds for the exact runtime character identity before party teardown." : blocker;
+        CurrentParticipant.State = deferred ? DadParticipantState.WaitingForRequiredCharacter : DadParticipantState.Failed;
+        CurrentParticipant.StatusText = summary;
+        return new DadRunStepResultDto
+        {
+            RunId = instruction.RunId, ModuleId = instruction.ModuleId, StepName = "PartyTeardown",
+            ParticipantState = CurrentParticipant.State, Deferred = deferred, TimedOut = timedOut,
+            Summary = summary, BlockedReason = summary, FailureReason = deferred ? string.Empty : summary,
+        };
+    }
+
+    private string ValidateFrozenPartyInstruction(DadAssemblyInstructionDto instruction, bool validateLiveCharacter = true)
     {
         var activation = instruction.InstructionKind == DadAssemblyInstructionKind.ActivateFrenRider;
         if (activation &&
@@ -964,11 +1041,11 @@ public sealed class DadPresenceService
                 return "Frozen Slot1 inviter does not match this group-ready worker session.";
             }
             if (!DadRosterIdentity.SameAccount(CurrentParticipant.ManagedAccountKey, inviter.AccountKey) ||
-                !DadRosterIdentity.SameCharacter(
+                (validateLiveCharacter && !DadRosterIdentity.SameCharacter(
                     CurrentParticipant.ActiveCharacterKey,
                     CurrentParticipant.Character.ContentId,
                     inviter.CharacterKey,
-                    inviter.ContentId))
+                    inviter.ContentId)))
             {
                 return "This worker no longer matches the exact frozen Slot1 inviter identity.";
             }
@@ -979,11 +1056,11 @@ public sealed class DadPresenceService
                 (!activation || string.Equals(target.SlotId, instruction.SlotId, StringComparison.OrdinalIgnoreCase)) &&
                 string.Equals(target.WorkerSessionId.Value, WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
                 DadRosterIdentity.SameAccount(target.AccountKey, CurrentParticipant.ManagedAccountKey) &&
-                DadRosterIdentity.SameCharacter(
+                (!validateLiveCharacter || DadRosterIdentity.SameCharacter(
                     target.CharacterKey,
                     target.ContentId,
                     CurrentParticipant.ActiveCharacterKey,
-                    CurrentParticipant.Character.ContentId)).ToList();
+                    CurrentParticipant.Character.ContentId))).ToList();
             if (localTargets.Count != 1)
                 return "This follower no longer matches exactly one frozen Slot1 invite target.";
         }
@@ -1787,6 +1864,8 @@ public sealed class DadPresenceService
         partyInviteGateway.Reset();
         partyTeardownService.Reset();
         partyTeardownRunId = string.Empty;
+        partyTeardownIdentityWaitStartedUtc = null;
+        partyTeardownIdentityWaitPayload = string.Empty;
         ResetRequestedJobPreparation();
         ResetClientTravel();
         currentRunId = string.Empty;

@@ -28,6 +28,13 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     private string lastDepartureDiagnostic = string.Empty;
     private string departureFailure = string.Empty;
     private int approvedInvitationPromptAttempt;
+    private ulong acceptanceLocalContentId;
+    private DateTime? reassemblySoloSinceUtc;
+    private DateTime? lastReassemblyObservationUtc;
+    private bool reassemblyAcceptancePending;
+    private string lastReassemblyDiagnostic = string.Empty;
+    private DateTime nextReassemblyDiagnosticUtc = DateTime.MinValue;
+    private string reassemblySoloBlocker = string.Empty;
 
     public InfoProxyPartyInviteGateway(
         Configuration configuration,
@@ -60,6 +67,12 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             lastDepartureDiagnostic = string.Empty;
             departureFailure = string.Empty;
             approvedInvitationPromptAttempt = 0;
+            acceptanceLocalContentId = 0;
+            reassemblyAcceptancePending = false;
+            lastReassemblyDiagnostic = string.Empty;
+            nextReassemblyDiagnosticUtc = DateTime.MinValue;
+            reassemblySoloBlocker = string.Empty;
+            ResetReassemblyObservation();
         }
 
         acceptance.BeginRun(runId, ReadPendingInvitation());
@@ -80,6 +93,7 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         if (pendingExpectedInviter == null)
         {
             pendingExpectedInviter = inviter;
+            acceptanceLocalContentId = playerState.ContentId;
             var prompt = ReadSelectYesnoPrompt();
             departureController = new DadParticipantPartyDepartureController(
                 inviter.ContentId,
@@ -125,9 +139,26 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
 
         if (PartyListContains(inviter.ContentId))
         {
-            acceptance.ShouldAccept(default, partyListContainsExpectedContentId: true, DadClock.UtcNow);
+            reassemblyAcceptancePending = false;
+            ResetReassemblyObservation();
+            acceptance.ShouldAccept(ReadPendingInvitation(), partyListContainsExpectedContentId: true, DadClock.UtcNow);
             blocker = string.Empty;
             return true;
+        }
+
+        if (acceptance.RequiresReassembly)
+        {
+            if (!acceptance.TryRearmForAssembly(inviter, ReadPendingInvitation(),
+                    ObserveStableSoloForReassembly(DadClock.UtcNow), out blocker))
+            {
+                if (!string.IsNullOrEmpty(reassemblySoloBlocker))
+                    blocker += " " + reassemblySoloBlocker;
+                LogReassemblyWait(inviter, blocker, DadClock.UtcNow);
+                return false;
+            }
+            reassemblyAcceptancePending = true;
+            log.Information("[dad] Party invitation acceptance rearmed for same-run assembly request={RequestId} inviter={Inviter} worker={WorkerSessionId}.",
+                inviter.RunId, inviter.CharacterKey, inviter.WorkerSessionId);
         }
 
         blocker = acceptance.BuildRetryStatus(
@@ -296,6 +327,19 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         var partyContainsInviter = PartyListContains(expected.ContentId);
         var invitation = ReadPendingInvitation();
         var nowUtc = DadClock.UtcNow;
+        if (partyContainsInviter)
+        {
+            reassemblyAcceptancePending = false;
+            ResetReassemblyObservation();
+        }
+        else if (acceptance.RequiresReassembly || reassemblyAcceptancePending)
+        {
+            var safeSolo = ObserveStableSoloForReassembly(nowUtc); // Observation alone cannot rearm acceptance.
+            if (acceptance.RequiresReassembly)
+                LogReassemblyWait(expected, "Confirmed membership was lost; awaiting a validated JoinParty instruction to rearm acceptance. " + reassemblySoloBlocker, nowUtc);
+            if (reassemblyAcceptancePending && !safeSolo)
+                return;
+        }
         if (!acceptance.ShouldAccept(invitation, partyContainsInviter, nowUtc))
             return;
 
@@ -396,6 +440,59 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         lastDepartureDiagnostic = string.Empty;
         departureFailure = string.Empty;
         approvedInvitationPromptAttempt = 0;
+        acceptanceLocalContentId = 0;
+        reassemblyAcceptancePending = false;
+        lastReassemblyDiagnostic = string.Empty;
+        nextReassemblyDiagnosticUtc = DateTime.MinValue;
+        reassemblySoloBlocker = string.Empty;
+        ResetReassemblyObservation();
+    }
+
+    private bool ObserveStableSoloForReassembly(DateTime nowUtc)
+    {
+        var members = ReadAuthoritativePartyMembers();
+        var crossRealm = native?.Observe().CrossRealm ?? InfoProxyCrossRealm.IsCrossRealmParty();
+        var localContentId = playerState.ContentId;
+        if (acceptanceLocalContentId == 0 || localContentId != acceptanceLocalContentId || crossRealm ||
+            members.Count != 1 || members[0].ContentId != localContentId || !IsWorldStable() ||
+            condition[ConditionFlag.BoundByDuty] || condition[ConditionFlag.BoundByDuty56] ||
+            condition[ConditionFlag.InDutyQueue] || condition[ConditionFlag.WaitingForDuty] ||
+            condition[ConditionFlag.WaitingForDutyFinder])
+        {
+            ResetReassemblyObservation();
+            reassemblySoloBlocker = $"Solo proof unavailable: local={localContentId}, originalLocal={acceptanceLocalContentId}, crossRealm={crossRealm}, members={string.Join(',', members.Select(member => member.ContentId))}, worldStable={IsWorldStable()}, inDuty={condition[ConditionFlag.BoundByDuty] || condition[ConditionFlag.BoundByDuty56]}, queued={condition[ConditionFlag.InDutyQueue] || condition[ConditionFlag.WaitingForDuty] || condition[ConditionFlag.WaitingForDutyFinder]}.";
+            return false;
+        }
+
+        if (lastReassemblyObservationUtc is { } previous &&
+            (nowUtc < previous || nowUtc - previous > DadParticipantPartyDepartureController.SoloConfirmationInterval))
+            reassemblySoloSinceUtc = null;
+        lastReassemblyObservationUtc = nowUtc;
+        reassemblySoloSinceUtc ??= nowUtc;
+        var stable = nowUtc - reassemblySoloSinceUtc.Value >= DadParticipantPartyDepartureController.SoloConfirmationInterval;
+        reassemblySoloBlocker = stable ? string.Empty : "Solo proof is waiting for the continuous confirmation interval.";
+        return stable;
+    }
+
+    private void LogReassemblyWait(DadExpectedPartyInviter expected, string blocker, DateTime nowUtc)
+    {
+        // Bound diagnostics even when native observations or JoinParty retries oscillate.
+        if (nowUtc < nextReassemblyDiagnosticUtc)
+            return;
+        if (string.Equals(lastReassemblyDiagnostic, blocker, StringComparison.Ordinal))
+            nextReassemblyDiagnosticUtc = nowUtc.AddSeconds(30);
+        else
+            nextReassemblyDiagnosticUtc = nowUtc.AddSeconds(5);
+        lastReassemblyDiagnostic = blocker;
+        var invitation = ReadPendingInvitation();
+        log.Information("[dad] Party reassembly wait request={RequestId} inviter={Inviter} inviteTime={InviteTime} pendingName={PendingName} pendingWorld={PendingWorld} reason={Reason}",
+            expected.RunId, expected.CharacterKey, invitation.InviteTime, invitation.InviterName, invitation.InviterWorldId, blocker);
+    }
+
+    private void ResetReassemblyObservation()
+    {
+        reassemblySoloSinceUtc = null;
+        lastReassemblyObservationUtc = null;
     }
 
     public bool InviteSameWorld(ulong contentId, string exactCharacterName, ushort worldId)

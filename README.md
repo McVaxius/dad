@@ -5,6 +5,19 @@ Window appearance offers **Auto / Picker / LCARS / Glassmorphism / Spatial / Cyb
 DAD is a duty planner and multibox coordinator for FFXIV. Build reusable crews, ready the right characters,
 assemble and verify parties, queue supported duties and roulettes, and chain proven presets into schedules.
 
+Party recovery preserves the frozen run and inviter. If assembly is interrupted by a disband, another validated
+JoinParty instruction can reopen acceptance after sustained safe solo proof; passive party loss does not.
+Native InviteTime values identify invitations rather than order them, so a shorter invitation lifetime cannot
+stall a new invitation behind an earlier larger value. Consumed invitation identities remain blocked, and
+bounded `Party reassembly wait` logs expose the actual blocker. During teardown, missing runtime identity waits
+up to 60 seconds without party actions; contradictory identity or timeout still fails closed.
+
+Cold Duty Support starts open the native window before requiring initialized agent data. Opens are throttled
+and initialization is bounded to 30 seconds. Saved Wake/relog NPC presets may prepare the exact offline character
+when requested-job levels are unknown; fresh job and duty-level checks still precede execution. Explicit zero
+or insufficient levels, invalid/limited jobs, ambiguous identities and Already-online-only policies remain
+blocking. Proven offline LevelSeek targets still skip before logging in.
+
 Saved presets and schedules have **Member shopping & final commands** rows. Each exact member can have an optional ADS list, an independent final slash command, or both. Empty choices are off. **Apply this row to all members** copies the choices to the displayed rows; each row retains its own identity and shopping credits. The shopping wizard also updates one member without replacing the others.
 
 Final commands wait for the entire successful round and applicable shopping. A schedule waits for every preset entry and repeat. For a member appearing in several presets, the last nonblank preset command applies; a nonblank schedule command takes priority. Earlier members retain their captured client identity even if they are absent from the last preset. Global/preset completion actions also wait for that round boundary, with duplicate commands removed. Existing AutoRetainer delivery still follows verified shopping fulfillment.

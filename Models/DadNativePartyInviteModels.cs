@@ -455,10 +455,14 @@ public sealed class DadPartyInvitationAcceptanceTracker
     private DateTime nextAttemptAtUtc = DateTime.MinValue;
     private DateTime? firstRealAttemptAtUtc;
     private bool partyConfirmed;
+    // Native InviteTime is an opaque invitation identity, not a sequence number:
+    // different invitation kinds can expose different future deadlines.
+    private readonly HashSet<uint> confirmedInvitationTimes = [];
 
     public int AttemptCount { get; private set; }
 
     public DadExpectedPartyInviter? ExpectedInviter => expectedInviter;
+    public bool RequiresReassembly => partyConfirmed;
 
     public void BeginRun(string runId, DadPendingPartyInvitation baselineInvitation)
     {
@@ -473,6 +477,7 @@ public sealed class DadPartyInvitationAcceptanceTracker
         nextAttemptAtUtc = DateTime.MinValue;
         firstRealAttemptAtUtc = null;
         partyConfirmed = false;
+        confirmedInvitationTimes.Clear();
         AttemptCount = 0;
     }
 
@@ -507,11 +512,13 @@ public sealed class DadPartyInvitationAcceptanceTracker
     {
         if (partyListContainsExpectedContentId)
         {
-            ConfirmPartyMembership();
+            ConfirmPartyMembership(invitation);
             return false;
         }
 
         if (partyConfirmed || expectedInviter == null || !invitation.IsPresent)
+            return false;
+        if (confirmedInvitationTimes.Contains(invitation.InviteTime))
             return false;
         if (invitation == baseline)
             return false;
@@ -546,12 +553,52 @@ public sealed class DadPartyInvitationAcceptanceTracker
         return DadPartyInvitationRetryRules.BuildActive(expectedInviter);
     }
 
-    public bool ConfirmPartyMembership()
+    // Called only by a new, validated JoinParty instruction, never by passive party loss.
+    public bool TryRearmForAssembly(
+        DadExpectedPartyInviter inviter,
+        DadPendingPartyInvitation invitation,
+        bool hasStableSoloProof,
+        out string blocker)
+    {
+        blocker = !partyConfirmed || expectedInviter == null
+            ? "Party reassembly is not armed from a confirmed membership."
+            : !Same(activeRunId, inviter.RunId) || !SameExpectedInviter(expectedInviter, inviter)
+                ? "Party reassembly instruction does not match the frozen run and inviter identity."
+            : !hasStableSoloProof
+                ? "Party reassembly is waiting for stable solo proof on the original local character."
+            : !invitation.IsPresent
+                ? "Party reassembly is waiting for a native invitation."
+            : !string.Equals(invitation.InviterName, expectedInviter.CharacterName, StringComparison.Ordinal) ||
+              invitation.InviterWorldId != expectedInviter.WorldId
+                ? "Party reassembly invitation does not match the frozen inviter name and world."
+            : confirmedInvitationTimes.Count == 0
+                ? "Party reassembly has no previously confirmed invitation identity."
+            : invitation == baseline || confirmedInvitationTimes.Contains(invitation.InviteTime)
+                ? "Party reassembly is waiting for an invitation identity not already consumed by this run."
+            : string.Empty;
+        if (!string.IsNullOrEmpty(blocker))
+            return false;
+
+        // Retain attempt counts, retry cadence and the frozen inviter; only reopen this membership latch.
+        partyConfirmed = false;
+        blocker = string.Empty;
+        return true;
+    }
+
+    public bool ConfirmPartyMembership(DadPendingPartyInvitation invitation = default)
     {
         if (partyConfirmed)
             return false;
 
         partyConfirmed = true;
+        if (lastAttemptedInvitation.IsPresent)
+            confirmedInvitationTimes.Add(lastAttemptedInvitation.InviteTime);
+        if (expectedInviter != null && invitation.IsPresent &&
+            string.Equals(invitation.InviterName, expectedInviter.CharacterName, StringComparison.Ordinal) &&
+            invitation.InviterWorldId == expectedInviter.WorldId)
+        {
+            confirmedInvitationTimes.Add(invitation.InviteTime);
+        }
         return true;
     }
 
@@ -564,6 +611,7 @@ public sealed class DadPartyInvitationAcceptanceTracker
         nextAttemptAtUtc = DateTime.MinValue;
         firstRealAttemptAtUtc = null;
         partyConfirmed = false;
+        confirmedInvitationTimes.Clear();
         AttemptCount = 0;
     }
 

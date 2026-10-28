@@ -1,3 +1,10 @@
+2026-10-28 - Party recovery and cold Duty Support startup
+
+- Allow explicitly requested same-run party reassembly after a disband, retaining the exact inviter and stable solo proof. Treat native InviteTime as an opaque invitation identity instead of an increasing counter so shorter-lived invitations do not stall behind earlier deadlines; reject consumed identities and log bounded concrete wait reasons.
+- Defer managed teardown briefly when runtime character identity is unreadable. Keep the original assignment and a non-refreshing 60-second deadline; contradictions, instruction changes and timeout fail closed. Do not issue party actions or acknowledge cleanup while identity is missing.
+- Open Duty Support before requiring its lazily initialized native data, with throttled opens and a 30-second initialization limit. Let exact saved offline NPC characters with unknown requested-job levels reach Wake/relog preparation while retaining fresh job/duty-level validation and all explicit unlearned/underlevel checks.
+- Add production gateway/presence/startup regression coverage. No user preset migration or release version change.
+
 2026-10-26 - 2.0.0.10 - Restore translated Appearance captions
 
 - Restore accented grouped Appearance captions in French, Italian, Vietnamese, Polish and Turkish.
