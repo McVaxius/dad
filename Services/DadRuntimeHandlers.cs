@@ -4,6 +4,15 @@ namespace dad.Services;
 
 internal static class DadRuntimeHandlers
 {
+    internal static void UpdateWakeTakeover(Configuration configuration, DadSchedulerService scheduler,
+        DadTransportService transport, DadWakeTakeoverService wake)
+    {
+        if (!configuration.RunAsServerDad && !transport.CurrentTransport.AuthorityRoutable &&
+            !scheduler.OwnsLocalDutySupportTakeover(wake.GetActiveStatus()?.SchedulerRunId))
+            wake.OnCoordinatorDisconnected();
+        wake.Update();
+    }
+
     internal static void ConfigureScheduledRunCancellation(DadSchedulerService scheduler, DadCoordinatorService coordinator)
         => scheduler.ConfigureScheduledRunCancellation(runId =>
         {

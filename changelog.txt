@@ -1,3 +1,10 @@
+2026-10-29 - Stay on visited world between scheduled presets (I687)
+
+- Add an optional schedule choice, off by default, to retain the exact same-character Wake/relog takeover and AutoRetainer pause between presets. Preserve fresh identity/readiness checks and required home return before changing characters.
+- Release retained ownership through existing completion, cancellation, failure and skip cleanup. Preserve exact own-account Client authority through the preset boundary and include the choice in cloning, sharing and all fifteen translations.
+- Exercise the shared plugin/Headless wake guard and same-character, return, cancellation, Client, relog and skip lifecycle cases. Native game acceptance remains separate.
+- Local verification passed 407 focused units and all 149 virtual lifecycle scenarios with 2,809 assertions, including 271 assertions across the six new cases. Native observations, IPC, clock and storage remain simulated boundaries.
+
 2026-10-28 - 2.0.1.0 - Reviewed party and Duty Support recovery (PR #10)
 
 - Retain every invitation identity responded to before membership confirmation, so earlier responses cannot be replayed during same-run reassembly. Preserve cadence retries until confirmation.

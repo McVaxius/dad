@@ -162,7 +162,7 @@ public sealed class DadReliabilityIntegrationSourceContractTests
     }
 
     [Fact]
-    public void TerminalPlannerCleanupReleasesWakeOwnershipEvenWithoutEarlyAssignments()
+    public void TerminalPlannerCleanupSettlesWakeOwnershipEvenWithoutEarlyAssignments()
     {
         var source = ReadRepositorySource("Services", "DadSchedulerService.cs");
         var start = source.IndexOf("private void UpdateCompletedPlannerCleanup(", StringComparison.Ordinal);
@@ -172,8 +172,10 @@ public sealed class DadReliabilityIntegrationSourceContractTests
         Assert.DoesNotContain("frozenEarlyAssignments.Count == 0", cleanup);
         Assert.Contains("!visibleRun.IsTerminal", cleanup);
         Assert.Contains("visibleRun.RequestId, frozenPlannerRequest.RequestId", cleanup);
-        Assert.Contains("CancelNonTerminalTakeovers(reason);", cleanup);
-        Assert.True(cleanup.IndexOf("CancelNonTerminalTakeovers(reason);", StringComparison.Ordinal) <
+        const string settle = "CancelNonTerminalTakeovers(reason, retainVisitedWorld: visibleRun.Status == DadRunStatus.Completed);";
+        Assert.Contains(settle, cleanup);
+        Assert.Contains("bool retainVisitedWorld = false", source);
+        Assert.True(cleanup.IndexOf(settle, StringComparison.Ordinal) <
                     cleanup.IndexOf("frozenPlannerRequest = null;", StringComparison.Ordinal));
         Assert.Contains("CanStartNextQueuedJob(HasPendingCleanup)", source);
     }
@@ -196,7 +198,9 @@ public sealed class DadReliabilityIntegrationSourceContractTests
         Assert.Contains("DadLocalDutySupportRules.CanRunQueuedJob(", scheduler);
         Assert.Contains("if (!CanRunScheduleHere(schedule))", scheduler);
         Assert.Contains("HasLocalDutySupportSchedulerWork", handlers);
-        Assert.Contains("OwnsLocalDutySupportTakeover(WakeTakeoverService.GetActiveStatus()?.SchedulerRunId)", plugin);
+        Assert.Contains("DadRuntimeHandlers.UpdateWakeTakeover(", plugin);
+        Assert.Contains("DadRuntimeHandlers.UpdateWakeTakeover(", headless);
+        Assert.Contains("OwnsLocalDutySupportTakeover(wake.GetActiveStatus()?.SchedulerRunId)", handlers);
         Assert.Contains("currentState.SchedulerRunId, schedulerRunId", scheduler);
     }
 

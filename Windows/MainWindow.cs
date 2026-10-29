@@ -2359,6 +2359,17 @@ public sealed partial class MainWindow : Window, IDisposable
                 DrawScheduleTiming(activeRun, queue.RecentResults, snapshot.GeneratedAtUtc);
             }
 
+            var stayVisited = schedule.StayOnVisitedWorldBetweenPresets;
+            ImGui.BeginDisabled(activeScheduleLocked);
+            if (UiGui.Checkbox("Stay on visited world/DC between presets", ref stayVisited))
+            {
+                schedule.StayOnVisitedWorldBetweenPresets = stayVisited;
+                plugin.SchedulerService.UpdateSchedule(schedule);
+            }
+            ImGui.EndDisabled();
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                UiGui.SetTooltip("Keep the same character on the visited world/DC between presets. Changing characters still requires returning home. Restore AutoRetainer when the schedule ends, fails or is cancelled.");
+
             if (UiGui.CollapsingHeader("Cadence"))
             {
                 var dailyMode = schedule.Cadence == DadScheduleCadence.DailyReset;

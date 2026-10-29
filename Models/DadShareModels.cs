@@ -188,6 +188,7 @@ public sealed class DadShareScheduleDto
     public string ScheduleId { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
     public DadScheduleCadence Cadence { get; set; } = DadScheduleCadence.Manual;
+    public bool StayOnVisitedWorldBetweenPresets { get; set; }
     public DadShareShoppingAssociationDto? ShoppingAssociation { get; set; }
     public List<DadShareShoppingAssociationDto> ShoppingAssociations { get; set; } = [];
     public List<DadShareScheduleEntryDto> Entries { get; set; } = [];

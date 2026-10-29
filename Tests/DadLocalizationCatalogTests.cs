@@ -52,6 +52,7 @@ public sealed class DadLocalizationCatalogTests
         Assert.False(string.IsNullOrEmpty(localized[labels["Auto"]]));
         Assert.Contains("Picker", labels.Keys);
         Assert.Contains("Recover game connections automatically", labels.Keys);
+        Assert.Contains("Stay on visited world/DC between presets", labels.Keys);
     }
 
     private static List<KeyValuePair<string, string>> ReadCatalog(string language)

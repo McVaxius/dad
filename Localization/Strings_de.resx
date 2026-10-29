@@ -8947,4 +8947,6 @@ Nur</value>
   <data name="Wave colour 2" xml:space="preserve"><value>Wellenfarbe 2</value></data>
   <data name="Wave colour 3" xml:space="preserve"><value>Wellenfarbe 3</value></data>
   <data name="Reset wave colours" xml:space="preserve"><value>Wellenfarben zurücksetzen</value></data>
+  <data name="schedule_visited_world_label" xml:space="preserve"><value>Zwischen Vorlagen auf besuchter Welt/DC bleiben</value></data>
+  <data name="schedule_visited_world_help" xml:space="preserve"><value>Denselben Charakter zwischen Vorlagen auf der besuchten Welt bzw. im Datenzentrum lassen. Ein Charakterwechsel erfordert weiterhin die Heimkehr. AutoRetainer wird bei Ende, Fehler oder Abbruch des Zeitplans wiederhergestellt.</value></data>
 </root>

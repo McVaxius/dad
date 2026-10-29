@@ -8944,4 +8944,6 @@
   <data name="Wave colour 2" xml:space="preserve"><value>Màu sóng 2</value></data>
   <data name="Wave colour 3" xml:space="preserve"><value>Màu sóng 3</value></data>
   <data name="Reset wave colours" xml:space="preserve"><value>Đặt lại màu sóng</value></data>
+  <data name="schedule_visited_world_label" xml:space="preserve"><value>Ở lại thế giới/DC đang ghé thăm giữa các thiết lập</value></data>
+  <data name="schedule_visited_world_help" xml:space="preserve"><value>Giữ cùng nhân vật tại thế giới/DC đang ghé thăm giữa các thiết lập. Đổi nhân vật vẫn cần trở về thế giới gốc. Khôi phục AutoRetainer khi lịch hoàn tất, thất bại hoặc bị hủy.</value></data>
 </root>

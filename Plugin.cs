@@ -5899,13 +5899,8 @@ public sealed partial class Plugin : IDalamudPlugin
         ["VermaxionReservation"] = VermaxionIpcService.Update,
         ["Presence"] = () => PresenceService.Update(CharacterIntelligenceService.CurrentPool, TransportService.CurrentTransport.ListenerEndpoint),
         ["PartyInviteAcceptance"] = PartyInviteGateway.UpdateAcceptance,
-        ["WakeTakeover"] = () =>
-        {
-            if (!Configuration.RunAsServerDad && !TransportService.CurrentTransport.AuthorityRoutable &&
-                !SchedulerService.OwnsLocalDutySupportTakeover(WakeTakeoverService.GetActiveStatus()?.SchedulerRunId))
-                WakeTakeoverService.OnCoordinatorDisconnected();
-            WakeTakeoverService.Update();
-        },
+        ["WakeTakeover"] = () => DadRuntimeHandlers.UpdateWakeTakeover(
+            Configuration, SchedulerService, TransportService, WakeTakeoverService),
         ["RuntimeReadinessEdges"] = ObserveLocalRuntimeReadiness,
         ["TransportHeartbeat"] = () => TransportService.UpdateHeartbeat(
             PresenceService.BuildSnapshotCopy(),

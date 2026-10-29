@@ -71,6 +71,7 @@ internal sealed class RuntimeNode : IDisposable
     private readonly List<Delegate> frameworkUpdates = [];
     private readonly Dictionary<string, List<Delegate>> ipcSubscriptions = [];
     private readonly DadAcquiredCharacter character;
+    private readonly List<DadAcquiredCharacter> catalogCharacters = [];
     private readonly VirtualPartyGateway party;
     private readonly DadCharacterIntelligenceService intelligence;
     private readonly DadRosterCatalogService roster;
@@ -110,6 +111,7 @@ internal sealed class RuntimeNode : IDisposable
     private DadMemberCompletionCommand? memberCompletionProbe;
     private readonly string? verifierFault;
     private bool safe = true;
+    private uint currentWorldId = 1;
     private bool holdAfterAdmission;
     private bool adsSuccess = true;
     private int? durabilityPercent = 100;
@@ -160,6 +162,7 @@ internal sealed class RuntimeNode : IDisposable
             configuration.ServerListenPort = configuration.ServerDadPort = input.GetProperty("port").GetInt32();
             configuration.TransportSharedSecret = input.GetProperty("secret").GetString()!;
         }
+        if (input.TryGetProperty("runAsServerDad", out var serverRole)) configuration.RunAsServerDad = serverRole.GetBoolean();
         automation = new(events.Enqueue);
         profileIpc = new(events.Enqueue);
         shoppingIpc = new(events.Enqueue);
@@ -196,6 +199,20 @@ internal sealed class RuntimeNode : IDisposable
             CurrentLevel = participantInput.ValueKind == JsonValueKind.Object ? participantInput.GetProperty("Level").GetInt32() : 100,
             DataCenterId = 1, DataCenterName = "Synthetic DC", TerritoryId = 1,
         };
+        if (input.TryGetProperty("additionalCharacter", out var additional) && additional.ValueKind == JsonValueKind.Object)
+        {
+            var known = character.Clone();
+            known.CharacterKey = additional.GetProperty("characterKey").GetString()!;
+            known.CharacterName = known.CharacterKey.Split('@')[0];
+            known.ContentId = additional.GetProperty("contentId").GetUInt64();
+            known.JobLevels[known.CurrentJobId!.Value] = known.CurrentLevel!.Value;
+            known.XadbReady = true; known.SnapshotVersion = 1; known.SnapshotQuality = "Complete";
+            known.XadbSnapshotUtc = clock.Now.UtcDateTime;
+            if (!known.CharacterKey.EndsWith("@Synthetic", StringComparison.Ordinal) || known.ContentId == 0)
+                throw new ArgumentException("A synthetic roster character requires its exact home-world key and nonzero identity.");
+            catalogCharacters.Add(known);
+            configManager.EnsureCharacterForAccount(configuration.ClientAccountId, known.CharacterKey, known.CharacterName, known.WorldName);
+        }
         var playerState = ExternalProxy.Create<IPlayerState>((method, _) => method.Name switch
         {
             "get_ContentId" => character.ContentId,
@@ -204,7 +221,7 @@ internal sealed class RuntimeNode : IDisposable
         });
         party = new(character.ContentId, events.Enqueue);
         DadWorldLocationRuntime.CurrentObservation = now => WorldObservation(now);
-        DadWorldLocationRuntime.WorldObservation = (world, now) => world == 1 ? WorldObservation(now) : null;
+        DadWorldLocationRuntime.WorldObservation = ResolveWorldObservation;
         var partyInvite = new InfoProxyPartyInviteGateway(configuration, Plugin.Framework, playerState, null!, Plugin.Condition, log, party);
         var partyTeardown = new DadPartyTeardownService(configuration, null!, playerState, Plugin.Condition, log, party);
         var vermaxion = new DadVermaxionIpcService(Plugin.PluginInterface, log);
@@ -242,7 +259,8 @@ internal sealed class RuntimeNode : IDisposable
         vermaxion.ReservationGranted += wake.OnVermaxionReservationGranted;
         title.ConfigureConnectionRecovery(configuration,
             () => automation.Surface == "world" ? new(configuration.ClientAccountId,
-                character.CharacterName, "Synthetic", "Synthetic", 1, character.ContentId) : null,
+                character.CharacterName, character.WorldName, WorldObservation(clock.Now.UtcDateTime).WorldName,
+                WorldObservation(clock.Now.UtcDateTime).DataCenterId, character.ContentId) : null,
             () => automation.RecoveryOtherOwner || automation.Busy || automation.MultiMode || automation.LifestreamBusy ||
                 wake.GetActiveStatus() is { Phase: not (DadWakeTakeoverPhase.Ready or DadWakeTakeoverPhase.Blocked or DadWakeTakeoverPhase.Cancelled) },
             automation.RecoverySurface,
@@ -382,7 +400,7 @@ internal sealed class RuntimeNode : IDisposable
             steps["VermaxionReservation"] = vermaxion.Update;
             steps["Presence"] = () => presence.Update(intelligence.CurrentPool, transport.CurrentTransport.ListenerEndpoint);
             steps["PartyInviteAcceptance"] = partyInvite.UpdateAcceptance;
-            steps["WakeTakeover"] = wake.Update;
+            steps["WakeTakeover"] = () => DadRuntimeHandlers.UpdateWakeTakeover(configuration, scheduler, transport, wake);
             steps["RuntimeReadinessEdges"] = readiness.ObserveLocal;
             steps["PendingTakeoverCancellation"] = scheduler.UpdatePendingTakeoverCancellations;
             steps["PendingEarlyAssignmentCancellation"] = scheduler.UpdatePendingEarlyAssignmentCancellations;
@@ -502,8 +520,23 @@ internal sealed class RuntimeNode : IDisposable
                 if (command.TryGetProperty("recoveryAccount", out var recoveryAccount)) configuration.ClientAccountId = recoveryAccount.GetString()!;
                 if (command.TryGetProperty("uncertainLogin", out var uncertainLogin)) automation.UncertainLogin = uncertainLogin.GetBoolean();
                 if (command.TryGetProperty("automationBusy", out var busy)) automation.Busy = busy.GetBoolean();
+                if (command.TryGetProperty("lifestreamBusy", out var travelBusy)) automation.LifestreamBusy = travelBusy.GetBoolean();
+                if (command.TryGetProperty("currentWorldId", out var observedWorld))
+                {
+                    var world = observedWorld.GetUInt32();
+                    if (ResolveWorldObservation(world, clock.Now.UtcDateTime) == null)
+                        throw new ArgumentException("Unknown synthetic current world.");
+                    currentWorldId = world;
+                    events.Enqueue($"observation:current-world:{world}");
+                }
                 if (command.TryGetProperty("multiMode", out var multi)) automation.MultiMode = multi.GetBoolean();
-                if (command.TryGetProperty("contentId", out var observedContent)) character.ContentId = observedContent.GetUInt64();
+                if (command.TryGetProperty("contentId", out var observedContent))
+                {
+                    var previousContent = character.ContentId;
+                    character.ContentId = observedContent.GetUInt64();
+                    foreach (var member in party.Members.Where(member => member.IsLocalPlayer && member.ContentId == previousContent))
+                        member.ContentId = character.ContentId;
+                }
                 if (command.TryGetProperty("characterKey", out var observedCharacter))
                 {
                     character.CharacterKey = observedCharacter.GetString()!;
@@ -594,6 +627,9 @@ internal sealed class RuntimeNode : IDisposable
                 configuration.Schedules.Add(schedule);
                 controlResult = scheduler.StartScheduleRun(schedule.ScheduleId, false, "lifecycle-lab");
                 break;
+            case "cancel-schedule": controlResult = scheduler.CancelScheduleRun("Synthetic schedule cancel"); break;
+            case "refresh-roster": controlResult = roster.RefreshCatalog(intelligence.CurrentPool); break;
+            case "inspect-local-takeover": controlResult = new { owns = scheduler.OwnsLocalDutySupportTakeover(command.GetProperty("token").GetString()) }; break;
             case "start-scheduler":
                 var group = DadIpcJson.Deserialize<DadPlannerGroup>(command.GetProperty("group").GetRawText())!;
                 configuration.PlannerGroups.RemoveAll(g => g.GroupId == group.GroupId);
@@ -705,12 +741,13 @@ internal sealed class RuntimeNode : IDisposable
     };
 
     // Raw XA IPC contract fields; production parsers still own interpretation and merging.
-    private object XadbCharacter() => new
+    private object XadbCharacter() => XadbCharacter(character, true);
+    private static object XadbCharacter(DadAcquiredCharacter observed, bool current) => new
     {
-        character.CharacterKey, character.CharacterName, character.ContentId, character.WorldId, character.WorldName,
-        character.DataCenterId, character.DataCenterName, character.CurrentJobId, character.CurrentLevel,
-        character.JobLevels, character.SnapshotVersion, character.SnapshotQuality,
-        snapshotUtc = character.XadbSnapshotUtc, isCurrent = true,
+        observed.CharacterKey, observed.CharacterName, observed.ContentId, observed.WorldId, observed.WorldName,
+        observed.DataCenterId, observed.DataCenterName, observed.CurrentJobId, observed.CurrentLevel,
+        observed.JobLevels, observed.SnapshotVersion, observed.SnapshotQuality,
+        snapshotUtc = observed.XadbSnapshotUtc, isCurrent = current,
     };
 
     private DadLevelingChildBuild BuildLevelingChild(DadPlannerGroup source, int iteration, DateTime? minimumTrustObservedAtUtc = null)
@@ -905,7 +942,8 @@ internal sealed class RuntimeNode : IDisposable
                 if (call.Name == "InvokeFunc" && endpoint == "XA.Database.GetCharacterSummaryJson") return DadIpcJson.Serialize(XadbCharacter());
                 if (call.Name == "InvokeFunc" && endpoint == "XA.Database.GetAccountCharacterListJson")
                     return DadIpcJson.Serialize(new { version = 1, ipcContractVersion = 6, isFullRosterAvailable = true,
-                        generatedAtUtc = clock.Now.UtcDateTime, characters = new[] { XadbCharacter() } });
+                        generatedAtUtc = clock.Now.UtcDateTime, characters = new[] { XadbCharacter() }.Concat(catalogCharacters
+                            .Where(row => row.CharacterKey != character.CharacterKey).Select(row => XadbCharacter(row, false))).ToArray() });
                 if (call.Name == "InvokeAction" && endpoint is "XA.Database.Refresh" or "XA.Database.Save")
                 { events.Enqueue($"ipc:{endpoint}"); return null; }
                 if (endpoint.StartsWith("AutoRetainer.", StringComparison.Ordinal) || endpoint.StartsWith("Lifestream.", StringComparison.Ordinal) || endpoint.StartsWith("VERMAXION.", StringComparison.Ordinal))
@@ -944,8 +982,15 @@ internal sealed class RuntimeNode : IDisposable
     }
     private static string[] Drain(ConcurrentQueue<string> queue)
     { var result = new List<string>(); while (queue.TryDequeue(out var item)) result.Add(item); return result.ToArray(); }
-    private static DadWorldLocationObservation WorldObservation(DateTime now) => new()
-    { WorldId = 1, WorldName = "Synthetic", DataCenterId = 1, DataCenterName = "Synthetic DC", RegionId = 1, RegionName = "Synthetic region", ObservedAtUtc = now };
+    private DadWorldLocationObservation WorldObservation(DateTime now) => ResolveWorldObservation(currentWorldId, now)!;
+    private static DadWorldLocationObservation? ResolveWorldObservation(uint world, DateTime now) => world switch
+    {
+        1 => new() { WorldId = 1, WorldName = "Synthetic", DataCenterId = 1, DataCenterName = "Synthetic DC",
+            RegionId = 1, RegionName = "Synthetic region", ObservedAtUtc = now },
+        2 => new() { WorldId = 2, WorldName = "Visited", DataCenterId = 2, DataCenterName = "Visited DC",
+            RegionId = 1, RegionName = "Synthetic region", ObservedAtUtc = now },
+        _ => null,
+    };
     public void Dispose() {
         Shutdown();
         allianceService?.Dispose(); autoParty?.Dispose(); localDutyQueue.Dispose(); npcDutyQueue.Dispose(); title.Dispose(); dependencies.Dispose(); wake.Dispose(); profiles.Dispose(); persistence.ForceFlush(); transport.Dispose(); }

@@ -8986,4 +8986,6 @@ Les lignes</value>
   <data name="Wave colour 2" xml:space="preserve"><value>Couleur de vague 2</value></data>
   <data name="Wave colour 3" xml:space="preserve"><value>Couleur de vague 3</value></data>
   <data name="Reset wave colours" xml:space="preserve"><value>Réinitialiser les couleurs des vagues</value></data>
+  <data name="schedule_visited_world_label" xml:space="preserve"><value>Rester sur le Monde/DC visité entre les préréglages</value></data>
+  <data name="schedule_visited_world_help" xml:space="preserve"><value>Garder le même personnage sur le Monde/DC visité entre les préréglages. Changer de personnage exige toujours un retour au Monde d'origine. Rétablir AutoRetainer à la fin, à l'échec ou à l'annulation du programme.</value></data>
 </root>
