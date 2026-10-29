@@ -50,6 +50,11 @@ internal static class DadWorkerCommandValidationRules
 
         command.Plan.Request.PreDutyRepairPolicy ??= new DadPreDutyRepairPolicy();
         command.Plan.Request.PreDutyRepairPolicy.Normalize();
+        if (command.Plan.Request.PreDutyRepairPolicy.RequiresInnRepairSchema &&
+            command.SchemaVersion < DadWorkerCommandSchemaRules.InnRepairSchema)
+        {
+            return Fail("Worker command schema 6 is required for NPC inn repair routes; update every assigned DAD worker.", out blocker);
+        }
         if (command.SchemaVersion == DadWorkerCommandSchemaRules.LegacySchema &&
             command.Plan.Request.PreDutyRepairPolicy.Enabled)
         {

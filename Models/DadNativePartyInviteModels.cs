@@ -63,6 +63,18 @@ public interface IDadNativePartyInviteDispatcher
 
 public static class DadNativePartyInviteRules
 {
+    // Derive progress from this authoritative snapshot, never from native send results
+    // or a retained cursor. A later slot cannot pass a missing earlier member.
+    public static IReadOnlyList<DadNativePartyInviteTarget> SelectSerialTargets(
+        IReadOnlyList<DadNativePartyInviteTarget> targets,
+        IReadOnlyList<DadPartyMemberSnapshot> members)
+        => targets
+            .OrderBy(static target => DadPlannerSlotRules.GetSlotSortKey(target.SlotId))
+            .ThenBy(static target => target.SlotId, StringComparer.OrdinalIgnoreCase)
+            .Where(target => !members.Any(member => member.ContentId == target.ContentId))
+            .Take(1)
+            .ToList();
+
     public static DadNativePartyInviteType SelectInviteType(
         DadNativePartyInviteTarget target,
         int attemptNumber)

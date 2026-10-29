@@ -12,6 +12,103 @@ namespace dad.Tests;
 public sealed class DadPartyInviteReassemblyRuntimeTests
 {
     [Fact]
+    public void OrdinaryFormationWaitsForEachExactJoinAndKeepsExistingNativeFallback()
+    {
+        using var f = new Fixture();
+        f.SetMembers(200);
+        Assert.True(f.Form(400, 300, 100).Deferred); // Deliberately unordered payload.
+        Assert.Equal(new[] { "native:invite:cross-world:100:0" }, f.Sends);
+        f.Advance(4.9);
+        f.Form(400, 300, 100);
+        Assert.Single(f.Sends);
+        f.Advance(.1);
+        f.Form(400, 300, 100);
+        Assert.Equal(2, f.Sends.Count);
+        Assert.Equal("native:invite:same-world:100:21", f.Sends.Last());
+        f.SetMembers(200, 100);
+        f.Form(400, 300, 100);
+        Assert.Equal("native:invite:cross-world:300:0", f.Sends.Last());
+        f.SetMembers(200, 100, 300);
+        f.Form(400, 300, 100);
+        Assert.Equal("native:invite:cross-world:400:0", f.Sends.Last());
+        f.SetMembers(200, 100, 300, 400);
+        var complete = f.Form(400, 300, 100);
+        Assert.True(complete.Success);
+        Assert.False(complete.Deferred);
+        Assert.Equal(4, f.Sends.Count);
+    }
+
+    [Fact]
+    public void SameWorldFirstRecipientUsesOriginalNativeBranchWithoutAdvancingOnSendReturn()
+    {
+        using var f = new Fixture();
+        f.SetCurrentWorld(21);
+        f.SetCrossWorldInviteResult(false); // Rejecting branch must not pin the whole crew forever.
+        f.SetMembers(200);
+        f.Form(400, 300, 100);
+        Assert.Equal(new[] { "native:invite:same-world:100:21" }, f.Sends);
+        f.Advance(5);
+        f.Form(400, 300, 100);
+        Assert.Equal("native:invite:cross-world:100:0", f.Sends.Last());
+        f.Advance(5);
+        f.Form(400, 300, 100);
+        Assert.Equal("native:invite:same-world:100:21", f.Sends.Last());
+        Assert.DoesNotContain(f.Sends, send => send.Contains(":300:") || send.Contains(":400:"));
+        f.SetMembers(200, 100);
+        f.Form(400, 300, 100);
+        Assert.Equal("native:invite:same-world:300:21", f.Sends.Last());
+    }
+
+    [Theory]
+    [InlineData("Mixed", 3)]
+    [InlineData("Cross", 3)]
+    [InlineData("Serial", 1)]
+    [InlineData("Reverse", 1)]
+    public void ProductionSelectionDoesNotOverrideExplicitComparisons(string mode, int sends)
+    {
+        using var f = new Fixture(debug: true);
+        f.SetMembers(200);
+        f.StartComparison(mode, 100, 300, 400);
+        f.Form(100, 300, 400);
+        Assert.Equal(sends, f.Sends.Count);
+        if (mode == "Reverse") Assert.Contains(":400:", f.Sends.Single());
+        f.Call("Reset");
+        f.Advance(5);
+        f.Form(100, 300, 400);
+        Assert.Equal(sends, f.Sends.Count); // Revoked comparison cannot fall back to production.
+    }
+
+    [Fact]
+    public void OrdinaryFormationCancelBlocksFurtherInvitesAndFreshRunStartsFromMembership()
+    {
+        using var f = new Fixture();
+        f.SetMembers(200, 100);
+        f.Form(100, 300, 400);
+        Assert.Equal(new[] { "native:invite:cross-world:300:0" }, f.Sends);
+        f.CancelFormation();
+        f.Advance(5);
+        Assert.False(f.Form(100, 300, 400).Success);
+        Assert.Single(f.Sends);
+        f.StartFormationRun("new-run");
+        f.SetMembers(200);
+        f.Form(100, 300, 400);
+        Assert.Equal("native:invite:cross-world:100:0", f.Sends.Last());
+    }
+
+    [Fact]
+    public void AlreadyCompleteFormationDoesNotDispatchAndMalformedTargetsStillFailClosed()
+    {
+        using var f = new Fixture();
+        f.SetMembers(200, 100, 300, 400);
+        Assert.False(f.Form(100, 300, 400).Deferred);
+        Assert.Empty(f.Sends);
+        f.StartFormationRun("malformed-run");
+        f.SetMembers(200);
+        Assert.False(f.Form(100, 100, 300).Success);
+        Assert.Empty(f.Sends);
+    }
+
+    [Fact]
     public void PassiveDebugObservationNeverArmsOrAcceptsAnInvitation()
     {
         using var f = new Fixture(debug: true);
@@ -388,6 +485,8 @@ public sealed class DadPartyInviteReassemblyRuntimeTests
     private sealed class Fixture : IDisposable
     {
         private readonly object gateway;
+        private readonly DadRuntime::dad.Services.DadPresenceService presence;
+        private string formationRun = "same-run";
         private readonly object native;
         private readonly PropertyInfo clockProperty;
         private readonly object previousClock;
@@ -401,6 +500,7 @@ public sealed class DadPartyInviteReassemblyRuntimeTests
             CharacterKey = new("Synthetic Leader@World"), ContentId = 100, CharacterName = "Synthetic Leader", WorldId = 21,
         };
         public int Accepts => events.Count(e => e == "native:accept-invitation");
+        public IReadOnlyList<string> Sends => events.Where(e => e.StartsWith("native:invite:", StringComparison.Ordinal)).ToList();
 
         public Fixture(bool debug = false)
         {
@@ -414,10 +514,53 @@ public sealed class DadPartyInviteReassemblyRuntimeTests
             var player = Proxy<IPlayerState>((method, _) => method.Name == "get_ContentId" ? LocalContentId : throw new InvalidOperationException(method.Name));
             var conditions = Proxy<ICondition>((method, args) => method.Name == "get_Item" ? UnsafeConditions.Contains(args[0]!.ToString()!) : throw new InvalidOperationException(method.Name));
             var log = DispatchProxy.Create<IPluginLog, DadScheduleDutyExitRetryRuntimeTests.QuietLog>();
+            var configuration = new DadRuntime::dad.Configuration { DebugUiEnabled = debug, PluginEnabled = true };
             gateway = Activator.CreateInstance(assembly.GetType("dad.Services.InfoProxyPartyInviteGateway")!,
-                [new DadRuntime::dad.Configuration { DebugUiEnabled = debug, PluginEnabled = true }, framework, player, null, conditions, log, native])!;
+                [configuration, framework, player, null, conditions, log, native])!;
+            var constructor = typeof(DadRuntime::dad.Services.DadPresenceService)
+                .GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic).Single();
+            presence = (DadRuntime::dad.Services.DadPresenceService)constructor.Invoke(constructor.GetParameters()
+                .Select(parameter => parameter.Name switch
+                {
+                    "configuration" => (object)configuration,
+                    "partyInviteGateway" => gateway,
+                    "partyTeardownService" => Activator.CreateInstance(assembly.GetType("dad.Services.DadPartyTeardownService")!,
+                        [configuration, null, player, conditions, log, native]),
+                    "requestedJobPreparationGate" => Activator.CreateInstance(parameter.ParameterType),
+                    "log" => log,
+                    _ => null,
+                }).ToArray());
+            presence.CurrentParticipant.ManagedAccountKey = new("local-account");
+            presence.CurrentParticipant.ActiveCharacterKey = new("Synthetic Local@World");
+            presence.CurrentParticipant.Character = new() { ContentId = 200, CharacterKey = "Synthetic Local@World" };
+            presence.CurrentParticipant.PostArReady = true;
+            StartFormationRun(formationRun);
             Call("BeginParticipantRun", Expected.RunId);
         }
+
+        public void StartFormationRun(string run)
+        {
+            formationRun = run;
+            typeof(DadRuntime::dad.Services.DadPresenceService).GetField("currentRunId", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(presence, run);
+        }
+        public void CancelFormation() => presence.HandleCancelRun(new() { RunId = formationRun });
+        public M.DadRunStepResultDto Form(params ulong[] targets)
+            => presence.HandleAssemblyInstruction(new()
+            {
+                RunId = formationRun, SlotId = "Slot1", InstructionKind = M.DadAssemblyInstructionKind.FormParty,
+                FrozenInviter = new()
+                {
+                    RunId = formationRun, WorkerSessionId = presence.WorkerSessionId, AccountKey = new("local-account"),
+                    CharacterKey = new("Synthetic Local@World"), ContentId = 200, CharacterName = "Synthetic Local", WorldId = 21,
+                },
+                InviteTargets = targets.Select(id => new M.DadNativePartyInviteTarget
+                {
+                    RunId = formationRun, SlotId = id == 100 ? "Slot2" : id == 300 ? "Slot3" : "Slot4",
+                    AccountKey = new("account-" + id), CharacterKey = new("Synthetic Target " + id + "@World"),
+                    ContentId = id, CharacterName = "Synthetic Target " + id, WorldId = 21, WorkerSessionId = new("worker-" + id),
+                }).ToList(),
+            });
 
         public void JoinFirstParty()
         {
@@ -443,6 +586,8 @@ public sealed class DadPartyInviteReassemblyRuntimeTests
             => native.GetType().GetProperty("Members")!.SetValue(native,
                 ids.Select(id => new M.DadPartyMemberSnapshot { ContentId = id, IsLocalPlayer = id == 200 }).ToList());
         public void SetCrossRealm(bool value) => native.GetType().GetProperty("CrossRealm")!.SetValue(native, value);
+        public void SetCurrentWorld(uint value) => native.GetType().GetProperty("CurrentWorldId")!.SetValue(native, value);
+        public void SetCrossWorldInviteResult(bool value) => native.GetType().GetProperty("CrossWorldInviteResult")!.SetValue(native, value);
         private object Diagnostics => gateway.GetType().GetProperty("Diagnostics", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(gateway)!;
         public string DiagnosticReport() => (string)Diagnostics.GetType().GetMethod("Report", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(Diagnostics, null)!;
         public void StartComparison(string mode, params ulong[] targets)

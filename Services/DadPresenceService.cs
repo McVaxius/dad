@@ -748,7 +748,10 @@ public sealed class DadPresenceService
     {
         var members = partyInviteGateway.ReadAuthoritativePartyMembers();
         var summaries = new List<string>();
-        foreach (var target in instruction.InviteTargets)
+        var dispatchTargets = authenticatedAutoPartyInstruction
+            ? instruction.InviteTargets
+            : partyInviteGateway.SelectAssemblyInviteTargets(instruction.RunId, instruction.InviteTargets, members);
+        foreach (var target in dispatchTargets)
         {
             var alreadyJoined = members.Any(member => member.ContentId == target.ContentId);
             string blocker;

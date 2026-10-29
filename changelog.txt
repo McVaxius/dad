@@ -1,3 +1,25 @@
+2026-10-29 - Restore original native invite selection under serial ordering
+
+- Remove the unintended CrossWorld-only override from ordinary serial formation. Preserve original SameWorld/CrossWorld branch selection, guarded fallback and exact-instance handling; serial ordering still advances only on actual membership.
+- Add same-world-first and rejected-branch regression coverage through the real presence/gateway path. Explicit diagnostic comparisons keep their chosen transport strategy. Preserve repair recovery and all existing identity/cancellation guards.
+
+2026-10-29 - Bounded pre-duty ADS repair recovery
+
+- Preserve ADS terminal failure/completion metadata and show the repair cause. Permit one recovery invocation only after locally accepted, observed matching repair work and fresh explicit failure proof.
+- Wait for five continuous seconds of readable idle travel, stable world and closed NPC/travel UI; cap recovery settlement at 30 seconds without extending the original 180-second preparation deadline. Do not replay stale/uncertain work or close foreign UI; a failed recovery stops with its cause.
+- Add status parsing, stale/foreign failure, retry limit, safe settlement, cancellation/reset and runtime-service regression coverage. No live settings, ADS source or release-version changes.
+
+2026-10-29 - Serial ordinary crew invitations
+
+- Use the tested cross-world CID Serial strategy for ordinary LAN crew formation: invite the first missing frozen slot, wait for authoritative membership, then proceed. Preserve five-second retries, identity checks, cancellation and existing assembly wait/warning policy.
+- Keep explicit diagnostic comparisons and authenticated registered-island invite contracts separate. No preset migration, live activation or game-side cooldown guarantee.
+
+2026-10-29 - Global NPC inn repair routes
+
+- Add NPC repair with inn fallback and repair-then-inn to the global pre-duty repair selection, including Automatic or seven explicit ADS inn destinations. Preserve existing mode IDs and disabled defaults; saved presets and active runs are not rewritten.
+- Keep the queue barrier closed while a requested or observed repair-then-inn utility remains active after durability improves. Retain the bounded 180-second preparation timeout and existing durability/status safety checks.
+- Preserve routes through policy cloning, LAN commands and AutoParty conversion. Require worker schema 6 for enabled new modes so older workers reject them safely; reject unsupported inbound mode strings instead of falling back to Self.
+
 2026-10-28 - 2.0.1.0 - Reviewed party and Duty Support recovery (PR #10)
 
 - Retain every invitation identity responded to before membership confirmation, so earlier responses cannot be replayed during same-run reassembly. Preserve cadence retries until confirmation.

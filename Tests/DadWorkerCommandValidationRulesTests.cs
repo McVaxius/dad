@@ -97,6 +97,31 @@ public sealed class DadWorkerCommandValidationRulesTests
         AssertRejected(command, RuntimeForX(), "schema 2");
     }
 
+    [Theory]
+    [InlineData(DadPreDutyRepairMode.NpcWithInnFallback)]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn)]
+    public void NewRepairRoutesRequireSchemaSixAndRoundTripToExactWorker(DadPreDutyRepairMode mode)
+    {
+        var command = BuildCommand();
+        command.Plan.Request.PreDutyRepairPolicy = new()
+        {
+            Enabled = true, Mode = mode, InnDestination = DadRepairInnDestination.Tuliyollal,
+        };
+        Assert.Equal(6, DadWorkerCommandSchemaRules.ResolveEmissionSchema(command.Plan.Request.PreDutyRepairPolicy));
+        for (var old = 1; old <= 5; old++)
+        {
+            command.SchemaVersion = old;
+            AssertRejected(command, RuntimeForX(), "schema 6");
+        }
+        command.SchemaVersion = 6;
+        var roundTrip = DadIpcJson.Deserialize<DadWorkerExecutionCommand>(DadIpcJson.Serialize(command));
+        Assert.NotNull(roundTrip);
+        Assert.True(DadWorkerCommandValidationRules.TryValidate(roundTrip, RuntimeForX(), out _, out var blocker), blocker);
+        Assert.Equal(command.Plan.Request.PreDutyRepairPolicy.AdsMode, roundTrip.Plan.Request.PreDutyRepairPolicy.AdsMode);
+        command.Plan.Request.PreDutyRepairPolicy.Enabled = false;
+        Assert.Equal(1, DadWorkerCommandSchemaRules.ResolveEmissionSchema(command.Plan.Request.PreDutyRepairPolicy));
+    }
+
     [Fact]
     public void CoordinatorEmissionSchemaChangesOnlyWhenRepairIsEnabled()
     {

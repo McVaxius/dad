@@ -227,17 +227,11 @@ internal static class DadAutoPartyInboundExecutionRules
             },
             AutoPartyProposalId = operation.ProposalId.ToString("D"),
         };
-        var repairPolicy = new DadPreDutyRepairPolicy
-        {
-            Enabled = endpointPlan.RepairPolicy.Enabled,
-            ThresholdPercent = endpointPlan.RepairPolicy.ThresholdPercent,
-            Mode = endpointPlan.RepairPolicy.Mode switch
-            {
-                "npc-no-inn" => DadPreDutyRepairMode.NpcExcludingInns,
-                "npc-no-teleport-no-inn" => DadPreDutyRepairMode.NearbyNpcNoTeleportOrInn,
-                _ => DadPreDutyRepairMode.Self,
-            },
-        }.Normalize();
+        if (!DadPreDutyRepairPolicy.TryFromAdsMode(endpointPlan.RepairPolicy.Mode, out var repairPolicy))
+            return Fail("dad-inbound-repair-mode-unsupported", out blocker);
+        repairPolicy.Enabled = endpointPlan.RepairPolicy.Enabled;
+        repairPolicy.ThresholdPercent = endpointPlan.RepairPolicy.ThresholdPercent;
+        repairPolicy.Normalize();
         var request = new DadRunRequest
         {
             RequestId = endpointPlan.RunId,
