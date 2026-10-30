@@ -3,7 +3,9 @@ using Dalamud.Plugin;
 using Dalamud.Plugin.Ipc;
 using Dalamud.Plugin.Services;
 using dad.Models;
+using FFXIVClientStructs.FFXIV.Client.Enums;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI;
 
 namespace dad.Services;
@@ -102,13 +104,15 @@ public sealed unsafe class DadDutySupportAdsService
     }
 
     public DadAdsRepairObservation InspectRepair()
-    {
-        if (!IsAdsLoaded())
-            return DadAdsRepairObservation.Absent();
+        => ReadRepairStatus(IsAdsLoaded(), getStatusJson.InvokeFunc);
 
+    internal static DadAdsRepairObservation ReadRepairStatus(bool installedMetadataReportsLoaded, Func<string> readStatus)
+    {
         try
         {
-            var json = getStatusJson.InvokeFunc();
+            // Like configuration readiness, responsive IPC is stronger evidence
+            // than an installed-plugin list that can lag provider registration.
+            var json = readStatus();
             if (string.IsNullOrWhiteSpace(json))
                 return DadAdsRepairObservation.Unreadable("ADS.GetStatusJson returned an empty payload.");
 
@@ -116,7 +120,9 @@ public sealed unsafe class DadDutySupportAdsService
         }
         catch (Exception ex)
         {
-            return DadAdsRepairObservation.Unreadable($"ADS.GetStatusJson is temporarily unreadable: {ex.Message}");
+            return installedMetadataReportsLoaded
+                ? DadAdsRepairObservation.Unreadable($"ADS.GetStatusJson is temporarily unreadable: {ex.Message}")
+                : DadAdsRepairObservation.Absent($"ADS.GetStatusJson is unavailable and ADS is not reported loaded: {ex.Message}");
         }
     }
 
@@ -159,6 +165,12 @@ public sealed unsafe class DadDutySupportAdsService
                 ConditionFlag.TradeOpen, ConditionFlag.Unconscious];
             foreach (var flag in unsafeFlags)
                 if (Plugin.Condition[flag]) return new(true, false, $"World is not settled ({flag}).");
+            var game = GameMain.Instance();
+            var finder = ContentsFinder.Instance();
+            var native = ReadRepairRetryNativeSettlement(Plugin.ClientState.TerritoryType,
+                game == null ? 0 : game->CurrentTerritoryTypeId,
+                finder == null ? null : finder->QueueInfo.QueueState);
+            if (!native.Safe) return native;
             var manager = RaptureAtkUnitManager.Instance();
             if (manager == null) return new(false, false, "Native UI state is unavailable.");
             string[] menuNames = ["SelectString", "SelectIconString", "SelectYesno", "TelepotTown", "Talk",
@@ -175,6 +187,19 @@ public sealed unsafe class DadDutySupportAdsService
         {
             return new(false, false, $"Repair recovery safety is unreadable: {ex.Message}");
         }
+    }
+
+    internal static DadRepairRetrySafetyObservation ReadRepairRetryNativeSettlement(uint territoryType,
+        uint nativeTerritoryType, ContentsFinderQueueState? queueState)
+    {
+        if (territoryType == 0 || nativeTerritoryType == 0 || territoryType != nativeTerritoryType)
+            return new(false, false, "Native territory truth is unavailable or still changing.");
+        if (!queueState.HasValue || !Enum.IsDefined(queueState.Value))
+            return new(false, false, "Native Duty Finder queue truth is unavailable.");
+        if (queueState.Value is ContentsFinderQueueState.Pending or ContentsFinderQueueState.Queued or
+            ContentsFinderQueueState.Ready or ContentsFinderQueueState.Accepted)
+            return new(true, false, "Native Duty Finder queue activity has not settled.");
+        return new(true, true, "Native world and Duty Finder queue are settled.");
     }
 
     public DadAdsShoppingCatalogResult GetShopListPresets()

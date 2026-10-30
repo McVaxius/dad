@@ -8986,4 +8986,16 @@
   <data name="Image could not be loaded." xml:space="preserve"><value>无法加载图片。</value></data>
   <data name="Image backgrounds remain visible to screenshots." xml:space="preserve"><value>图片背景仍会显示在截图中。</value></data>
   <data name="Pause backdrop for screenshots" xml:space="preserve"><value>暂停背景以便截图</value></data>
+  <data name="NPC, allowing inn fallback" xml:space="preserve"><value>NPC 修理，允许以旅馆作为后备</value></data>
+  <data name="NPC repair, then enter inn" xml:space="preserve"><value>NPC 修理后进入旅馆</value></data>
+  <data name="Repair inn destination" xml:space="preserve"><value>修理后的旅馆目的地</value></data>
+  <data name="Automatic (ADS)" xml:space="preserve"><value>自动（ADS）</value></data>
+  <data name="Ul'dah" xml:space="preserve"><value>乌尔达哈</value></data>
+  <data name="Gridania" xml:space="preserve"><value>格里达尼亚</value></data>
+  <data name="Limsa Lominsa" xml:space="preserve"><value>利姆萨·罗敏萨</value></data>
+  <data name="Ishgard" xml:space="preserve"><value>伊修加德</value></data>
+  <data name="The Crystarium" xml:space="preserve"><value>水晶都</value></data>
+  <data name="Old Sharlayan" xml:space="preserve"><value>旧萨雷安</value></data>
+  <data name="Tuliyollal" xml:space="preserve"><value>图莱尤拉</value></data>
+  <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>修理和返回旅馆的路线由 ADS 管理。DAD 还会在排队前等待 ADS 工具完成，仍受现有的 180 秒准备时限约束。所有执行客户端都需要支持此路线的 ADS 版本。</value></data>
 </root>

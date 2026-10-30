@@ -49,6 +49,10 @@ internal static class DadWorkerCommandValidationRules
             return Fail("Worker command schema 4 is required for gathering orders.", out blocker);
 
         command.Plan.Request.PreDutyRepairPolicy ??= new DadPreDutyRepairPolicy();
+        if (!Enum.IsDefined(command.Plan.Request.PreDutyRepairPolicy.Mode))
+            return Fail("Worker command contains an unsupported pre-duty repair mode.", out blocker);
+        if (!Enum.IsDefined(command.Plan.Request.PreDutyRepairPolicy.InnDestination))
+            return Fail("Worker command contains an unsupported pre-duty repair inn destination.", out blocker);
         command.Plan.Request.PreDutyRepairPolicy.Normalize();
         if (command.Plan.Request.PreDutyRepairPolicy.RequiresInnRepairSchema &&
             command.SchemaVersion < DadWorkerCommandSchemaRules.InnRepairSchema)

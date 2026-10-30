@@ -161,6 +161,48 @@ public sealed class DadRepairRecoveryTests
         Assert.Contains("Unowned NPC UI", rejected.Summary);
     }
 
+    [Theory]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, "npc-yes-inn-uldah", false)]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, "npc-yes-inn", false)]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, "npc-yes-inn-limsa", true)]
+    [InlineData(DadPreDutyRepairMode.NpcWithInnFallback, "npc", true)]
+    public void RecoveryRequiresTheExactRequestedRoute(DadPreDutyRepairMode mode, string observedMode, bool recover)
+    {
+        var policy = new DadPreDutyRepairPolicy
+        {
+            Enabled = true, ThresholdPercent = 35, Mode = mode, InnDestination = DadRepairInnDestination.Limsa,
+        };
+        var gate = new DadPreDutyRepairGate();
+        DadPreDutyRepairDecision Observe(int seconds, DadAdsRepairObservation ads)
+            => gate.Evaluate(policy, DadModuleId.DutySupport, new(),
+                DadEquippedDurabilityObservation.ReadableAt(30), ads, Now.AddSeconds(seconds), Safe);
+        Assert.Equal(DadPreDutyRepairAction.InvokeAds, Observe(0, DadAdsRepairObservation.Idle()).Action);
+        gate.RecordInvocationResult(new(DadAdsRepairInvocationOutcome.Accepted, "accepted"), Now);
+        Observe(1, DadAdsRepairObservation.Running(true, "NPC repair", observedMode));
+        Observe(10, Failure());
+        var recoveryRequested = false;
+        for (var second = 11; second <= 16; second++)
+            recoveryRequested |= Observe(second, Failure()).Action == DadPreDutyRepairAction.InvokeAds;
+        Assert.Equal(recover, recoveryRequested);
+        Assert.Equal(1, gate.InvocationCount);
+    }
+
+    [Theory]
+    [InlineData(5, false)]
+    [InlineData(10, true)]
+    [InlineData(11, true)]
+    public void FailureCompletionCannotPredateTheLatestRunningObservation(int completedSeconds, bool recover)
+    {
+        var gate = Started();
+        Tick(gate, 10, Running);
+        Tick(gate, 11, Failure(completedSeconds));
+        var recoveryRequested = false;
+        for (var second = 12; second <= 17; second++)
+            recoveryRequested |= Tick(gate, second, Failure(completedSeconds), Safe).Action == DadPreDutyRepairAction.InvokeAds;
+        Assert.Equal(recover, recoveryRequested);
+        Assert.Equal(1, gate.InvocationCount);
+    }
+
     [Fact]
     public void StatusParserPreservesTerminalProofButNeverInventsMissingFields()
     {

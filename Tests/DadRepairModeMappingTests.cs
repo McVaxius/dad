@@ -46,8 +46,16 @@ public sealed class DadRepairModeMappingTests
     [Theory]
     [InlineData(null)]
     [InlineData("")]
+    [InlineData("0")]
+    [InlineData("3")]
+    [InlineData("4")]
+    [InlineData("99")]
     [InlineData("npc-yes-inn-unknown")]
     [InlineData("npc-yes-inn-")]
+    [InlineData("npc-yes-inn-0")]
+    [InlineData("npc-yes-inn-1")]
+    [InlineData("npc-yes-inn-7")]
+    [InlineData("npc-yes-inn-99")]
     [InlineData("npc-yes-inn-limsa /logout")]
     public void UnknownModesAndFreeTextDestinationsAreRejected(string? mode)
         => Assert.False(DadPreDutyRepairPolicy.TryFromAdsMode(mode, out _));
@@ -61,13 +69,6 @@ public sealed class DadRepairModeMappingTests
             Assert.Equal(mode, (int)policy.Mode);
             Assert.Equal(DadRepairInnDestination.Automatic, policy.InnDestination);
         }
-        var invalid = new DadPreDutyRepairPolicy
-        {
-            Mode = DadPreDutyRepairMode.NpcThenInn,
-            InnDestination = (DadRepairInnDestination)99,
-        }.Normalize();
-        Assert.False(invalid.Enabled);
-        Assert.Equal("npc-yes-inn", invalid.AdsMode);
     }
 
     [Theory]

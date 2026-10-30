@@ -748,9 +748,12 @@ public sealed class DadPresenceService
     {
         var members = partyInviteGateway.ReadAuthoritativePartyMembers();
         var summaries = new List<string>();
+        var selectionBlocker = string.Empty;
         var dispatchTargets = authenticatedAutoPartyInstruction
             ? instruction.InviteTargets
-            : partyInviteGateway.SelectAssemblyInviteTargets(instruction.RunId, instruction.InviteTargets, members);
+            : partyInviteGateway.SelectAssemblyInviteTargets(instruction.RunId, instruction.InviteTargets, members, out selectionBlocker);
+        if (!string.IsNullOrWhiteSpace(selectionBlocker))
+            return Reject(selectionBlocker);
         foreach (var target in dispatchTargets)
         {
             var alreadyJoined = members.Any(member => member.ContentId == target.ContentId);
@@ -772,19 +775,7 @@ public sealed class DadPresenceService
                         : $"Invite dispatch returned false for {target.CharacterKey}; guarded retry remains active.";
             }
             if (!string.IsNullOrWhiteSpace(blocker))
-            {
-                return new DadRunStepResultDto
-                {
-                    RunId = instruction.RunId,
-                    ModuleId = instruction.ModuleId,
-                    StepName = "Assembly",
-                    ParticipantState = DadParticipantState.Failed,
-                    Summary = blocker,
-                    FailureReason = blocker,
-                    BlockedReason = blocker,
-                    AuthoritativePartyMembers = members.Select(static member => member.Clone()).ToList(),
-                };
-            }
+                return Reject(blocker);
 
             if (alreadyJoined)
                 continue;
@@ -823,6 +814,18 @@ public sealed class DadPresenceService
             Success = true,
             Deferred = !complete,
             Summary = summary,
+            AuthoritativePartyMembers = members.Select(static member => member.Clone()).ToList(),
+        };
+
+        DadRunStepResultDto Reject(string blocker) => new()
+        {
+            RunId = instruction.RunId,
+            ModuleId = instruction.ModuleId,
+            StepName = "Assembly",
+            ParticipantState = DadParticipantState.Failed,
+            Summary = blocker,
+            FailureReason = blocker,
+            BlockedReason = blocker,
             AuthoritativePartyMembers = members.Select(static member => member.Clone()).ToList(),
         };
     }

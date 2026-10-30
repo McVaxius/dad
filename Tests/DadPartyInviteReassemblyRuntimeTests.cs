@@ -60,6 +60,51 @@ public sealed class DadPartyInviteReassemblyRuntimeTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SerialFormationFreezesUnsentRecipientsBeforeTheirTurn(bool recipientInitiallyJoined)
+    {
+        using var f = new Fixture();
+        f.SetMembers(recipientInitiallyJoined ? [200ul, 300ul] : [200ul]);
+        Assert.True(f.Form(100, 300, 400).Deferred);
+        Assert.Equal(new[] { "native:invite:cross-world:100:0" }, f.Sends);
+
+        f.SetMembers(200, 100);
+        var changed = f.FormationInstruction(100, 300, 400);
+        var original = changed.InviteTargets[1];
+        changed.InviteTargets[1] = new()
+        {
+            RunId = original.RunId, ModuleId = original.ModuleId, SlotId = original.SlotId,
+            AccountKey = original.AccountKey, CharacterKey = original.CharacterKey,
+            ContentId = original.ContentId, CharacterName = "Synthetic Changed Target",
+            WorldId = original.WorldId, WorkerSessionId = original.WorkerSessionId,
+        };
+
+        var rejected = f.Form(changed);
+        Assert.False(rejected.Success);
+        Assert.Contains("identity changed", rejected.FailureReason);
+        Assert.Single(f.Sends);
+    }
+
+    [Fact]
+    public void SerialRecipientUsesNativeWorldContextFromItsFirstActualSend()
+    {
+        using var f = new Fixture();
+        f.SetMembers(200);
+        f.Form(100, 300, 400);
+        Assert.Equal(new[] { "native:invite:cross-world:100:0" }, f.Sends);
+
+        f.SetCurrentWorld(21);
+        f.SetMembers(200, 100);
+        f.Form(100, 300, 400);
+        Assert.Equal("native:invite:same-world:300:21", f.Sends.Last());
+        f.Advance(5);
+        f.Form(100, 300, 400);
+        Assert.Equal("native:invite:cross-world:300:0", f.Sends.Last());
+        Assert.DoesNotContain(f.Sends, send => send.Contains(":400:"));
+    }
+
+    [Theory]
     [InlineData("Mixed", 3)]
     [InlineData("Cross", 3)]
     [InlineData("Serial", 1)]
@@ -546,7 +591,11 @@ public sealed class DadPartyInviteReassemblyRuntimeTests
         }
         public void CancelFormation() => presence.HandleCancelRun(new() { RunId = formationRun });
         public M.DadRunStepResultDto Form(params ulong[] targets)
-            => presence.HandleAssemblyInstruction(new()
+            => Form(FormationInstruction(targets));
+        public M.DadRunStepResultDto Form(M.DadAssemblyInstructionDto instruction)
+            => presence.HandleAssemblyInstruction(instruction);
+        public M.DadAssemblyInstructionDto FormationInstruction(params ulong[] targets)
+            => new()
             {
                 RunId = formationRun, SlotId = "Slot1", InstructionKind = M.DadAssemblyInstructionKind.FormParty,
                 FrozenInviter = new()
@@ -560,7 +609,7 @@ public sealed class DadPartyInviteReassemblyRuntimeTests
                     AccountKey = new("account-" + id), CharacterKey = new("Synthetic Target " + id + "@World"),
                     ContentId = id, CharacterName = "Synthetic Target " + id, WorldId = 21, WorkerSessionId = new("worker-" + id),
                 }).ToList(),
-            });
+            };
 
         public void JoinFirstParty()
         {

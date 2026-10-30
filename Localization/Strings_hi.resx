@@ -8978,4 +8978,16 @@
   <data name="Image could not be loaded." xml:space="preserve"><value>छवि लोड नहीं हो सकी।</value></data>
   <data name="Image backgrounds remain visible to screenshots." xml:space="preserve"><value>छवि पृष्ठभूमि स्क्रीनशॉट में दिखाई देती है।</value></data>
   <data name="Pause backdrop for screenshots" xml:space="preserve"><value>स्क्रीनशॉट के लिए पृष्ठभूमि रोकें</value></data>
+  <data name="NPC, allowing inn fallback" xml:space="preserve"><value>NPC, वैकल्पिक रास्ते के रूप में सराय की अनुमति</value></data>
+  <data name="NPC repair, then enter inn" xml:space="preserve"><value>NPC से मरम्मत, फिर सराय में प्रवेश</value></data>
+  <data name="Repair inn destination" xml:space="preserve"><value>मरम्मत के बाद सराय का गंतव्य</value></data>
+  <data name="Automatic (ADS)" xml:space="preserve"><value>स्वचालित (ADS)</value></data>
+  <data name="Ul'dah" xml:space="preserve"><value>उल्दाह</value></data>
+  <data name="Gridania" xml:space="preserve"><value>ग्रिडानिया</value></data>
+  <data name="Limsa Lominsa" xml:space="preserve"><value>लिम्सा लोमिन्सा</value></data>
+  <data name="Ishgard" xml:space="preserve"><value>इशगार्ड</value></data>
+  <data name="The Crystarium" xml:space="preserve"><value>क्रिस्टेरियम</value></data>
+  <data name="Old Sharlayan" xml:space="preserve"><value>ओल्ड शार्लायन</value></data>
+  <data name="Tuliyollal" xml:space="preserve"><value>तुलियोलाल</value></data>
+  <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>मरम्मत और सराय लौटने का रास्ता ADS संभालता है। DAD कतार में लगने से पहले ADS उपयोगिता के पूरा होने की भी प्रतीक्षा करता है। तैयारी की मौजूदा 180 सेकंड की समय सीमा लागू रहती है। सभी कार्य निष्पादित करने वाले क्लाइंट पर इस रास्ते का समर्थन करने वाला ADS संस्करण होना चाहिए।</value></data>
 </root>

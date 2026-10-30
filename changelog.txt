@@ -1,3 +1,11 @@
+2026-10-30 - PR #11 review corrections (unversioned)
+
+- Freeze all ordinary serial invitation recipients before dispatch, including recipients already present or waiting for their turn; retain original native invite selection and retry context.
+- Require the exact accepted ADS repair route, including inn destination, and a completion timestamp at or after the latest matching running observation before recovery can be considered.
+- Reject unsupported numeric worker repair modes and inn destinations before normalization; preserve valid schema and serializer roundtrips.
+- Read responsive ADS status despite stale plugin metadata; require native queue idle and matching nonzero world observations before recovery settlement.
+- Complete the twelve new repair selectors/help strings in all fifteen existing language catalogs and exercise their reached display-text lookups.
+
 2026-10-29 - Restore original native invite selection under serial ordering
 
 - Remove the unintended CrossWorld-only override from ordinary serial formation. Preserve original SameWorld/CrossWorld branch selection, guarded fallback and exact-instance handling; serial ordering still advances only on actual membership.
@@ -11,7 +19,7 @@
 
 2026-10-29 - Serial ordinary crew invitations
 
-- Use the tested cross-world CID Serial strategy for ordinary LAN crew formation: invite the first missing frozen slot, wait for authoritative membership, then proceed. Preserve five-second retries, identity checks, cancellation and existing assembly wait/warning policy.
+- Use serial recipient ordering with the original native invite routing for ordinary LAN crew formation: invite the first missing frozen slot, wait for authoritative membership, then proceed. Preserve five-second retries, identity checks, cancellation and existing assembly wait/warning policy.
 - Keep explicit diagnostic comparisons and authenticated registered-island invite contracts separate. No preset migration, live activation or game-side cooldown guarantee.
 
 2026-10-29 - Global NPC inn repair routes

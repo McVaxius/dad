@@ -282,7 +282,7 @@ public sealed class DadPreDutyRepairGate
     private string terminalSummary = string.Empty;
     private DateTime invocationRequestedAtUtc;
     private DateTime? baselineCompletionUtc;
-    private bool ownRepairObserved;
+    private DateTime? ownRepairObservedAtUtc;
     private bool ownRepairContradicted;
     private bool recoveryPending;
     private bool recoveryRetryUsed;
@@ -341,15 +341,15 @@ public sealed class DadPreDutyRepairGate
             if (ads.UtilityRunning)
             {
                 if (ads.RepairRunning && DadPreDutyRepairPolicy.TryFromAdsMode(ads.UtilityMode, out var observed) &&
-                    observed.Mode == normalized.Mode)
-                    ownRepairObserved = true;
+                    observed.AdsMode == normalized.AdsMode)
+                    ownRepairObservedAtUtc = ownRepairObservedAtUtc is { } previous && previous > now ? previous : now;
                 else
                     ownRepairContradicted = true;
             }
             // ADS has no repair operation ID: require observed matching work and a new,
             // explicitly failed completion after our start. Idle alone is never replay proof.
-            if (!recoveryPending && !ads.UtilityRunning && ownRepairObserved && !ownRepairContradicted &&
-                ads.CompletedAtUtc is { } completed && completed >= invocationRequestedAtUtc && completed <= now &&
+            if (!recoveryPending && !ads.UtilityRunning && ownRepairObservedAtUtc is { } observedAt && !ownRepairContradicted &&
+                ads.CompletedAtUtc is { } completed && completed >= invocationRequestedAtUtc && completed >= observedAt && completed <= now &&
                 (!baselineCompletionUtc.HasValue || completed > baselineCompletionUtc.Value) &&
                 !string.IsNullOrWhiteSpace(ads.LastFailure) && string.IsNullOrWhiteSpace(ads.LastSuccess) &&
                 string.Equals(ads.Summary, ads.LastFailure, StringComparison.Ordinal))
@@ -415,7 +415,7 @@ public sealed class DadPreDutyRepairGate
         invocationPending = true;
         invocationRequestedAtUtc = now;
         baselineCompletionUtc = ads.CompletedAtUtc;
-        ownRepairObserved = false;
+        ownRepairObservedAtUtc = null;
         ownRepairContradicted = false;
         return new DadPreDutyRepairDecision(
             DadPreDutyRepairAction.InvokeAds,
@@ -449,7 +449,7 @@ public sealed class DadPreDutyRepairGate
             return Wait("ADS repair recovery requires five continuous seconds of safe travel/UI settlement." + FailureContext());
         recoveryPending = false;
         invocationAccepted = false;
-        ownRepairObserved = false;
+        ownRepairObservedAtUtc = null;
         if (durabilityReady)
             return Ready("Equipped durability is sufficient after safe repair recovery; no second repair is needed.");
         recoveryRetryUsed = true;

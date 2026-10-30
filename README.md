@@ -27,9 +27,11 @@ unsupported inbound mode strings are rejected explicitly. ADS must support the s
 #### Bounded recovery after an ADS repair failure
 
 An accepted repair is not blindly replayed. DAD recognizes a terminal failure only after observing the
-matching repair running and then a fresh idle failure/completion timestamp from ADS after its own start.
+exact requested ADS route running (including the inn destination), followed by a fresh idle failure/completion timestamp after its own start and no earlier than that latest running observation.
 Old, future, missing or contradictory metadata, unrelated utility work, and uncertain IPC acceptance do
 not authorize another repair. Older ADS status contracts retain conservative no-replay behavior.
+ADS versions that report only the generic repair-then-inn mode cannot prove a specific inn destination;
+those observations do not authorize automatic recovery for an explicitly selected inn.
 
 For a proven failure DAD waits for readable Lifestream idle status, a stable logged-in world outside
 duties/queues/combat and closed travel/NPC menus, continuously observed for five seconds. DAD never closes
@@ -48,7 +50,7 @@ branch on retries remain in force, including exact-instance handling. No CrossWo
 forced on ordinary runs. Only authoritative party membership
 advances the sequence; a successful native send does not. Already-present exact members are skipped,
 and the remaining target is recalculated from each snapshot rather than a retained cursor.
-Existing five-second retry guards, frozen identity checks, cancellation and coordinator wait/warning
+Every recipient identity is frozen before the first serial send, including already-present members and later slots. Existing five-second retry guards, frozen identity checks, cancellation and coordinator wait/warning
 behavior remain unchanged. This is not the debug test's 120-second deadline or GroupReady hold:
 normal runs proceed to their configured duty once the exact group is ready.
 Authenticated registered-island invitation contracts and alliance recruiting are unchanged.

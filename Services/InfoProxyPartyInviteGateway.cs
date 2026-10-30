@@ -175,11 +175,17 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
     internal IReadOnlyList<DadNativePartyInviteTarget> SelectAssemblyInviteTargets(
         string runId,
         IReadOnlyList<DadNativePartyInviteTarget> targets,
-        IReadOnlyList<DadPartyMemberSnapshot> members)
+        IReadOnlyList<DadPartyMemberSnapshot> members,
+        out string blocker)
+    {
+        blocker = string.Empty;
         // Exact diagnostic requests (including revoked ones) keep their scoped policy.
-        => string.Equals(Diagnostics.RunId, runId, StringComparison.Ordinal)
-            ? targets
-            : DadNativePartyInviteRules.SelectSerialTargets(targets, members);
+        if (string.Equals(Diagnostics.RunId, runId, StringComparison.Ordinal))
+            return targets;
+        return inviteAttempts.TryFreezeTargets(runId, targets, out blocker)
+            ? DadNativePartyInviteRules.SelectSerialTargets(targets, members)
+            : [];
+    }
 
     public DadNativePartyInviteAttempt? TryInvite(
         DadNativePartyInviteTarget target,

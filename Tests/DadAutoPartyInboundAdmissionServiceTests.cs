@@ -310,6 +310,8 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
 
     [Theory]
     [InlineData("self")]
+    [InlineData("npc-no-inn")]
+    [InlineData("npc-no-teleport-no-inn")]
     [InlineData("npc")]
     [InlineData("npc-yes-inn")]
     [InlineData("npc-yes-inn-uldah")]
@@ -392,6 +394,16 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
         Assert.Equal(repairMode, settle.Plan.Request.PreDutyRepairPolicy.AdsMode);
         Assert.True(queue.Plan.Request.PreDutyRepairPolicy.Enabled);
         Assert.Equal(42, queue.Plan.Request.PreDutyRepairPolicy.ThresholdPercent);
+        var expectedSchema = repairMode is "self" or "npc-no-inn" or "npc-no-teleport-no-inn" ? 2 : 6;
+        Assert.Equal(expectedSchema, queue.SchemaVersion);
+        Assert.Equal(expectedSchema, settle.SchemaVersion);
+        var roundTrip = DadIpcJson.Deserialize<DadWorkerExecutionCommand>(DadIpcJson.Serialize(queue));
+        Assert.NotNull(roundTrip);
+        Assert.Equal(queue.Plan.Request.PreDutyRepairPolicy.Mode, roundTrip.Plan.Request.PreDutyRepairPolicy.Mode);
+        Assert.Equal(queue.Plan.Request.PreDutyRepairPolicy.InnDestination, roundTrip.Plan.Request.PreDutyRepairPolicy.InnDestination);
+        Assert.Equal(repairMode, roundTrip.Plan.Request.PreDutyRepairPolicy.AdsMode);
+        Assert.Equal(queueParticipant.WorkerSessionId,
+            Assert.Single(roundTrip.Participants, static participant => participant.IsLocalClient).WorkerSessionId);
         Assert.False(DadAutoPartyInboundExecutionRules.TryBuildWorkerCommand(Operation(ExecutionOperationKind.Queue),
             context with { ExecutionPlan = plan with { RepairPolicy = new EndpointRepairPolicy(true, 42, "npc-yes-inn-unknown") } },
             live, out _, out _, out var unknownMode));

@@ -98,14 +98,22 @@ public sealed class DadWorkerCommandValidationRulesTests
     }
 
     [Theory]
-    [InlineData(DadPreDutyRepairMode.NpcWithInnFallback)]
-    [InlineData(DadPreDutyRepairMode.NpcThenInn)]
-    public void NewRepairRoutesRequireSchemaSixAndRoundTripToExactWorker(DadPreDutyRepairMode mode)
+    [InlineData(DadPreDutyRepairMode.NpcWithInnFallback, DadRepairInnDestination.Automatic, "npc")]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, DadRepairInnDestination.Automatic, "npc-yes-inn")]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, DadRepairInnDestination.Uldah, "npc-yes-inn-uldah")]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, DadRepairInnDestination.Gridania, "npc-yes-inn-gridania")]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, DadRepairInnDestination.Limsa, "npc-yes-inn-limsa")]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, DadRepairInnDestination.Ishgard, "npc-yes-inn-ishgard")]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, DadRepairInnDestination.Crystarium, "npc-yes-inn-crystarium")]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, DadRepairInnDestination.Sharlayan, "npc-yes-inn-sharlayan")]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, DadRepairInnDestination.Tuliyollal, "npc-yes-inn-tuliyollal")]
+    public void NewRepairRoutesRequireSchemaSixAndRoundTripToExactWorker(
+        DadPreDutyRepairMode mode, DadRepairInnDestination destination, string adsMode)
     {
         var command = BuildCommand();
         command.Plan.Request.PreDutyRepairPolicy = new()
         {
-            Enabled = true, Mode = mode, InnDestination = DadRepairInnDestination.Tuliyollal,
+            Enabled = true, ThresholdPercent = 42, Mode = mode, InnDestination = destination,
         };
         Assert.Equal(6, DadWorkerCommandSchemaRules.ResolveEmissionSchema(command.Plan.Request.PreDutyRepairPolicy));
         for (var old = 1; old <= 5; old++)
@@ -114,12 +122,59 @@ public sealed class DadWorkerCommandValidationRulesTests
             AssertRejected(command, RuntimeForX(), "schema 6");
         }
         command.SchemaVersion = 6;
-        var roundTrip = DadIpcJson.Deserialize<DadWorkerExecutionCommand>(DadIpcJson.Serialize(command));
-        Assert.NotNull(roundTrip);
-        Assert.True(DadWorkerCommandValidationRules.TryValidate(roundTrip, RuntimeForX(), out _, out var blocker), blocker);
-        Assert.Equal(command.Plan.Request.PreDutyRepairPolicy.AdsMode, roundTrip.Plan.Request.PreDutyRepairPolicy.AdsMode);
+        var wire = DadIpcJson.Deserialize<DadWorkerExecutionCommand>(DadIpcJson.Serialize(command));
+        var saved = Newtonsoft.Json.JsonConvert.DeserializeObject<DadWorkerExecutionCommand>(
+            Newtonsoft.Json.JsonConvert.SerializeObject(command));
+        foreach (var roundTrip in new[] { wire, saved })
+        {
+            Assert.NotNull(roundTrip);
+            Assert.True(DadWorkerCommandValidationRules.TryValidate(roundTrip, RuntimeForX(), out var local, out var blocker), blocker);
+            Assert.Equal(6, roundTrip.SchemaVersion);
+            Assert.Equal(mode, roundTrip.Plan.Request.PreDutyRepairPolicy.Mode);
+            Assert.Equal(destination, roundTrip.Plan.Request.PreDutyRepairPolicy.InnDestination);
+            Assert.Equal(adsMode, roundTrip.Plan.Request.PreDutyRepairPolicy.AdsMode);
+            Assert.Equal(42, roundTrip.Plan.Request.PreDutyRepairPolicy.ThresholdPercent);
+            Assert.True(roundTrip.Plan.Request.PreDutyRepairPolicy.Enabled);
+            Assert.Equal("Slot2", local.AssignedSlotId);
+            Assert.Equal(XWorker, local.WorkerSessionId.Value);
+            Assert.Equal(command.CommandId, roundTrip.CommandId);
+            Assert.Equal(command.RunId, roundTrip.RunId);
+        }
         command.Plan.Request.PreDutyRepairPolicy.Enabled = false;
         Assert.Equal(1, DadWorkerCommandSchemaRules.ResolveEmissionSchema(command.Plan.Request.PreDutyRepairPolicy));
+    }
+
+    [Theory]
+    [InlineData(-1, 0, true)]
+    [InlineData(99, 0, true)]
+    [InlineData(4, -1, true)]
+    [InlineData(4, 99, true)]
+    [InlineData(-1, 0, false)]
+    [InlineData(99, 0, false)]
+    [InlineData(4, -1, false)]
+    [InlineData(4, 99, false)]
+    public void MalformedNumericRepairRoutesAreRejectedWithoutChangingTheirRequestedRoute(
+        int mode, int destination, bool enabled)
+    {
+        var command = BuildCommand();
+        command.SchemaVersion = 6;
+        command.Plan.Request.PreDutyRepairPolicy = new()
+        {
+            Enabled = enabled, ThresholdPercent = 42,
+            Mode = (DadPreDutyRepairMode)mode, InnDestination = (DadRepairInnDestination)destination,
+        };
+        var wire = DadIpcJson.Deserialize<DadWorkerExecutionCommand>(DadIpcJson.Serialize(command));
+        var saved = Newtonsoft.Json.JsonConvert.DeserializeObject<DadWorkerExecutionCommand>(
+            Newtonsoft.Json.JsonConvert.SerializeObject(command));
+        foreach (var incoming in new[] { command, wire, saved })
+        {
+            Assert.NotNull(incoming);
+            AssertRejected(incoming, RuntimeForX(), mode is < 0 or > 4 ? "repair mode" : "inn destination");
+            Assert.Equal(mode, (int)incoming.Plan.Request.PreDutyRepairPolicy.Mode);
+            Assert.Equal(destination, (int)incoming.Plan.Request.PreDutyRepairPolicy.InnDestination);
+            Assert.Equal(enabled, incoming.Plan.Request.PreDutyRepairPolicy.Enabled);
+            Assert.Equal(42, incoming.Plan.Request.PreDutyRepairPolicy.ThresholdPercent);
+        }
     }
 
     [Fact]

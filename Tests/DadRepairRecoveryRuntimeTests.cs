@@ -2,7 +2,10 @@ extern alias DadRuntime;
 extern alias DalamudApi;
 
 using System.Reflection;
+using System.Runtime.CompilerServices;
+using DalamudApi::Dalamud.Plugin.Ipc;
 using DalamudApi::Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Enums;
 using Xunit;
 using M = DadRuntime::dad.Models;
 using S = DadRuntime::dad.Services;
@@ -70,6 +73,131 @@ public sealed class DadRepairRecoveryRuntimeTests
         var busy = S.DadDutySupportAdsService.ReadRepairRetrySafety(new(true, true, false, "busy"));
         Assert.True(busy.Readable);
         Assert.False(busy.Safe);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ResponsiveRepairStatusIsAuthoritativeDespiteInstalledPluginMetadata(bool metadataLoaded)
+    {
+        var reads = 0;
+        var status = ReadStatus(metadataLoaded, () =>
+        {
+            reads++;
+            return """{"utilityRunning":true,"utilityTask":"NPC repair","utilityMode":"npc","utilityStatus":"Travelling"}""";
+        });
+        Assert.Equal(1, reads);
+        Assert.True(status.Available);
+        Assert.True(status.Readable);
+        Assert.True(status.RepairRunning);
+        Assert.Equal("npc", status.UtilityMode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BrokenRepairStatusNeverBecomesReadableIdle(bool metadataLoaded)
+    {
+        Assert.False(ReadStatus(metadataLoaded, () => "").Readable);
+        Assert.False(ReadStatus(metadataLoaded, () => "{}").Readable);
+        var failed = ReadStatus(metadataLoaded, () => throw new InvalidOperationException("fixture endpoint unavailable"));
+        Assert.Equal(metadataLoaded, failed.Available);
+        Assert.False(failed.Readable);
+    }
+
+    [Theory]
+    [InlineData("npc", true)]
+    [InlineData("npc-no-inn", false)]
+    [InlineData("npc-yes-inn-gridania", true)]
+    public void RepairInvocationPreservesModeAndExplicitAcceptance(string mode, bool accepted)
+    {
+        var calls = 0;
+        var service = RepairService(requested => { Assert.Equal(mode, requested); calls++; return accepted; });
+        var result = service.StartRepair(mode);
+        Assert.Equal(1, calls);
+        Assert.Equal(accepted ? M.DadAdsRepairInvocationOutcome.Accepted : M.DadAdsRepairInvocationOutcome.ExplicitFalse, result.Outcome);
+    }
+
+    [Fact]
+    public void RepairInvocationExceptionRemainsUncertainAndIsNotReplayed()
+    {
+        var calls = 0;
+        var service = RepairService(_ => { calls++; throw new InvalidOperationException("fixture acceptance unknown"); });
+        Assert.Equal(M.DadAdsRepairInvocationOutcome.Uncertain, service.StartRepair("npc").Outcome);
+        Assert.Equal(1, calls);
+    }
+
+    [Theory]
+    [InlineData(ContentsFinderQueueState.Pending)]
+    [InlineData(ContentsFinderQueueState.Queued)]
+    [InlineData(ContentsFinderQueueState.Ready)]
+    [InlineData(ContentsFinderQueueState.Accepted)]
+    public void NativeQueueActivityBlocksSettlementEvenWhenConditionFlagsAreClear(ContentsFinderQueueState state)
+    {
+        var safety = NativeSettlement(1, 1, state);
+        Assert.True(safety.Readable);
+        Assert.False(safety.Safe);
+    }
+
+    [Theory]
+    [InlineData(0u, 1u)]
+    [InlineData(1u, 0u)]
+    [InlineData(1u, 2u)]
+    public void NativeTerritoryMustAgreeBeforeSettlement(uint territory, uint nativeTerritory)
+    {
+        var safety = NativeSettlement(territory, nativeTerritory, default(ContentsFinderQueueState));
+        Assert.False(safety.Readable);
+        Assert.False(safety.Safe);
+    }
+
+    [Fact]
+    public void MissingOrUnknownNativeQueueTruthCannotAuthorizeRecovery()
+    {
+        Assert.False(NativeSettlement(1, 1, null).Safe);
+        Assert.False(NativeSettlement(1, 1, (ContentsFinderQueueState)byte.MaxValue).Safe);
+        Assert.True(NativeSettlement(1, 1, default(ContentsFinderQueueState)).Safe);
+    }
+
+    [Fact]
+    public void NativeQueueAndWorldSettlementInterruptTheRuntimeRecoveryWindow()
+    {
+        using var fixture = new Fixture(); fixture.Tick(0);
+        fixture.Ads = M.DadAdsRepairObservation.Running(true, "NPC repair", "npc"); fixture.Tick(1);
+        fixture.Ads = M.DadAdsRepairObservation.Idle("fixture failure") with
+            { LastFailure = "fixture failure", CompletedAtUtc = Now.AddSeconds(10) };
+        fixture.Tick(10);
+        fixture.Safety = NativeSettlement(1, 1, ContentsFinderQueueState.Pending); fixture.Tick(11);
+        fixture.Safety = NativeSettlement(1, 1, default(ContentsFinderQueueState)); fixture.Tick(12);
+        fixture.Safety = NativeSettlement(1, 2, default(ContentsFinderQueueState)); fixture.Tick(13);
+        fixture.Safety = NativeSettlement(1, 1, default(ContentsFinderQueueState));
+        for (var second = 14; second < 19; second++) fixture.Tick(second);
+        Assert.Equal(1, fixture.Starts);
+        fixture.Tick(19);
+        Assert.Equal(2, fixture.Starts);
+    }
+
+    private static M.DadAdsRepairObservation ReadStatus(bool metadataLoaded, Func<string> read)
+        => (M.DadAdsRepairObservation)typeof(S.DadDutySupportAdsService)
+            .GetMethod("ReadRepairStatus", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [metadataLoaded, read])!;
+
+    private static M.DadRepairRetrySafetyObservation NativeSettlement(uint territory, uint nativeTerritory, ContentsFinderQueueState? queue)
+        => (M.DadRepairRetrySafetyObservation)typeof(S.DadDutySupportAdsService)
+            .GetMethod("ReadRepairRetryNativeSettlement", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [territory, nativeTerritory, queue])!;
+
+    private static S.DadDutySupportAdsService RepairService(Func<string, bool> invoke)
+    {
+        var endpoint = DispatchProxy.Create<ICallGateSubscriber<string, bool>, RepairStartProxy>();
+        ((RepairStartProxy)endpoint).Call = invoke;
+        var service = (S.DadDutySupportAdsService)RuntimeHelpers.GetUninitializedObject(typeof(S.DadDutySupportAdsService));
+        typeof(S.DadDutySupportAdsService).GetField("startRepair", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, endpoint);
+        return service;
+    }
+
+    public class RepairStartProxy : DispatchProxy
+    {
+        public Func<string, bool> Call { get; set; } = null!;
+        protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => method?.Name == "InvokeFunc" ? Call((string)args![0]!) : throw new NotSupportedException(method?.Name);
     }
 
     private sealed class Fixture : IDisposable
