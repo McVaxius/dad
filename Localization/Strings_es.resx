@@ -9023,4 +9023,16 @@ Bloqueador(es) de lista</value>
   <data name="Image could not be loaded." xml:space="preserve"><value>No se pudo cargar la imagen.</value></data>
   <data name="Image backgrounds remain visible to screenshots." xml:space="preserve"><value>Los fondos de imagen siguen visibles en las capturas de pantalla.</value></data>
   <data name="Pause backdrop for screenshots" xml:space="preserve"><value>Pausar el fondo para capturas de pantalla</value></data>
+  <data name="NPC, allowing inn fallback" xml:space="preserve"><value>NPC, con posada como alternativa</value></data>
+  <data name="NPC repair, then enter inn" xml:space="preserve"><value>Reparar con NPC y entrar en una posada</value></data>
+  <data name="Repair inn destination" xml:space="preserve"><value>Posada de destino tras la reparación</value></data>
+  <data name="Automatic (ADS)" xml:space="preserve"><value>Automático (ADS)</value></data>
+  <data name="Ul'dah" xml:space="preserve"><value>Ul'dah</value></data>
+  <data name="Gridania" xml:space="preserve"><value>Gridania</value></data>
+  <data name="Limsa Lominsa" xml:space="preserve"><value>Limsa Lominsa</value></data>
+  <data name="Ishgard" xml:space="preserve"><value>Ishgard</value></data>
+  <data name="The Crystarium" xml:space="preserve"><value>El Cristarium</value></data>
+  <data name="Old Sharlayan" xml:space="preserve"><value>Vieja Sharlayan</value></data>
+  <data name="Tuliyollal" xml:space="preserve"><value>Tuliyollal</value></data>
+  <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>ADS gestiona la reparación y el regreso a la posada. DAD también espera a que termine la utilidad de ADS antes de iniciar la búsqueda de grupo, dentro del límite de preparación existente de 180 segundos. Todos los clientes ejecutores necesitan una versión de ADS compatible con esta ruta.</value></data>
 </root>

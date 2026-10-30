@@ -172,14 +172,30 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
         return false;
     }
 
+    internal IReadOnlyList<DadNativePartyInviteTarget> SelectAssemblyInviteTargets(
+        string runId,
+        IReadOnlyList<DadNativePartyInviteTarget> targets,
+        IReadOnlyList<DadPartyMemberSnapshot> members,
+        out string blocker)
+    {
+        blocker = string.Empty;
+        // Exact diagnostic requests (including revoked ones) keep their scoped policy.
+        if (string.Equals(Diagnostics.RunId, runId, StringComparison.Ordinal))
+            return targets;
+        return inviteAttempts.TryFreezeTargets(runId, targets, out blocker)
+            ? DadNativePartyInviteRules.SelectSerialTargets(targets, members)
+            : [];
+    }
+
     public DadNativePartyInviteAttempt? TryInvite(
         DadNativePartyInviteTarget target,
         bool partyListContainsContentId,
         out string blocker)
     {
         RequireFrameworkThread();
+        var comparisonRequest = string.Equals(Diagnostics.RunId, target.RunId, StringComparison.Ordinal);
         DadNativePartyInviteType? forcedType = null;
-        if (string.Equals(Diagnostics.RunId, target.RunId, StringComparison.Ordinal) &&
+        if (comparisonRequest &&
             !Diagnostics.Allows(target.RunId, target.ContentId,
                 ReadAuthoritativePartyMembers().Select(member => member.ContentId).ToArray(),
                 DadClock.UtcNow, configuration.DebugUiEnabled && configuration.PluginEnabled, out forcedType))
@@ -199,8 +215,8 @@ internal sealed unsafe class InfoProxyPartyInviteGateway : IDadNativePartyInvite
             WorldId = target.WorldId,
             WorkerSessionId = target.WorkerSessionId,
             LocalCurrentWorldId = native?.Observe().CurrentWorldId ?? (uint)playerState.CurrentWorld.RowId,
-            // DAD has X's frozen/home World ID, not X's visited-current-world truth. Keep the
-            // relation ambiguous so attempt two uses the alternate native branch.
+            // Home World does not prove visited-current-world truth. Keep the original native
+            // branch/fallback selection; serial assembly changes recipient order only.
             WorldRelationExact = false,
             // Territory equality cannot prove the same duty instance. This becomes true only
             // when a future runtime source can establish exact same-applicable-instance truth.

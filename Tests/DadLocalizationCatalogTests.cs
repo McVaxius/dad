@@ -53,6 +53,15 @@ public sealed class DadLocalizationCatalogTests
         Assert.Contains("Picker", labels.Keys);
         Assert.Contains("Recover game connections automatically", labels.Keys);
         Assert.Contains("Stay on visited world/DC between presets", labels.Keys);
+        // UiGui translates these reached repair selectors and help text by their English display text.
+        foreach (var caption in new[]
+                 {
+                     "NPC, allowing inn fallback", "NPC repair, then enter inn", "Repair inn destination",
+                     "Automatic (ADS)", "Ul'dah", "Gridania", "Limsa Lominsa", "Ishgard",
+                     "The Crystarium", "Old Sharlayan", "Tuliyollal",
+                     "ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route.",
+                 })
+            Assert.Contains(caption, labels.Keys);
     }
 
     private static List<KeyValuePair<string, string>> ReadCatalog(string language)

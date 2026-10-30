@@ -217,7 +217,7 @@ public sealed partial class Plugin : IDalamudPlugin
     private IReadOnlyList<DadLevelingJobDescriptor>? levelingJobCatalog;
     private bool standaloneCrewDisbandActive;
     private string standaloneCrewDisbandSummary = "No standalone disband is active.";
-    private const string LocalNpcProjectionBuildMarker = "invite-diagnostics-20261028-02";
+    private const string LocalNpcProjectionBuildMarker = "serial-native-fallback-recovery-20261029-03";
     private readonly DateTime pluginLoadedAtUtc = DateTime.UtcNow;
 
     private sealed class DebouncedUiWrite
@@ -417,7 +417,8 @@ public sealed partial class Plugin : IDalamudPlugin
         DutyQueueService = new DadDutyQueueService(ExternalPluginCapabilityService);
         DutySupportAdsService = new DadDutySupportAdsService(PluginInterface, Log);
         var shoppingService = new DadShoppingRuntimeService(DutySupportAdsService, PresenceService, Log);
-        var preDutyRepairService = new DadPreDutyRepairRuntimeService(DutySupportAdsService, Log);
+        var preDutyRepairService = new DadPreDutyRepairRuntimeService(DutySupportAdsService, Log,
+            readRetrySafety: () => DadDutySupportAdsService.ReadRepairRetrySafety(LifestreamIpcService.Inspect()));
         LocalDutyQueueService = new DadLocalDutyQueueService(Log, PresenceService.BuildLiveSafetySnapshot,
             PresenceService.BuildLiveQueueConfirmationSnapshot);
         NpcDutyQueueService = new DadNpcDutyQueueService(Log);

@@ -8,14 +8,16 @@ internal sealed class VirtualPartyGateway(ulong localContentId, Action<string> r
     private int promptSequence;
     public List<DadPartyMemberSnapshot> Members { get; set; } = [new() { ContentId = localContentId, IsLocalPlayer = true }];
     public bool CrossRealm { get; set; }
+    public uint CurrentWorldId { get; set; } = 1;
+    public bool CrossWorldInviteResult { get; set; } = true;
     public DadSelectYesnoPromptSnapshot Prompt { get; set; }
     public DadPendingPartyInvitation Invitation { get; set; }
     public DadPartyNativeObservation Observe() => new(Members, Members.FirstOrDefault()?.ContentId ?? 0,
-        CrossRealm, Members.Count > 1, Prompt, Invitation, CurrentWorldId: 1);
+        CrossRealm, Members.Count > 1, Prompt, Invitation, CurrentWorldId: CurrentWorldId);
     public bool InviteSameWorld(ulong contentId, string name, ushort worldId)
     { record($"native:invite:same-world:{contentId}:{worldId}"); return true; }
     public bool InviteCrossWorld(ulong contentId, ushort worldId)
-    { record($"native:invite:cross-world:{contentId}:{worldId}"); return true; }
+    { record($"native:invite:cross-world:{contentId}:{worldId}"); return CrossWorldInviteResult; }
     public bool InviteInInstance(ulong contentId)
     { record($"native:invite:instance:{contentId}"); return true; }
     public bool RespondToInvitation(DadPendingPartyInvitation invitation)

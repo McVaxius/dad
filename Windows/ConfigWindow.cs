@@ -21,6 +21,13 @@ public sealed class ConfigWindow : Window, IDisposable
         "Self",
         "NPC, excluding inns",
         "Nearby NPC, no teleport/inn",
+        "NPC, allowing inn fallback",
+        "NPC repair, then enter inn",
+    };
+    private static readonly string[] RepairInnDestinations =
+    {
+        "Automatic (ADS)", "Ul'dah", "Gridania", "Limsa Lominsa", "Ishgard",
+        "The Crystarium", "Old Sharlayan", "Tuliyollal",
     };
     private const string CommunityDiscordUrl = "https://discord.gg/ac6gjDvR8R";
     private static readonly Vector2 MinimumWindowSize = new(700f, 540f);
@@ -236,6 +243,17 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             repairPolicy.Mode = (DadPreDutyRepairMode)Math.Clamp(repairMode, 0, PreDutyRepairModes.Length - 1);
             configuration.Save();
+        }
+        if (repairPolicy.RequiresInnCompletion)
+        {
+            var innDestination = (int)repairPolicy.InnDestination;
+            ImGui.SetNextItemWidth(260f);
+            if (UiGui.Combo("Repair inn destination", ref innDestination, RepairInnDestinations, RepairInnDestinations.Length))
+            {
+                repairPolicy.InnDestination = (DadRepairInnDestination)Math.Clamp(innDestination, 0, RepairInnDestinations.Length - 1);
+                configuration.Save();
+            }
+            UiGui.TextWrapped("ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route.");
         }
         ImGui.EndDisabled();
         DrawStatusRow("ADS mode", repairPolicy.AdsMode);

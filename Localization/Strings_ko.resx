@@ -8981,4 +8981,16 @@
   <data name="Image could not be loaded." xml:space="preserve"><value>이미지를 불러올 수 없습니다.</value></data>
   <data name="Image backgrounds remain visible to screenshots." xml:space="preserve"><value>이미지 배경은 스크린샷에 표시됩니다.</value></data>
   <data name="Pause backdrop for screenshots" xml:space="preserve"><value>스크린샷 촬영을 위해 배경 일시 정지</value></data>
+  <data name="NPC, allowing inn fallback" xml:space="preserve"><value>NPC 수리, 여관을 대체 경로로 허용</value></data>
+  <data name="NPC repair, then enter inn" xml:space="preserve"><value>NPC 수리 후 여관 입장</value></data>
+  <data name="Repair inn destination" xml:space="preserve"><value>수리 후 여관 목적지</value></data>
+  <data name="Automatic (ADS)" xml:space="preserve"><value>자동 (ADS)</value></data>
+  <data name="Ul'dah" xml:space="preserve"><value>울다하</value></data>
+  <data name="Gridania" xml:space="preserve"><value>그리다니아</value></data>
+  <data name="Limsa Lominsa" xml:space="preserve"><value>림사 로민사</value></data>
+  <data name="Ishgard" xml:space="preserve"><value>이슈가르드</value></data>
+  <data name="The Crystarium" xml:space="preserve"><value>크리스타리움</value></data>
+  <data name="Old Sharlayan" xml:space="preserve"><value>올드 샬레이안</value></data>
+  <data name="Tuliyollal" xml:space="preserve"><value>툴라이욜라</value></data>
+  <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>수리와 여관 복귀 경로는 ADS가 관리합니다. DAD는 참가 신청 전에 ADS 유틸리티가 끝날 때까지 기다리며, 기존 준비 제한 시간인 180초가 그대로 적용됩니다. 모든 실행 클라이언트에는 이 경로를 지원하는 ADS 버전이 필요합니다.</value></data>
 </root>

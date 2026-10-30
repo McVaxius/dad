@@ -8,6 +8,25 @@ public sealed class DadNativePartyInviteRulesTests
     private static readonly DateTime Start = new(2026, 7, 12, 12, 0, 0, DateTimeKind.Utc);
 
     [Fact]
+    public void SerialSelectionUsesNumericSlotsAndOnlyCurrentExactContentIds()
+    {
+        var targets = new[]
+        {
+            new DadNativePartyInviteTarget { SlotId = "Slot10", ContentId = 1000 },
+            new DadNativePartyInviteTarget { SlotId = "Slot3", ContentId = 300 },
+            new DadNativePartyInviteTarget { SlotId = "Slot2", ContentId = 200 },
+        };
+        static DadPartyMemberSnapshot Member(ulong id) => new() { ContentId = id };
+        Assert.Equal(200ul, Assert.Single(DadNativePartyInviteRules.SelectSerialTargets(targets, [])).ContentId);
+        Assert.Equal(200ul, Assert.Single(DadNativePartyInviteRules.SelectSerialTargets(targets, [Member(999)])).ContentId);
+        Assert.Equal(300ul, Assert.Single(DadNativePartyInviteRules.SelectSerialTargets(targets, [Member(200)])).ContentId);
+        Assert.Equal(1000ul, Assert.Single(DadNativePartyInviteRules.SelectSerialTargets(targets, [Member(300), Member(200)])).ContentId);
+        Assert.Empty(DadNativePartyInviteRules.SelectSerialTargets(targets, [Member(1000), Member(300), Member(200)]));
+        // Losing an earlier member cannot be hidden by previous selection calls.
+        Assert.Equal(200ul, Assert.Single(DadNativePartyInviteRules.SelectSerialTargets(targets, [Member(1000), Member(300)])).ContentId);
+    }
+
+    [Fact]
     public void ExcaliburToExcaliburDispatchesExactSameWorldIdentity()
     {
         var dispatcher = new FakeDispatcher(true);

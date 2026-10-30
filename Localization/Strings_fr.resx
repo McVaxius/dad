@@ -9020,4 +9020,16 @@ Les lignes</value>
   <data name="Image could not be loaded." xml:space="preserve"><value>Impossible de charger l’image.</value></data>
   <data name="Image backgrounds remain visible to screenshots." xml:space="preserve"><value>Les arrière-plans d’image restent visibles sur les captures d’écran.</value></data>
   <data name="Pause backdrop for screenshots" xml:space="preserve"><value>Figer l’arrière-plan pour les captures d’écran</value></data>
+  <data name="NPC, allowing inn fallback" xml:space="preserve"><value>NPC, avec repli possible vers une auberge</value></data>
+  <data name="NPC repair, then enter inn" xml:space="preserve"><value>Réparation NPC, puis entrée dans une auberge</value></data>
+  <data name="Repair inn destination" xml:space="preserve"><value>Destination de l'auberge après réparation</value></data>
+  <data name="Automatic (ADS)" xml:space="preserve"><value>Automatique (ADS)</value></data>
+  <data name="Ul'dah" xml:space="preserve"><value>Ul'dah</value></data>
+  <data name="Gridania" xml:space="preserve"><value>Gridania</value></data>
+  <data name="Limsa Lominsa" xml:space="preserve"><value>Limsa Lominsa</value></data>
+  <data name="Ishgard" xml:space="preserve"><value>Ishgard</value></data>
+  <data name="The Crystarium" xml:space="preserve"><value>Cristarium</value></data>
+  <data name="Old Sharlayan" xml:space="preserve"><value>Vieille Sharlayan</value></data>
+  <data name="Tuliyollal" xml:space="preserve"><value>Tuliyollal</value></data>
+  <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>ADS gère la réparation et le retour à l'auberge. Avant l'inscription, DAD attend également la fin de l'utilitaire ADS, dans la limite de préparation existante de 180 secondes. Tous les clients exécutants doivent disposer d'une version d'ADS prenant en charge cet itinéraire.</value></data>
 </root>

@@ -209,8 +209,14 @@ public sealed class DadAutoPartyParticipantBridgeTests
         Assert.Empty(bridge.LeasePendingCommands(8, TimeSpan.FromSeconds(10), now).Commands);
     }
 
-    [Fact]
-    public void LocalAnyJobFreezesLiveCombatJobAndProposalCarriesFullExecutionPlan()
+    [Theory]
+    [InlineData(DadPreDutyRepairMode.NearbyNpcNoTeleportOrInn, DadRepairInnDestination.Automatic, "npc-no-teleport-no-inn")]
+    [InlineData(DadPreDutyRepairMode.NpcWithInnFallback, DadRepairInnDestination.Automatic, "npc")]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, DadRepairInnDestination.Automatic, "npc-yes-inn")]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, DadRepairInnDestination.Limsa, "npc-yes-inn-limsa")]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, DadRepairInnDestination.Tuliyollal, "npc-yes-inn-tuliyollal")]
+    public void LocalAnyJobFreezesLiveCombatJobAndProposalCarriesFullExecutionPlan(
+        DadPreDutyRepairMode repairMode, DadRepairInnDestination destination, string adsMode)
     {
         var now = DateTimeOffset.UtcNow;
         var configuration = ActiveConfiguration();
@@ -261,7 +267,8 @@ public sealed class DadAutoPartyParticipantBridgeTests
             {
                 Enabled = true,
                 ThresholdPercent = 42,
-                Mode = DadPreDutyRepairMode.NearbyNpcNoTeleportOrInn,
+                Mode = repairMode,
+                InnDestination = destination,
             },
         };
         var plan = new DadRunPlan
@@ -370,7 +377,7 @@ public sealed class DadAutoPartyParticipantBridgeTests
         Assert.Equal(321, execution.ParticipantReadyTimeoutSeconds);
         Assert.Equal(123, execution.AssemblyTimeoutSeconds);
         Assert.Equal(45, execution.LeaseDurationSeconds);
-        Assert.Equal(new EndpointRepairPolicy(true, 42, "npc-no-teleport-no-inn"), execution.RepairPolicy);
+        Assert.Equal(new EndpointRepairPolicy(true, 42, adsMode), execution.RepairPolicy);
         Assert.Equal(2, execution.Participants.Length);
         Assert.Equal(EndpointExecutionRole.QueueLeader, execution.Participants[0].Role);
         Assert.True(execution.Participants[0].IsInviter);

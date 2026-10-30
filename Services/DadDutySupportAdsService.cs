@@ -3,9 +3,10 @@ using Dalamud.Plugin;
 using Dalamud.Plugin.Ipc;
 using Dalamud.Plugin.Services;
 using dad.Models;
+using FFXIVClientStructs.FFXIV.Client.Enums;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI;
-using System.Text.Json;
 
 namespace dad.Services;
 
@@ -103,38 +104,25 @@ public sealed unsafe class DadDutySupportAdsService
     }
 
     public DadAdsRepairObservation InspectRepair()
-    {
-        if (!IsAdsLoaded())
-            return DadAdsRepairObservation.Absent();
+        => ReadRepairStatus(IsAdsLoaded(), getStatusJson.InvokeFunc);
 
+    internal static DadAdsRepairObservation ReadRepairStatus(bool installedMetadataReportsLoaded, Func<string> readStatus)
+    {
         try
         {
-            var json = getStatusJson.InvokeFunc();
+            // Like configuration readiness, responsive IPC is stronger evidence
+            // than an installed-plugin list that can lag provider registration.
+            var json = readStatus();
             if (string.IsNullOrWhiteSpace(json))
                 return DadAdsRepairObservation.Unreadable("ADS.GetStatusJson returned an empty payload.");
 
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-            if (!root.TryGetProperty("utilityRunning", out var runningElement) ||
-                runningElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
-            {
-                return DadAdsRepairObservation.Unreadable("ADS.GetStatusJson omitted readable utilityRunning truth.");
-            }
-
-            var running = runningElement.GetBoolean();
-            var task = TryReadString(root, "utilityTask");
-            var mode = TryReadString(root, "utilityMode");
-            var status = TryReadString(root, "utilityStatus");
-            var repair = running &&
-                         (mode is "self" or "npc" or "npc-no-inn" or "npc-no-teleport-no-inn" ||
-                          task.Contains("repair", StringComparison.OrdinalIgnoreCase));
-            return running
-                ? DadAdsRepairObservation.Running(repair, task, mode, status)
-                : DadAdsRepairObservation.Idle(string.IsNullOrWhiteSpace(status) ? "ADS utility is idle." : status);
+            return DadAdsRepairStatusRules.Parse(json);
         }
         catch (Exception ex)
         {
-            return DadAdsRepairObservation.Unreadable($"ADS.GetStatusJson is temporarily unreadable: {ex.Message}");
+            return installedMetadataReportsLoaded
+                ? DadAdsRepairObservation.Unreadable($"ADS.GetStatusJson is temporarily unreadable: {ex.Message}")
+                : DadAdsRepairObservation.Absent($"ADS.GetStatusJson is unavailable and ADS is not reported loaded: {ex.Message}");
         }
     }
 
@@ -158,6 +146,60 @@ public sealed unsafe class DadDutySupportAdsService
                 DadAdsRepairInvocationOutcome.Uncertain,
                 ex.Message);
         }
+    }
+
+    public static DadRepairRetrySafetyObservation ReadRepairRetrySafety(DadLifestreamState travel)
+    {
+        if (!travel.Available || travel.IsBusy)
+            return new(travel.Available, false, travel.Available ? "Lifestream is still busy." : "Lifestream idle truth is unavailable.");
+        try
+        {
+            if (!Plugin.ClientState.IsLoggedIn || Plugin.ObjectTable.LocalPlayer == null || Plugin.PlayerState.ContentId == 0)
+                return new(true, false, "Waiting for a logged-in local character.");
+            ConditionFlag[] unsafeFlags = [ConditionFlag.BetweenAreas, ConditionFlag.BetweenAreas51,
+                ConditionFlag.BoundByDuty, ConditionFlag.BoundByDuty56, ConditionFlag.InDutyQueue,
+                ConditionFlag.WaitingForDuty, ConditionFlag.WaitingForDutyFinder, ConditionFlag.InCombat,
+                ConditionFlag.Casting, ConditionFlag.Occupied, ConditionFlag.Occupied30, ConditionFlag.Occupied33,
+                ConditionFlag.Occupied38, ConditionFlag.Occupied39, ConditionFlag.OccupiedInEvent,
+                ConditionFlag.OccupiedInQuestEvent, ConditionFlag.OccupiedInCutSceneEvent, ConditionFlag.WatchingCutscene,
+                ConditionFlag.TradeOpen, ConditionFlag.Unconscious];
+            foreach (var flag in unsafeFlags)
+                if (Plugin.Condition[flag]) return new(true, false, $"World is not settled ({flag}).");
+            var game = GameMain.Instance();
+            var finder = ContentsFinder.Instance();
+            var native = ReadRepairRetryNativeSettlement(Plugin.ClientState.TerritoryType,
+                game == null ? 0 : game->CurrentTerritoryTypeId,
+                finder == null ? null : finder->QueueInfo.QueueState);
+            if (!native.Safe) return native;
+            var manager = RaptureAtkUnitManager.Instance();
+            if (manager == null) return new(false, false, "Native UI state is unavailable.");
+            string[] menuNames = ["SelectString", "SelectIconString", "SelectYesno", "TelepotTown", "Talk",
+                "Repair", "Shop", "ShopExchangeCurrency", "ShopExchangeItem"];
+            foreach (var name in menuNames)
+            {
+                var addon = manager->GetAddonByName(name);
+                if (addon != null && addon->IsVisible)
+                    return new(true, false, $"Waiting for {name} to close; DAD will not close foreign UI.");
+            }
+            return new(true, true, "Lifestream idle, world stable and travel/NPC UI closed.");
+        }
+        catch (Exception ex)
+        {
+            return new(false, false, $"Repair recovery safety is unreadable: {ex.Message}");
+        }
+    }
+
+    internal static DadRepairRetrySafetyObservation ReadRepairRetryNativeSettlement(uint territoryType,
+        uint nativeTerritoryType, ContentsFinderQueueState? queueState)
+    {
+        if (territoryType == 0 || nativeTerritoryType == 0 || territoryType != nativeTerritoryType)
+            return new(false, false, "Native territory truth is unavailable or still changing.");
+        if (!queueState.HasValue || !Enum.IsDefined(queueState.Value))
+            return new(false, false, "Native Duty Finder queue truth is unavailable.");
+        if (queueState.Value is ContentsFinderQueueState.Pending or ContentsFinderQueueState.Queued or
+            ContentsFinderQueueState.Ready or ContentsFinderQueueState.Accepted)
+            return new(true, false, "Native Duty Finder queue activity has not settled.");
+        return new(true, true, "Native world and Duty Finder queue are settled.");
     }
 
     public DadAdsShoppingCatalogResult GetShopListPresets()
@@ -420,11 +462,6 @@ public sealed unsafe class DadDutySupportAdsService
             return DadEquippedDurabilityObservation.Unreadable($"Equipped durability read failed: {ex.Message}");
         }
     }
-
-    private static string TryReadString(JsonElement root, string propertyName)
-        => root.TryGetProperty(propertyName, out var element) && element.ValueKind == JsonValueKind.String
-            ? element.GetString()?.Trim() ?? string.Empty
-            : string.Empty;
 
     public bool IsLeaveBlocked(out string blocker)
     {

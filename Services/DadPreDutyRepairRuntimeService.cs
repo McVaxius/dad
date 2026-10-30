@@ -6,7 +6,9 @@ namespace dad.Services;
 public sealed class DadPreDutyRepairRuntimeService
 {
     private static readonly TimeSpan DurabilityPollInterval = TimeSpan.FromSeconds(1);
-    private readonly DadDutySupportAdsService adsService;
+    private readonly Func<DadAdsRepairObservation> readAds;
+    private readonly Func<string, DadAdsRepairInvocationResult> startRepair;
+    private readonly Func<DadRepairRetrySafetyObservation> readRetrySafety;
     private readonly IPluginLog log;
     private readonly Func<DadEquippedDurabilityObservation> readDurability;
     private DadPreDutyRepairGate gate = new();
@@ -19,11 +21,22 @@ public sealed class DadPreDutyRepairRuntimeService
         "Pre-duty repair is not active.");
 
     public DadPreDutyRepairRuntimeService(DadDutySupportAdsService adsService, IPluginLog log,
-        Func<DadEquippedDurabilityObservation>? readDurability = null)
+        Func<DadEquippedDurabilityObservation>? readDurability = null,
+        Func<DadRepairRetrySafetyObservation>? readRetrySafety = null)
+        : this(readDurability ?? DadDutySupportAdsService.ReadEquippedDurability, adsService.InspectRepair,
+            adsService.StartRepair, readRetrySafety ?? (() => default), log)
     {
-        this.adsService = adsService;
+    }
+
+    internal DadPreDutyRepairRuntimeService(Func<DadEquippedDurabilityObservation> readDurability,
+        Func<DadAdsRepairObservation> readAds, Func<string, DadAdsRepairInvocationResult> startRepair,
+        Func<DadRepairRetrySafetyObservation> readRetrySafety, IPluginLog log)
+    {
+        this.readAds = readAds;
+        this.startRepair = startRepair;
+        this.readRetrySafety = readRetrySafety;
         this.log = log;
-        this.readDurability = readDurability ?? DadDutySupportAdsService.ReadEquippedDurability;
+        this.readDurability = readDurability;
     }
 
     public bool IsRequired => DadPreDutyRepairRules.IsRequired(policy, moduleId, request);
@@ -53,13 +66,17 @@ public sealed class DadPreDutyRepairRuntimeService
 
         nextPollUtc = nowUtc + DurabilityPollInterval;
         var durability = readDurability();
-        var ads = durability.Readable && durability.MinimumConditionPercent < policy.ThresholdPercent
-            ? adsService.InspectRepair()
+        var ads = durability.Readable &&
+                  (durability.MinimumConditionPercent < policy.ThresholdPercent || policy.RequiresInnCompletion || gate.IsRepairInProgress)
+            ? readAds()
             : DadAdsRepairObservation.Absent("ADS repair truth was not needed for this durability observation.");
-        var decision = gate.Evaluate(policy, moduleId, request, durability, ads, nowUtc);
+        var retrySafety = gate.NeedsRecoverySafety ? readRetrySafety() : default;
+        var decision = gate.Evaluate(policy, moduleId, request, durability, ads, nowUtc, retrySafety);
+        if (gate.NeedsRecoverySafety && !string.Equals(lastDecision.Summary, decision.Summary, StringComparison.Ordinal))
+            log.Warning("[dad][ADS] Pre-duty repair recovery: {Summary}", decision.Summary);
         if (decision.Action == DadPreDutyRepairAction.InvokeAds)
         {
-            var invocation = adsService.StartRepair(decision.AdsMode);
+            var invocation = startRepair(decision.AdsMode);
             gate.RecordInvocationResult(invocation, nowUtc);
             log.Information(
                 "[dad][ADS] Pre-duty repair invocation module={ModuleId} mode={Mode} outcome={Outcome} attempt={Attempt}: {Summary}",
@@ -68,7 +85,7 @@ public sealed class DadPreDutyRepairRuntimeService
                 invocation.Outcome,
                 gate.InvocationCount,
                 invocation.Summary);
-            decision = gate.Evaluate(policy, moduleId, request, durability, ads, nowUtc);
+            decision = gate.Evaluate(policy, moduleId, request, durability, ads, nowUtc, retrySafety);
         }
 
         lastDecision = decision;

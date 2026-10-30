@@ -1,5 +1,61 @@
 # DAD
 
+### Global pre-duty repair routes
+
+Open `/dad config` > **Safety & Finish** > **Pre-duty repair** on the run coordinator.
+Enable **Repair equipped gear before queue-capable duties**, select the durability threshold and repair route.
+The coordinator freezes this policy into each new run; existing live runs and saved presets are not rewritten.
+The setting remains disabled by default.
+
+Existing route IDs remain unchanged: Self, NPC excluding inns, and Nearby NPC without teleport/inn.
+Additional choices are **NPC, allowing inn fallback** (`npc`) and **NPC repair, then enter inn** (`npc-yes-inn`).
+The latter offers Automatic (ADS), Ul'dah, Gridania, Limsa Lominsa, Ishgard, the Crystarium, Old Sharlayan and
+Tuliyollal destinations. Explicit destinations use ADS's corresponding `npc-yes-inn-<destination>` contract;
+ADS owns route availability, unlock checks, travel and inn entry. DAD does not implement a separate NPC catalog.
+
+For repair-then-inn, sufficient durability alone does not release preparation while the observed or requested
+ADS repair utility is still running. DAD keeps polling until the utility is idle and durability is sufficient,
+within the existing overall 180-second limit; unavailable/unreadable status fails closed. Healthy gear without
+an active repair does not start an unnecessary inn trip. Legacy routes retain their durability-based behavior.
+This does not repair FrenRider's independent repair/exit lifecycle or establish live inn-route acceptance.
+
+All assigned DAD workers must support worker-command schema 6 for the new enabled routes; older workers reject
+the command rather than silently normalizing the new numeric mode to Self. Existing disabled policies and old
+routes retain their prior schemas. LAN cloning and AutoParty mode conversion preserve the selected destination;
+unsupported inbound mode strings are rejected explicitly. ADS must support the selected route on each worker.
+
+#### Bounded recovery after an ADS repair failure
+
+An accepted repair is not blindly replayed. DAD recognizes a terminal failure only after observing the
+exact requested ADS route running (including the inn destination), followed by a fresh idle failure/completion timestamp after its own start and no earlier than that latest running observation.
+Old, future, missing or contradictory metadata, unrelated utility work, and uncertain IPC acceptance do
+not authorize another repair. Older ADS status contracts retain conservative no-replay behavior.
+ADS versions that report only the generic repair-then-inn mode cannot prove a specific inn destination;
+those observations do not authorize automatic recovery for an explicitly selected inn.
+
+For a proven failure DAD waits for readable Lifestream idle status, a stable logged-in world outside
+duties/queues/combat and closed travel/NPC menus, continuously observed for five seconds. DAD never closes
+foreign UI or cancels another tool's travel to force recovery. Settlement is capped at 30 seconds and the
+original overall 180-second preparation deadline is never refreshed. If durability is already sufficient
+after settlement, no second repair is sent; otherwise one recovery invocation is allowed. Its rejection,
+uncertainty or another proven failure ends preparation with the ADS cause instead of starting a retry loop.
+Reset/cancellation discards pending recovery. Existing three explicit-false initial admission attempts remain
+unchanged. This DAD recovery does not fix ADS's internal Lifestream/NPC phase overlap itself.
+
+### Serial party invitations
+
+Ordinary DAD LAN crews invite one missing member at a time in Slot2→SlotN order. This changes
+recipient scheduling only: the original SameWorld/CrossWorld native selection and guarded alternate
+branch on retries remain in force, including exact-instance handling. No CrossWorld-only policy is
+forced on ordinary runs. Only authoritative party membership
+advances the sequence; a successful native send does not. Already-present exact members are skipped,
+and the remaining target is recalculated from each snapshot rather than a retained cursor.
+Every recipient identity is frozen before the first serial send, including already-present members and later slots. Existing five-second retry guards, frozen identity checks, cancellation and coordinator wait/warning
+behavior remain unchanged. This is not the debug test's 120-second deadline or GroupReady hold:
+normal runs proceed to their configured duty once the exact group is ready.
+Authenticated registered-island invitation contracts and alliance recruiting are unchanged.
+This reduces concurrent invite dispatch but does not prove that a game-side stale invite cannot recur.
+
 ### Manual invite timing comparison (debug only)
 
 Enable `/dad debug on` on every crew client, select a saved regular-party preset on its Slot1 coordinator,
@@ -13,7 +69,7 @@ the saved preset carries a roulette/dungeon task. Runtime cloning restores the f
 normalization. The invite comparison also clears requested jobs from resolved preview rows, so scheduler
 binding cannot restore them; ordinary presets retain their job preparation and task module behavior.
 
-- `/dad test invites mixed`: unchanged alternating same-world/cross-world baseline, normal slot order.
+- `/dad test invites mixed`: legacy parallel alternating same-world/cross-world baseline, normal slot order.
 - `/dad test invites cross`: cross-world Content ID only, normal parallel slot order.
 - `/dad test invites serial`: cross-world only, one recipient at a time in Slot2→SlotN order.
 - `/dad test invites reverse`: the same sequential test in SlotN→Slot2 order.
@@ -24,7 +80,8 @@ Each sequential step waits for authoritative membership, not a successful native
 at 120 seconds including preparation; debug/plugin disable, reset and cancellation revoke their request-scoped
 policy. After a successful test use `stop`, wait for cleanup and all members to be solo, then start the next mode.
 No automatic cycling or fresh run occurs on reload. Existing identity, invitation freshness, prompt ownership
-and five-second retry guards remain in force. Normal runs retain their original invite strategy.
+and five-second retry guards remain in force. Explicit comparison requests retain their selected strategy,
+including parallel Mixed/Cross, rather than inheriting ordinary Serial selection.
 
 Debug-enabled clients passively keep up to 256 in-memory invite events (no new disk logger). Reports distinguish
 native send return, receiver invitation visibility/eligibility, response attempts and confirmed membership.

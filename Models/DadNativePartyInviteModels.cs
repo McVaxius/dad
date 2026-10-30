@@ -63,6 +63,18 @@ public interface IDadNativePartyInviteDispatcher
 
 public static class DadNativePartyInviteRules
 {
+    // Derive progress from this authoritative snapshot, never from native send results
+    // or a retained cursor. A later slot cannot pass a missing earlier member.
+    public static IReadOnlyList<DadNativePartyInviteTarget> SelectSerialTargets(
+        IReadOnlyList<DadNativePartyInviteTarget> targets,
+        IReadOnlyList<DadPartyMemberSnapshot> members)
+        => targets
+            .OrderBy(static target => DadPlannerSlotRules.GetSlotSortKey(target.SlotId))
+            .ThenBy(static target => target.SlotId, StringComparer.OrdinalIgnoreCase)
+            .Where(target => !members.Any(member => member.ContentId == target.ContentId))
+            .Take(1)
+            .ToList();
+
     public static DadNativePartyInviteType SelectInviteType(
         DadNativePartyInviteTarget target,
         int attemptNumber)
@@ -101,6 +113,28 @@ public sealed class DadNativePartyInviteAttemptTracker
         targets.Clear();
         activeRunId = runId;
         runConfirmed = false;
+    }
+
+    internal bool TryFreezeTargets(string runId, IReadOnlyList<DadNativePartyInviteTarget> inviteTargets, out string blocker)
+    {
+        BeginRun(runId);
+        foreach (var target in inviteTargets)
+        {
+            blocker = Validate(target);
+            if (!string.IsNullOrWhiteSpace(blocker))
+                return false;
+            if (!Same(runId, target.RunId) ||
+                targets.TryGetValue(target.ContentId, out var state) && !SameFrozenIdentity(state.FrozenTarget, target))
+            {
+                blocker = $"Native party invite target identity changed after it was frozen for {target.SlotId}.";
+                return false;
+            }
+        }
+
+        foreach (var target in inviteTargets)
+            targets.TryAdd(target.ContentId, new TargetAttemptState { FrozenTarget = target.Clone() });
+        blocker = string.Empty;
+        return true;
     }
 
     public DadNativePartyInviteAttempt? TryDispatch(
@@ -146,6 +180,10 @@ public sealed class DadNativePartyInviteAttemptTracker
         if (state.PartyConfirmed || nowUtc < state.NextAttemptAtUtc)
             return null;
 
+        // Serial assembly freezes identities before their turn, but native branch
+        // selection still uses the context observed at this target's first send.
+        if (state.AttemptNumber == 0)
+            state.FrozenTarget = target.Clone();
         state.AttemptNumber++;
         var inviteType = forcedInviteType ?? DadNativePartyInviteRules.SelectInviteType(state.FrozenTarget, state.AttemptNumber);
         var dispatchResult = inviteType switch
@@ -315,7 +353,7 @@ public sealed class DadNativePartyInviteAttemptTracker
 
     private sealed class TargetAttemptState
     {
-        public DadNativePartyInviteTarget FrozenTarget { get; init; } = new();
+        public DadNativePartyInviteTarget FrozenTarget { get; set; } = new();
         public bool? AuthenticatedIslandCadence { get; set; }
         public DateTime StartedAtUtc { get; set; } = DateTime.MinValue;
         public int AttemptNumber { get; set; }
