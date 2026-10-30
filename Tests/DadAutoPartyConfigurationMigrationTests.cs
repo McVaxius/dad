@@ -18,6 +18,13 @@ public sealed class DadAutoPartyConfigurationMigrationTests
         var configuration = Newtonsoft.Json.JsonConvert.DeserializeObject<Configuration>(
             """{"UiLanguage":"ko","PluginEnabled":false,"FixtureUnknown":{"keep":17}}""")!;
         Assert.True(configuration.UiLcarsSoundsMuted);
+        Assert.True(configuration.UiStylingEnabled);
+        Assert.False(configuration.UiWindowsLocked);
+        Assert.Equal(75, configuration.UiColors.BackgroundBlurPercent);
+        foreach (var mode in Enum.GetValues<AethertekUI.MaterialColorMode>())
+            Assert.Equal(mode == AethertekUI.MaterialColorMode.Glassmorphism, configuration.UiColors.HasBackgroundBlur(mode));
+        configuration.UiStylingEnabled = false;
+        configuration.UiWindowsLocked = true;
         Assert.True(configuration.UiColors.GlassAnimation);
         Assert.Equal(1f, configuration.UiColors.GlassAnimationSpeed);
         var picker = new AethertekUI.MaterialColorSettings
@@ -31,6 +38,9 @@ public sealed class DadAutoPartyConfigurationMigrationTests
             CyberpunkBackgroundRgb = 0x0C1018, CyberpunkControlsRgb = 0x28D2DF, CyberpunkTextRgb = 0xEFF8FC,
             GlassAnimation = false, GlassAnimationSpeed = 2.5f,
             GlassWave1Rgb = 0x48B5C6, GlassWave2Rgb = 0x8C75C8, GlassWave3Rgb = 0xC8739D,
+            GlassBackground = AethertekUI.MaterialGlassBackground.Image, GlassImagePath = "chosen.png",
+            GlassLights = AethertekUI.MaterialGlassLights.PointerGlow, GlassLight1Rgb = 0x123456,
+            BackgroundBlurPercent = 82, AutoBackgroundBlur = true,
         };
         foreach (var mode in Enum.GetValues<AethertekUI.MaterialColorMode>())
         {
@@ -40,6 +50,8 @@ public sealed class DadAutoPartyConfigurationMigrationTests
                 Newtonsoft.Json.JsonConvert.SerializeObject(configuration))!;
             Assert.Equal(picker with { Mode = mode }, configuration.UiColors);
             Assert.False(configuration.UiLcarsSoundsMuted);
+            Assert.False(configuration.UiStylingEnabled);
+            Assert.True(configuration.UiWindowsLocked);
             Assert.Equal("ko", configuration.UiLanguage);
             Assert.False(configuration.PluginEnabled);
             Assert.Equal(17, (int)configuration.AdditionalSettings!["FixtureUnknown"]["keep"]!);

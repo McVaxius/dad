@@ -20,6 +20,20 @@
 - Keep the queue barrier closed while a requested or observed repair-then-inn utility remains active after durability improves. Retain the bounded 180-second preparation timeout and existing durability/status safety checks.
 - Preserve routes through policy cloning, LAN commands and AutoParty conversion. Require worker schema 6 for enabled new modes so older workers reject them safely; reject unsupported inbound mode strings instead of falling back to Self.
 
+2026-10-29 - Shared appearance and Glasswork backgrounds (2.0.1.2)
+
+- Add titlebar, Settings and slash-command styling/lock controls: style [on|off], lock and unlock. Preserve native UI identities, profile storage, fonts, opacity/fade and all task/lifecycle behavior.
+- Adopt the shared Glasswork renderer only for structural backgrounds, with independent per-style blur and 75% Frost enabled initially for Glassmorphism. Add Waves, all three Lights effects, Image backgrounds and a native image picker, plus screenshot pause initially off in Colour and Transparency. Match each titlebar popup's glass opacity to its actual owner, including reopened and faded windows.
+- Ship the adapter Glasswork runtime DLLs and MIT notice; retain the host TerraFX dependency. Local source verification remains separate from game, detached-window and screenshot acceptance.
+- Exclude retained test artifacts from the production project's default inputs so normal builds compile only plugin sources.
+
+2026-10-29 - Stay on visited world between scheduled presets (I687)
+
+- Add an optional schedule choice, off by default, to retain the exact same-character Wake/relog takeover and AutoRetainer pause between presets. Preserve fresh identity/readiness checks and required home return before changing characters.
+- Release retained ownership through existing completion, cancellation, failure and skip cleanup. Preserve exact own-account Client authority through the preset boundary and include the choice in cloning, sharing and all fifteen translations.
+- Exercise the shared plugin/Headless wake guard and same-character, return, cancellation, Client, relog and skip lifecycle cases. Native game acceptance remains separate.
+- Local verification passed 407 focused units and all 149 virtual lifecycle scenarios with 2,809 assertions, including 271 assertions across the six new cases. Native observations, IPC, clock and storage remain simulated boundaries.
+
 2026-10-28 - 2.0.1.0 - Reviewed party and Duty Support recovery (PR #10)
 
 - Retain every invitation identity responded to before membership confirmation, so earlier responses cannot be replayed during same-run reassembly. Preserve cadence retries until confirmation.

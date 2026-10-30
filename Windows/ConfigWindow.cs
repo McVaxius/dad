@@ -14,6 +14,7 @@ public sealed class ConfigWindow : Window, IDisposable
 {
     private readonly AethertekUI.Dalamud.MaterialSupportLog supportLog = new();
     private readonly MaterialWindowMotion motion = new();
+    private readonly MaterialWindowLock movementLock = new();
     private static readonly string[] DtrModes = { "Text only", "Icon + text", "Icon only" };
     private static readonly string[] PreDutyRepairModes =
     {
@@ -92,14 +93,23 @@ public sealed class ConfigWindow : Window, IDisposable
         resetPositionConditionNextDraw = true;
     }
 
-    public override void PreDraw() => motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+    public override void PreDraw()
+    {
+        motion.Prepare(this, reducedMotion: !plugin.Configuration.UiStylingEnabled, roundedCorners: plugin.Configuration.UiStylingEnabled);
+        movementLock.Apply(this, plugin.Configuration.UiWindowsLocked);
+    }
 
-    public override void PostDraw() => motion.Restore(this);
+    public override void PostDraw()
+    {
+        movementLock.Restore(this);
+        motion.Restore(this);
+    }
 
     public override void Draw()
     {
         motion.DrawChrome();
-        MaterialSkin.Backdrop();
+        plugin.DrawWindowBackdrop(this);
+        using var structuralBackgrounds = MaterialSkin.StructuralBackgroundStyle();
         if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         ApplyPendingPositionChange();
@@ -867,7 +877,7 @@ public sealed class ConfigWindow : Window, IDisposable
             popupVisible = ImGui.BeginPopup("Confirm delete account##dad-config-delete-account");
         if (!popupVisible)
             return;
-        MaterialSkin.Backdrop();
+        plugin.DrawWindowBackdrop(this);
 
         var account = plugin.ConfigManager.GetAccount(new DadAccountKey(pendingDeleteAccountId));
         if (account == null)

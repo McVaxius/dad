@@ -11,6 +11,7 @@ namespace dad.Windows;
 public sealed class DadDependenciesWindow : Window, IDisposable
 {
     private readonly MaterialWindowMotion motion = new();
+    private readonly MaterialWindowLock movementLock = new();
     private static readonly Vector2 MinimumWindowSize = new(520f, 420f);
     private readonly Plugin plugin;
     private Vector2? pendingPosition;
@@ -58,14 +59,23 @@ public sealed class DadDependenciesWindow : Window, IDisposable
             plugin.DependencyService.Snapshot);
     }
 
-    public override void PreDraw() => motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+    public override void PreDraw()
+    {
+        motion.Prepare(this, reducedMotion: !plugin.Configuration.UiStylingEnabled, roundedCorners: plugin.Configuration.UiStylingEnabled);
+        movementLock.Apply(this, plugin.Configuration.UiWindowsLocked);
+    }
 
-    public override void PostDraw() => motion.Restore(this);
+    public override void PostDraw()
+    {
+        movementLock.Restore(this);
+        motion.Restore(this);
+    }
 
     public override void Draw()
     {
         motion.DrawChrome();
-        MaterialSkin.Backdrop();
+        plugin.DrawWindowBackdrop(this);
+        using var structuralBackgrounds = MaterialSkin.StructuralBackgroundStyle();
         if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         using var controls = MaterialControls.Push(MaterialControlContext.Dense);
         using var rowSpacing = new MaterialStyleScope();

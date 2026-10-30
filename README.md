@@ -123,6 +123,13 @@ integrations, and everyday commands.
 - Runs presets immediately or in ordered manual and daily-reset schedules.
 - Keeps future planner lanes visibly separate from activities that have guarded live execution today.
 
+Schedules offer **Stay on visited world/DC between presets**, off by default. When enabled, successive
+presets using the exact same character keep the existing Wake/relog takeover and AutoRetainer pause
+between entries. A character change still releases that takeover and returns home as required. The
+schedule releases retained ownership on completion, cancellation, failure or an unconsumed skipped entry;
+fresh identity and readiness checks still apply to the next preset. The choice is included in schedule
+cloning and sharing.
+
 Cancelling an accepted LAN multibox run now keeps its exact client assignments until cleanup finishes:
 stop the run-owned workers, disband through frozen Slot1, confirm every follower has left or is solo,
 then release run contexts and scheduler wake ownership. Schedule Cancel reaches its exact active planner run;
@@ -799,7 +806,8 @@ Admission, queued-preset selection, automatic preset cadence, daily schedules an
 same own-account policy. Missing or duplicate schedule references fail closed. If an active schedule becomes mixed
 or loses its valid bindings, it stops with a visible blocker rather than dispatching Coordinator-only work.
 Existing busy-run, party-formation, disband and cancellation-cleanup guards still apply. A locally owned takeover
-must match the active scheduler run ID; this exception does not keep a foreign Coordinator takeover alive.
+must match the exact admitted run or its retained same-character schedule operation; this exception does not keep
+a foreign Coordinator takeover alive.
 
 If a Client cannot start, check the exact account binding and every schedule entry before changing transport
 settings. Missing dependencies, stale or unavailable runtime truth, genuine character blockers and unfinished

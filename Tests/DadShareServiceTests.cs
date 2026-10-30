@@ -262,6 +262,7 @@ public sealed class DadShareServiceTests
             ],
         };
 
+        schedule.StayOnVisitedWorldBetweenPresets = true;
         Assert.True(service.TryExportSchedule(schedule, [second, first], KnownIdentities(), out var encoded, out var error), error);
         Assert.True(service.TryDecode(encoded, DadShareConstants.ScheduleKind, out var envelope, out error), error);
 
@@ -270,6 +271,7 @@ public sealed class DadShareServiceTests
         Assert.Equal([2, 1, 3], envelope.Schedule.Entries.Select(static entry => entry.RepeatCount));
         Assert.Equal([EntryA, EntryB, EntryC], envelope.Schedule.Entries.Select(static entry => entry.EntryId));
         Assert.Equal(DadScheduleCadence.DailyReset, envelope.Schedule.Cadence);
+        Assert.True(envelope.Schedule.StayOnVisitedWorldBetweenPresets);
         Assert.DoesNotContain("Alice Example", envelope.Schedule.DisplayName, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Primary Account", envelope.Schedule.DisplayName, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Alice Example", envelope.Schedule.Entries[0].PresetName, StringComparison.OrdinalIgnoreCase);
@@ -281,6 +283,7 @@ public sealed class DadShareServiceTests
         Assert.True(applied.Success, applied.Summary);
         Assert.Equal(2, applied.PlannerGroups.Count);
         var imported = Assert.Single(applied.Schedules);
+        Assert.True(imported.StayOnVisitedWorldBetweenPresets);
         Assert.Equal([PlanA, PlanB, PlanA], imported.Entries.Select(static entry => entry.GroupId));
         Assert.Equal(string.Empty, imported.LastSummary);
 

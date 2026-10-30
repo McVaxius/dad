@@ -805,6 +805,7 @@ public sealed class DadShareService
             ScheduleId = source.ScheduleId?.Trim() ?? string.Empty,
             DisplayName = privacy.Sanitize(source.DisplayName),
             Cadence = source.Cadence,
+            StayOnVisitedWorldBetweenPresets = source.StayOnVisitedWorldBetweenPresets,
             ShoppingAssociation = BuildShoppingAssociationDto(source.ShoppingAssociation, privacy),
             ShoppingAssociations = (source.ShoppingAssociations ?? []).Select(value => BuildShoppingAssociationDto(value, privacy)!).ToList(),
             Entries = (source.Entries ?? []).Select(entry => new DadShareScheduleEntryDto
@@ -1012,6 +1013,7 @@ public sealed class DadShareService
             ScheduleId = source.ScheduleId,
             DisplayName = source.DisplayName,
             Cadence = source.Cadence,
+            StayOnVisitedWorldBetweenPresets = source.StayOnVisitedWorldBetweenPresets,
             ShoppingAssociation = MaterializeShoppingAssociation(source.ShoppingAssociation),
             ShoppingAssociations = (source.ShoppingAssociations ?? []).Select(value => MaterializeShoppingAssociation(value)!).ToList(),
             Entries = source.Entries.Select(entry => new DadScheduleEntry

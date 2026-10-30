@@ -6,12 +6,13 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>2.0.1.0</Version>
-    <FileVersion>2.0.1.0</FileVersion>
-    <AssemblyVersion>2.0.1.0</AssemblyVersion>
+    <Version>2.0.1.2</Version>
+    <FileVersion>2.0.1.2</FileVersion>
+    <AssemblyVersion>2.0.1.2</AssemblyVersion>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <IsPackable>false</IsPackable>
+    <DefaultItemExcludes>$(DefaultItemExcludes);artifacts/**</DefaultItemExcludes>
     <RootNamespace>dad</RootNamespace>
     <AssemblyName>dad</AssemblyName>
   </PropertyGroup>
@@ -35,6 +36,10 @@
     <PackageReference Include="Dad.AutoParty.Protocol" Version="[0.2.0-preview.8]" />
     <PackageReference Include="ECommons" Version="[3.2.1.15]" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="[10.0.10]" />
+    <Reference Include="TerraFX.Interop.Windows">
+      <HintPath>$(DalamudLibPath)/TerraFX.Interop.Windows.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>
@@ -60,6 +65,10 @@
       <PluginRuntimeFiles Include="$(TargetDir)AutoParty.Core.dll" Condition="Exists('$(TargetDir)AutoParty.Core.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)AethertekUI.dll" Condition="Exists('$(TargetDir)AethertekUI.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)AethertekUI.Dalamud.dll" Condition="Exists('$(TargetDir)AethertekUI.Dalamud.dll')" />
+      <PluginRuntimeFiles Include="$(TargetDir)Glasswork.dll" />
+      <PluginRuntimeFiles Include="$(TargetDir)Glasswork.Glass.dll" />
+      <PluginRuntimeFiles Include="$(TargetDir)Glasswork.Backend.dll" />
+      <PluginRuntimeFiles Include="$(TargetDir)Notices\Glasswork.MIT.txt" />
       <PluginRuntimeFiles Include="$(TargetDir)ECommons.dll" Condition="Exists('$(TargetDir)ECommons.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)System.Formats.Cbor.dll" Condition="Exists('$(TargetDir)System.Formats.Cbor.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)System.Interactive.Async.dll" Condition="Exists('$(TargetDir)System.Interactive.Async.dll')" />

@@ -12,6 +12,7 @@ namespace dad.Windows;
 public sealed class DadPresetBatchWizardWindow : Window
 {
     private readonly MaterialWindowMotion motion = new();
+    private readonly MaterialWindowLock movementLock = new();
     private readonly Plugin plugin;
     private DadAccountRosterCatalog catalog = new();
     private DadPresetBatchDraft draft = new();
@@ -54,14 +55,23 @@ public sealed class DadPresetBatchWizardWindow : Window
         PositionCondition = ImGuiCond.Always;
     }
 
-    public override void PreDraw() => motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+    public override void PreDraw()
+    {
+        motion.Prepare(this, reducedMotion: !plugin.Configuration.UiStylingEnabled, roundedCorners: plugin.Configuration.UiStylingEnabled);
+        movementLock.Apply(this, plugin.Configuration.UiWindowsLocked);
+    }
 
-    public override void PostDraw() => motion.Restore(this);
+    public override void PostDraw()
+    {
+        movementLock.Restore(this);
+        motion.Restore(this);
+    }
 
     public override void Draw()
     {
         motion.DrawChrome();
-        MaterialSkin.Backdrop();
+        plugin.DrawWindowBackdrop(this);
+        using var structuralBackgrounds = MaterialSkin.StructuralBackgroundStyle();
         if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         UiGui.TitleWithButtons(WindowName.Split("##",2)[0], null, this);
         DadUi.Heading("BATCH PRESET WIZARD", "Zip rotating accounts across named DC pools, reuse exact anchors, then append ordinary Plans and Schedules only after review.");

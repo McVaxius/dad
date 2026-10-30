@@ -113,6 +113,7 @@ public sealed class DadScheduleDefinition
     public string ScheduleId { get; set; } = Guid.NewGuid().ToString("N");
     public string DisplayName { get; set; } = "Dad Schedule";
     public DadScheduleCadence Cadence { get; set; } = DadScheduleCadence.Manual;
+    public bool StayOnVisitedWorldBetweenPresets { get; set; }
     public DadShoppingAssociation? ShoppingAssociation { get; set; }
     public List<DadShoppingAssociation> ShoppingAssociations { get; set; } = [];
     public List<DadScheduleEntry> Entries { get; set; } = [];
@@ -151,6 +152,7 @@ public sealed class DadScheduleDefinition
             ScheduleId = ScheduleId,
             DisplayName = DisplayName,
             Cadence = Cadence,
+            StayOnVisitedWorldBetweenPresets = StayOnVisitedWorldBetweenPresets,
             ShoppingAssociation = ShoppingAssociation?.Clone(),
             ShoppingAssociations = ShoppingAssociations.Select(static value => value.Clone()).ToList(),
             Entries = Entries?.Select(static entry => entry.Clone()).ToList() ?? [],
@@ -381,6 +383,19 @@ public sealed class DadScheduleRetryResult
 
 public static class DadScheduleRules
 {
+    internal static bool CanRetainVisitedWorldTakeover(DadSchedulerSlotState current, DadPlannerGroupSlot next)
+        => current.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline &&
+           next.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline &&
+           !current.IsRegisteredIsland && !next.IsSubstitute &&
+           current.Ready && current.TakeoverPhase == DadWakeTakeoverPhase.Ready &&
+           current.AcknowledgementState == DadWakeAcknowledgementState.Executed &&
+           !string.IsNullOrWhiteSpace(current.OperationToken) &&
+           !current.MatchedWorkerSessionId.IsEmpty &&
+           !current.RequiredAccountKey.IsEmpty && !current.RequiredCharacterKey.IsEmpty &&
+           string.Equals(current.SlotId, next.SlotId, StringComparison.OrdinalIgnoreCase) &&
+           DadRosterIdentity.SameAccount(current.RequiredAccountKey, next.RequiredAccountKey) &&
+           string.Equals(current.RequiredCharacterKey.Value, next.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase);
+
     public const int MinRepeatCount = 1;
     public const int MaxRepeatCount = 99;
     public const int DailyResetHourUtc = 15;

@@ -39,6 +39,7 @@ public sealed class DadSchedulerService
     private DadModuleId activeSchedulerModuleId = DadModuleId.None;
     private DadSchedulerPresetState currentState = new() { Phase = DadSchedulerPresetPhase.Idle, Summary = "Scheduler idle." };
     private DadScheduledCrewJob? activeJob;
+    private (DadSchedulerPresetState State, DadScheduledCrewJob Job)? retainedScheduleTakeovers;
     private DateTime nextRefreshUtc = DateTime.MinValue;
     private DateTime suppressAutomaticEnqueueUntilUtc = DateTime.MinValue;
     private DadRunRequest? frozenPlannerRequest;
@@ -207,8 +208,25 @@ public sealed class DadSchedulerService
                configuration.ClientAccountId);
 
     internal bool OwnsLocalDutySupportTakeover(string? schedulerRunId)
-        => IsLocalDutySupportExecutionActive && !string.IsNullOrWhiteSpace(schedulerRunId) &&
-           string.Equals(currentState.SchedulerRunId, schedulerRunId, StringComparison.Ordinal);
+    {
+        if (configuration.RunAsServerDad || string.IsNullOrWhiteSpace(schedulerRunId)) return false;
+        if (IsLocalDutySupportExecutionActive && string.Equals(currentState.SchedulerRunId, schedulerRunId, StringComparison.Ordinal))
+            return true;
+        var run = configuration.ActiveScheduleRun;
+        var currentSchedule = FindSchedule(currentState.ScheduleId);
+        if (run?.IsActive == true && currentSchedule is { StayOnVisitedWorldBetweenPresets: true } &&
+            run.RunId == currentState.ScheduleRunId && run.ScheduleId == currentState.ScheduleId &&
+            run.ScheduleRevisionAtStart == currentSchedule.Revision && run.CurrentEntryId == currentState.ScheduleEntryId &&
+            run.ActiveSchedulerJobId == currentState.JobId &&
+            CanRunScheduleHere(currentSchedule) && (currentState.IsActive || currentState.Phase == DadSchedulerPresetPhase.StartedPlanner) &&
+            currentState.Slots.Any(slot => string.Equals(slot.OperationToken, schedulerRunId, StringComparison.Ordinal)))
+            return true;
+        if (retainedScheduleTakeovers is not { } retained || run?.IsActive != true) return false;
+        var schedule = FindSchedule(retained.State.ScheduleId);
+        return schedule is { StayOnVisitedWorldBetweenPresets: true } && run.RunId == retained.State.ScheduleRunId &&
+               run.ScheduleId == retained.State.ScheduleId && run.ScheduleRevisionAtStart == schedule.Revision && CanRunScheduleHere(schedule) &&
+               retained.State.Slots.Any(slot => string.Equals(slot.OperationToken, schedulerRunId, StringComparison.Ordinal));
+    }
 
     private string GetAdmissionBlocker(bool localDutySupport)
         => !configuration.RunAsServerDad && localDutySupport
@@ -1534,6 +1552,13 @@ public sealed class DadSchedulerService
             currentState.Summary = $"Scheduler dry run ready for preset '{group.DisplayName}': {preview.StatusSummary}";
             currentState.CompletedAtUtc = DadClock.UtcNow;
             RecordTerminalResult(currentState);
+            return CurrentState;
+        }
+
+        ApplyRetainedScheduleTakeovers(activeJob, currentState.Slots);
+        if (HasPendingCleanup)
+        {
+            BlockActive("Previous schedule takeover cleanup must finish before this preset can start.");
             return CurrentState;
         }
 
@@ -3989,7 +4014,8 @@ public sealed class DadSchedulerService
                 row.IsRegisteredIsland == original.IsRegisteredIsland &&
                 string.Equals(row.SharedIdentityToken, original.SharedIdentityToken, StringComparison.Ordinal) &&
                 (string.IsNullOrWhiteSpace(row.OperationToken) ||
-                 string.Equals(row.OperationToken, currentState.SchedulerRunId, StringComparison.Ordinal)));
+                 string.Equals(row.OperationToken, currentState.SchedulerRunId, StringComparison.Ordinal) ||
+                 string.Equals(row.OperationToken, original.OperationToken, StringComparison.Ordinal)));
             // A fail-open result must not forget a second client's already-issued
             // relog or reset. Carry only exact-row runtime state; keep frozen plan
             // settings and let ordinary readiness revalidate every row next tick.
@@ -4455,10 +4481,11 @@ public sealed class DadSchedulerService
             ResolveCancellationAcknowledgementTimeout());
         if (DadSchedulerRoutingRules.RequiresTakeoverCancellation(previous))
         {
-            var takeoverKey = $"{currentState.SchedulerRunId}|{previous.SlotId}|{previous.MatchedWorkerSessionId.Value}";
+            var takeoverRunId = string.IsNullOrWhiteSpace(previous.OperationToken) ? currentState.SchedulerRunId : previous.OperationToken;
+            var takeoverKey = $"{takeoverRunId}|{previous.SlotId}|{previous.MatchedWorkerSessionId.Value}";
             pendingTakeoverCancellations.TryAdd(takeoverKey, new PendingTakeoverCancellation
             {
-                SchedulerRunId = currentState.SchedulerRunId,
+                SchedulerRunId = takeoverRunId,
                 Job = cleanupJob.Clone(),
                 Slot = previous.Clone(),
                 Reason = reason,
@@ -4659,7 +4686,7 @@ public sealed class DadSchedulerService
             }
 
             slot.TakeoverRequestedUtc ??= currentState.StartedAtUtc;
-            slot.OperationToken = currentState.SchedulerRunId;
+            if (string.IsNullOrWhiteSpace(slot.OperationToken)) slot.OperationToken = currentState.SchedulerRunId;
             var decision = DadSchedulerRoutingRules.ResolveNextTakeoverAction(slot, DadClock.UtcNow);
             if (!decision.CanDispatch)
                 continue;
@@ -4783,8 +4810,8 @@ public sealed class DadSchedulerService
     {
         var request = new DadWakeTakeoverRequestDto
         {
-            SchedulerRunId = currentState.SchedulerRunId,
-            OperationToken = currentState.SchedulerRunId,
+            SchedulerRunId = string.IsNullOrWhiteSpace(slot.OperationToken) ? currentState.SchedulerRunId : slot.OperationToken,
+            OperationToken = string.IsNullOrWhiteSpace(slot.OperationToken) ? currentState.SchedulerRunId : slot.OperationToken,
             SlotId = slot.SlotId,
             AccountKey = slot.RequiredAccountKey,
             CharacterKey = slot.RequiredCharacterKey,
@@ -5225,9 +5252,10 @@ public sealed class DadSchedulerService
         RecordTerminalResult(currentState);
     }
 
-    private void CancelNonTerminalTakeovers(string reason)
+    private void CancelNonTerminalTakeovers(string reason, bool retainVisitedWorld = false)
     {
         CancelActiveDailyRewardProbe();
+        ReleaseRetainedScheduleTakeovers(reason);
         if (string.IsNullOrWhiteSpace(currentState.SchedulerRunId))
             return;
 
@@ -5245,30 +5273,102 @@ public sealed class DadSchedulerService
 
         QueueEarlyAssignmentCancellations(cleanupJob, reason);
 
+        var retained = retainVisitedWorld ? ResolveRetainedScheduleSlots() : [];
+        if (retained.Count > 0)
+        {
+            var state = currentState.Clone();
+            state.Slots = retained;
+            retainedScheduleTakeovers = (state, cleanupJob.Clone());
+            log.Information("[dad] Retaining {Count} exact ready takeover(s) between schedule presets; AutoRetainer restoration waits for the final boundary.", retained.Count);
+        }
+        QueueTakeoverCancellations(currentState, cleanupJob,
+            currentState.Slots.Where(slot => !retained.Any(keep => string.Equals(keep.SlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase))), reason);
+
+        UpdatePendingTakeoverCancellations();
+        UpdatePendingEarlyAssignmentCancellations();
+    }
+
+    private void QueueTakeoverCancellations(DadSchedulerPresetState state, DadScheduledCrewJob cleanupJob,
+        IEnumerable<DadSchedulerSlotState> slots, string reason)
+    {
         var cancellationRequestedAtUtc = DadClock.UtcNow;
         var cancellationDeadlineUtc = DadSchedulerRoutingRules.ResolveFixedCancellationDeadline(
             default,
             cancellationRequestedAtUtc,
             ResolveCancellationAcknowledgementTimeout());
-        foreach (var slot in currentState.Slots.Where(DadSchedulerRoutingRules.RequiresTakeoverCancellation))
+        foreach (var slot in slots.Where(DadSchedulerRoutingRules.RequiresTakeoverCancellation))
         {
-            var key = $"{currentState.SchedulerRunId}|{slot.SlotId}";
+            var takeoverRunId = string.IsNullOrWhiteSpace(slot.OperationToken) ? state.SchedulerRunId : slot.OperationToken;
+            var key = $"{takeoverRunId}|{slot.SlotId}|{slot.MatchedWorkerSessionId.Value}";
             pendingTakeoverCancellations.TryAdd(key, new PendingTakeoverCancellation
             {
-                PlannerRunId = currentState.PlannerRequestId,
-                SchedulerRunId = currentState.SchedulerRunId,
+                PlannerRunId = state.PlannerRequestId,
+                SchedulerRunId = takeoverRunId,
                 Job = cleanupJob.Clone(),
                 Slot = slot.Clone(),
                 Reason = string.IsNullOrWhiteSpace(reason) ? "Scheduler cancelled." : reason.Trim(),
-                RequestedAtUtc = slot.TakeoverRequestedUtc ?? currentState.StartedAtUtc,
+                RequestedAtUtc = slot.TakeoverRequestedUtc ?? state.StartedAtUtc,
                 CancellationRequestedAtUtc = cancellationRequestedAtUtc,
                 CancellationDeadlineUtc = cancellationDeadlineUtc,
             });
             LogTakeoverTransition(slot, "cleanup-queued", "cancel-pending-route-or-ack");
         }
+    }
 
-        UpdatePendingTakeoverCancellations();
-        UpdatePendingEarlyAssignmentCancellations();
+    private List<DadSchedulerSlotState> ResolveRetainedScheduleSlots()
+    {
+        var run = configuration.ActiveScheduleRun;
+        var schedule = FindSchedule(currentState.ScheduleId);
+        // The caller matched the completed frozen request. Schedule planner metadata can still
+        // be pending because scheduler updates pause during the duty; bind the exact job/cursor.
+        if (currentState.DryRun || run?.IsActive != true || schedule?.StayOnVisitedWorldBetweenPresets != true ||
+            run.RunId != currentState.ScheduleRunId || run.ScheduleId != currentState.ScheduleId ||
+            run.ScheduleRevisionAtStart != schedule.Revision || run.CurrentEntryId != currentState.ScheduleEntryId ||
+            run.CurrentEntryIndex != currentState.ScheduleEntryIndex || run.RepeatIteration != currentState.ScheduleRepeatIteration ||
+            run.ActiveSchedulerJobId != currentState.JobId) return [];
+        var advanced = DadScheduleRules.AdvanceAfterEntry(run, schedule.Entries, true, "", DadClock.UtcNow);
+        if (!advanced.IsActive) return [];
+        var entry = DadScheduleRules.GetCurrentEntry(advanced, schedule.Entries);
+        var next = entry == null ? null : FindPlannerGroup(entry.GroupId);
+        if (next == null || next.TransportOwner != DadTransportOwner.DadDirect) return [];
+        return currentState.Slots.Where(slot => next.Slots.Count(candidate =>
+                DadScheduleRules.CanRetainVisitedWorldTakeover(slot, candidate)) == 1)
+            .Select(static slot => slot.Clone()).ToList();
+    }
+
+    private void ApplyRetainedScheduleTakeovers(DadScheduledCrewJob job, IReadOnlyList<DadSchedulerSlotState> slots)
+    {
+        if (retainedScheduleTakeovers is not { } retained) return;
+        var schedule = FindSchedule(job.ScheduleId);
+        var run = configuration.ActiveScheduleRun;
+        if (!job.DryRun && job.ScheduleRunId == retained.State.ScheduleRunId &&
+            job.ScheduleId == retained.State.ScheduleId && schedule?.StayOnVisitedWorldBetweenPresets == true &&
+            run?.IsActive == true && run.RunId == job.ScheduleRunId && run.ScheduleId == job.ScheduleId &&
+            run.ActiveSchedulerJobId == job.JobId && run.CurrentEntryId == job.ScheduleEntryId &&
+            run.RepeatIteration == job.ScheduleRepeatIteration && run.ScheduleRevisionAtStart == schedule.Revision)
+        {
+            foreach (var previous in retained.State.Slots.ToList())
+            {
+                var matches = slots.Where(slot =>
+                    string.Equals(slot.SlotId, previous.SlotId, StringComparison.OrdinalIgnoreCase) &&
+                    DadRosterIdentity.SameAccount(slot.RequiredAccountKey, previous.RequiredAccountKey) &&
+                    string.Equals(slot.RequiredCharacterKey.Value, previous.RequiredCharacterKey.Value, StringComparison.OrdinalIgnoreCase) &&
+                    slot.WakePolicy == DadSchedulerWakePolicy.LaunchIfOffline && !slot.IsRegisteredIsland &&
+                    slot.MatchedWorkerSessionId == previous.MatchedWorkerSessionId && slot.BasePostArReady && slot.CorrectCharacter).ToList();
+                if (matches.Count != 1) continue;
+                CopyWakeRuntimeState(previous, matches[0]);
+                matches[0].NextTakeoverStatusCheckUtc = null;
+                retained.State.Slots.Remove(previous);
+            }
+        }
+        ReleaseRetainedScheduleTakeovers("Next preset changed the exact retained character or worker; releasing its previous takeover.");
+    }
+
+    private void ReleaseRetainedScheduleTakeovers(string reason)
+    {
+        if (retainedScheduleTakeovers is not { } retained) return;
+        retainedScheduleTakeovers = null;
+        QueueTakeoverCancellations(retained.State, retained.Job, retained.State.Slots, reason);
     }
 
     private void QueueEarlyAssignmentCancellations(DadScheduledCrewJob cleanupJob, string reason)
@@ -5307,11 +5407,11 @@ public sealed class DadSchedulerService
             return;
         }
 
-        // Ready wake operations can still own AutoRetainer restoration state. Release
-        // the exact old tokens before a subsequent preset is admitted, even when no
-        // early requested-job assignment was needed for this run.
+        // Ready wake operations still own AutoRetainer restoration state. Only an opted-in,
+        // exact same-character schedule continuation may retain them; every other boundary
+        // releases the old tokens, including runs with no early requested-job assignment.
         var reason = $"Dad run {visibleRun.RequestId} reached terminal status {visibleRun.Status}; releasing wake ownership and every early requested-job assignment route.";
-        CancelNonTerminalTakeovers(reason);
+        CancelNonTerminalTakeovers(reason, retainVisitedWorld: visibleRun.Status == DadRunStatus.Completed);
         log.Information(
             "[dad] Queued terminal planner cleanup request={RequestId} status={Status} attemptedRoutes={AttemptedRouteCount}.",
             visibleRun.RequestId,
@@ -5359,7 +5459,8 @@ public sealed class DadSchedulerService
     private bool HasActiveRebindCleanup
         => pendingTakeoverCancellations.Values.Any(pending =>
                pending.BlocksFutureWork &&
-               string.Equals(pending.SchedulerRunId, currentState.SchedulerRunId, StringComparison.Ordinal)) ||
+               (string.Equals(pending.SchedulerRunId, currentState.SchedulerRunId, StringComparison.Ordinal) ||
+                string.Equals(pending.Job.JobId, currentState.JobId, StringComparison.Ordinal))) ||
            (frozenPlannerRequest != null && pendingEarlyAssignmentCancellations.Values.Any(pending =>
                pending.BlocksFutureWork &&
                string.Equals(pending.RunId, frozenPlannerRequest.RequestId, StringComparison.Ordinal)));
@@ -5970,6 +6071,8 @@ public sealed class DadSchedulerService
 
     private void FinalizeScheduleRun(DadScheduleRunState state)
     {
+        ReleaseRetainedScheduleTakeovers("Schedule reached its final boundary; restoring the previous AutoRetainer mode.");
+        UpdatePendingTakeoverCancellations();
         if (!state.DryRun && state.Status == DadScheduleRunStatus.Completed)
             DadCompletionActionRunner.FinalizeRound(configuration, state.RunId);
         else if (state.Status is DadScheduleRunStatus.Cancelled or DadScheduleRunStatus.Blocked)
@@ -6095,6 +6198,14 @@ public sealed class DadSchedulerService
     {
         if (!IsTerminalPhase(state.Phase))
             return;
+
+        if (state.Phase != DadSchedulerPresetPhase.StartedPlanner && ReferenceEquals(state, currentState))
+        {
+            ReleaseRetainedScheduleTakeovers("Schedule preset ended before consuming its retained takeover.");
+            if (state.Slots.Any(slot => !string.IsNullOrWhiteSpace(slot.OperationToken) && slot.OperationToken != state.SchedulerRunId))
+                CancelNonTerminalTakeovers("Schedule preset ended; releasing its retained takeover.");
+            UpdatePendingTakeoverCancellations();
+        }
 
         LogSchedulerPhaseTransition();
 
