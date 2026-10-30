@@ -3,6 +3,7 @@
 - Add titlebar, Settings and slash-command styling/lock controls: style [on|off], lock and unlock. Preserve native UI identities, profile storage, fonts, opacity/fade and all task/lifecycle behavior.
 - Adopt the shared Glasswork renderer only for structural backgrounds, with independent per-style blur and 75% Frost enabled initially for Glassmorphism. Add Waves, all three Lights effects, Image backgrounds and a native image picker, plus screenshot pause initially off in Colour and Transparency. Match each titlebar popup's glass opacity to its actual owner, including reopened and faded windows.
 - Ship the adapter Glasswork runtime DLLs and MIT notice; retain the host TerraFX dependency. Local source verification remains separate from game, detached-window and screenshot acceptance.
+- Exclude retained test artifacts from the production project's default inputs so normal builds compile only plugin sources.
 
 2026-10-29 - Stay on visited world between scheduled presets (I687)
 
