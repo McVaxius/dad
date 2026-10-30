@@ -1,4 +1,4 @@
-2026-10-30 - PR #11 review corrections (unversioned)
+2026-10-30 - PR #11 review corrections (2.0.1.3)
 
 - Freeze all ordinary serial invitation recipients before dispatch, including recipients already present or waiting for their turn; retain original native invite selection and retry context.
 - Require the exact accepted ADS repair route, including inn destination, and a completion timestamp at or after the latest matching running observation before recovery can be considered.
