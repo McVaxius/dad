@@ -34,6 +34,7 @@ public enum DadPresetsWindowTab
 public sealed partial class MainWindow : Window, IDisposable
 {
     private readonly MaterialWindowMotion motion = new();
+    private readonly MaterialWindowLock movementLock = new();
     private enum DadStatusWindowTab
     {
         CurrentActivity,
@@ -240,11 +241,13 @@ public sealed partial class MainWindow : Window, IDisposable
     public override void PreDraw()
     {
         UiGui.ReserveTitleSpace(this, PluginInfo.DisplayName + " " + (typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "0.0.0.0"), MinimumWindowSize.X);
-        motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+        motion.Prepare(this, reducedMotion: !plugin.Configuration.UiStylingEnabled, roundedCorners: plugin.Configuration.UiStylingEnabled);
+        movementLock.Apply(this, plugin.Configuration.UiWindowsLocked);
     }
 
     public override void PostDraw()
     {
+        movementLock.Restore(this);
         motion.Restore(this);
     }
 
@@ -253,7 +256,8 @@ public sealed partial class MainWindow : Window, IDisposable
         using var captions=new MaterialStyleScope();
         captions.Color(ImGuiCol.TextDisabled,DadUi.Muted);
         motion.DrawChrome();
-        MaterialSkin.Backdrop();
+        plugin.DrawWindowBackdrop(this);
+        using var structuralBackgrounds = MaterialSkin.StructuralBackgroundStyle();
         if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0.0";
         ApplyPendingPositionChange();
@@ -2589,7 +2593,7 @@ public sealed partial class MainWindow : Window, IDisposable
             popupVisible = ImGui.BeginPopup("Schedule share details##dad-share-schedule-details", ImGuiWindowFlags.AlwaysAutoResize);
         if (!popupVisible)
             return;
-        MaterialSkin.Backdrop();
+        plugin.DrawWindowBackdrop(this);
 
         schedule = plugin.Configuration.Schedules.FirstOrDefault(candidate =>
             string.Equals(candidate.ScheduleId, scheduleShareIdOwner, StringComparison.OrdinalIgnoreCase)) ?? schedule;
@@ -2654,7 +2658,7 @@ public sealed partial class MainWindow : Window, IDisposable
             }
             return;
         }
-        MaterialSkin.Backdrop();
+        plugin.DrawWindowBackdrop(this);
         UiGui.Title("Confirm Schedule import");
 
         var preview = pendingScheduleSharePreview;
@@ -3710,7 +3714,7 @@ public sealed partial class MainWindow : Window, IDisposable
             popupVisible = ImGui.BeginPopup("Confirm delete account##dad-roster-delete-account");
         if (!popupVisible)
             return;
-        MaterialSkin.Backdrop();
+        plugin.DrawWindowBackdrop(this);
 
         var account = plugin.ConfigManager.GetAccount(new DadAccountKey(pendingDeleteAccountId));
         if (account == null)
@@ -4182,7 +4186,7 @@ public sealed partial class MainWindow : Window, IDisposable
             morePopupVisible = ImGui.BeginPopup($"dad-roster-more-popup-{selectionKey}");
         if (morePopupVisible)
         {
-            MaterialSkin.Backdrop();
+            plugin.DrawWindowBackdrop(this);
             if (UiGui.SmallButton($"Hide##dad-roster-hide-{selectionKey}"))
                 SetRosterVisibility([character], DadRosterVisibility.Hidden);
             ImGui.SameLine();
@@ -8021,7 +8025,7 @@ public sealed partial class MainWindow : Window, IDisposable
             popupVisible = ImGui.BeginPopup("Confirm delete preset##dad-delete-preset");
         if (!popupVisible)
             return;
-        MaterialSkin.Backdrop();
+        plugin.DrawWindowBackdrop(this);
 
         var pending = plugin.ResolvePlannerGroup(pendingDeletePlannerGroupId);
         if (pending == null)
@@ -8131,7 +8135,7 @@ public sealed partial class MainWindow : Window, IDisposable
             popupVisible = ImGui.BeginPopup("Plan share details##dad-share-plan-details", ImGuiWindowFlags.AlwaysAutoResize);
         if (!popupVisible)
             return;
-        MaterialSkin.Backdrop();
+        plugin.DrawWindowBackdrop(this);
 
         selectedGroup = plugin.ResolvePlannerGroup(plannerShareIdOwner) ?? selectedGroup;
         if (selectedGroup == null)
@@ -8194,7 +8198,7 @@ public sealed partial class MainWindow : Window, IDisposable
             }
             return;
         }
-        MaterialSkin.Backdrop();
+        plugin.DrawWindowBackdrop(this);
         UiGui.Title("Confirm Plan import");
 
         var preview = pendingPlannerSharePreview;

@@ -1,3 +1,9 @@
+2026-10-29 - Shared appearance and Glasswork backgrounds (2.0.1.2)
+
+- Add titlebar, Settings and slash-command styling/lock controls: style [on|off], lock and unlock. Preserve native UI identities, profile storage, fonts, opacity/fade and all task/lifecycle behavior.
+- Adopt the shared Glasswork renderer only for structural backgrounds, with independent per-style blur and 75% Frost enabled initially for Glassmorphism. Add Waves, all three Lights effects, Image backgrounds and a native image picker, plus screenshot pause initially off in Colour and Transparency. Match each titlebar popup's glass opacity to its actual owner, including reopened and faded windows.
+- Ship the adapter Glasswork runtime DLLs and MIT notice; retain the host TerraFX dependency. Local source verification remains separate from game, detached-window and screenshot acceptance.
+
 2026-10-29 - Stay on visited world between scheduled presets (I687)
 
 - Add an optional schedule choice, off by default, to retain the exact same-character Wake/relog takeover and AutoRetainer pause between presets. Preserve fresh identity/readiness checks and required home return before changing characters.

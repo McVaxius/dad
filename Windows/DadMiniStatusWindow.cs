@@ -11,6 +11,7 @@ namespace dad.Windows;
 public sealed class DadMiniStatusWindow : Window, IDisposable
 {
     private readonly MaterialWindowMotion motion = new();
+    private readonly MaterialWindowLock movementLock = new();
     private static readonly Vector2 MinimumWindowSize = new(440f, 320f);
     private static readonly TimeSpan ConfirmationWindow = TimeSpan.FromSeconds(5);
     private readonly Plugin plugin;
@@ -63,18 +64,21 @@ public sealed class DadMiniStatusWindow : Window, IDisposable
     public override void PreDraw()
     {
         UiGui.ReserveTitleSpace(this, UiText.T(WindowName.Split("##", 2)[0]), MinimumWindowSize.X);
-        motion.Prepare(this, reducedMotion: false, roundedCorners: true);
+        motion.Prepare(this, reducedMotion: !plugin.Configuration.UiStylingEnabled, roundedCorners: plugin.Configuration.UiStylingEnabled);
+        movementLock.Apply(this, plugin.Configuration.UiWindowsLocked);
     }
 
     public override void PostDraw()
     {
+        movementLock.Restore(this);
         motion.Restore(this);
     }
 
     public override void Draw()
     {
         motion.DrawChrome();
-        MaterialSkin.Backdrop();
+        plugin.DrawWindowBackdrop(this);
+        using var structuralBackgrounds = MaterialSkin.StructuralBackgroundStyle();
         if (MaterialTheme.Current.IsLcars) MaterialLcars.Header(UiText.T(WindowName.Split("##", 2)[0]));
         ApplyPendingPositionChange();
         var snapshot = plugin.BuildMiniStatusSnapshot();
