@@ -129,7 +129,6 @@ public sealed partial class Plugin : IDalamudPlugin
     public DadSchedulerService SchedulerService { get; }
     public DadCoordinatorService RunCoordinatorService { get; }
     public DadDutyIpcService DutyIpcService { get; }
-    public DadQuestionableReflectionBridge QuestionableBridge { get; }
     public WindowSystem WindowSystem { get; } = new(PluginInfo.InternalName);
     public string LastIssueReportStatus { get; private set; } = "No Dad issue report generated this session.";
     public string LastIssueReportPath { get; private set; } = string.Empty;
@@ -618,23 +617,6 @@ public sealed partial class Plugin : IDalamudPlugin
             DutySupportAdsService,
             CombatRotationService,
             Log);
-        QuestionableBridge = new DadQuestionableReflectionBridge(
-            PluginInterface,
-            Framework,
-            DutyIpcService,
-            Log,
-            () => Configuration.QuestionableBridgeEnabled,
-            message => NotificationManager.AddNotification(new Notification
-            {
-                Type = NotificationType.Warning,
-                Title = PluginInfo.DisplayName,
-                Content = message,
-                InitialDuration = TimeSpan.FromSeconds(10),
-            }),
-            () => Configuration.CombatRotationMode == DadCombatRotationMode.UseFrenRider,
-            () => ClientState.IsLoggedIn ? PlayerState.ContentId : 0);
-        CombatRotationService.QuestionableDutySettingsGate = QuestionableBridge.EnsureFrenRiderDutySettings;
-        DutyIpcService.QuestionableBridgeStatusProvider = QuestionableBridge.GetStatus;
 
         Log.Information("[dad] Plugin loaded. build=I490-solo-01; ui=devhub-I503-I512-import-20261009-02; diagnosticBuild={DiagnosticBuild}; loadedAt={LoadedAt}; pid={Pid}; worker={Worker}.",
             LocalNpcProjectionBuildMarker, pluginLoadedAtUtc, Environment.ProcessId, PresenceService.WorkerSessionId);
@@ -1049,7 +1031,6 @@ public sealed partial class Plugin : IDalamudPlugin
         RouletteRewardProbeService.Dispose();
         DependencyService.Dispose();
         WindowSystem.RemoveAllWindows();
-        QuestionableBridge.Dispose();
         DutyIpcService.Dispose();
         dadIpcService.Dispose();
         ProfileDirectoryService.Dispose();
@@ -5103,7 +5084,6 @@ public sealed partial class Plugin : IDalamudPlugin
         var characterPool = CharacterIntelligenceService.CurrentPool;
         var plannerPreview = BuildPlannerPreview();
         var dutyIpcStatus = DutyIpcService.GetStatus();
-        var bridgeStatus = QuestionableBridge.GetStatus();
         PrintStatus(
             $"IPC {(RunCoordinatorService.IsReady ? "ready" : "not ready")} | " +
             $"This instance {DadStatusText.FormatWorkerRole(localRun.WorkerRole)} | " +
@@ -5112,7 +5092,6 @@ public sealed partial class Plugin : IDalamudPlugin
             $"{authorityView.FreshnessText} | " +
             $"Local-only {(localRun.LocalOnlyEnabled ? "on" : "off")} | " +
             $"Dad duty IPC {FormatDutyIpcStatus(dutyIpcStatus)} | " +
-            $"Questionable bridge {FormatQuestionableBridgeStatus(bridgeStatus)} | " +
             $"Debug UI {(Configuration.DebugUiEnabled ? "on" : "off")} | " +
             $"Profile {(profile.Enabled ? "armed" : "off")} | " +
             $"Dad starts {(profile.AllowIpcStarts ? "allowed" : "blocked")} | " +
@@ -5120,12 +5099,6 @@ public sealed partial class Plugin : IDalamudPlugin
         PrintStatus($"Dad duty IPC probe: {FormatDutyIpcProbeStatus(dutyIpcStatus)}");
         PrintStatus($"Dad duty IPC run: {FormatDutyIpcFailureStatus(dutyIpcStatus)}");
         PrintStatus($"Dad duty IPC cleanup: {FormatDutyIpcCleanupStatus(dutyIpcStatus)}");
-        PrintStatus($"Questionable runtime bridge: {FormatQuestionableBridgeDetail(bridgeStatus)}");
-        if (!string.IsNullOrWhiteSpace(bridgeStatus.LastBlocker))
-            PrintStatus($"Questionable runtime bridge blocker: {bridgeStatus.LastBlocker}");
-        PrintStatus($"Questionable cosmetic: {bridgeStatus.CosmeticPatchState}");
-        if (!string.IsNullOrWhiteSpace(bridgeStatus.CosmeticLastBlocker))
-            PrintStatus($"Questionable cosmetic blocker: {bridgeStatus.CosmeticLastBlocker}");
         PrintStatus($"Authority timeline: {FormatOperatorTextForChat(authorityView.TimelineText)}");
         PrintStatus($"Authority owner: {FormatOperatorTextForChat(authorityView.OwnershipText)}");
         PrintStatus($"Local run: {FormatRunStatusForChat(localRun)} | Payload {FormatOperatorTextForChat(FormatTaskPayload(localRun))}");
@@ -5142,27 +5115,6 @@ public sealed partial class Plugin : IDalamudPlugin
                 ? "not registered"
                 : status.RegistrationState;
         return $"{state} | {status.SessionState} | mode {status.LastMode}";
-    }
-
-    private static string FormatQuestionableBridgeStatus(DadQuestionableReflectionBridgeStatus status)
-        => status.Patched
-            ? "patched"
-            : status.Pending
-                ? "pending"
-                : status.QuestionableLoaded
-                    ? "blocked"
-                    : "not loaded";
-
-    private static string FormatQuestionableBridgeDetail(DadQuestionableReflectionBridgeStatus status)
-    {
-        var loaded = status.QuestionableLoaded ? "loaded" : "not loaded";
-        var running = status.QuestionableRunning ? "running" : "idle";
-        var gate = status.DutyGateEnabled.HasValue
-            ? status.DutyGateEnabled.Value ? "enabled" : "disabled"
-            : "unknown";
-        var version = string.IsNullOrWhiteSpace(status.QuestionableVersion) ? "unknown" : status.QuestionableVersion;
-        var probe = status.LastProbeUtc?.ToString("O") ?? "never";
-        return $"{loaded} | {status.PatchState} | {running} | gate {gate} | version {version} | last probe {probe}";
     }
 
     private static string FormatDutyIpcProbeStatus(DadDutyIpcStatus status)
@@ -6074,7 +6026,6 @@ public sealed partial class Plugin : IDalamudPlugin
 
     private void OnLogin()
     {
-        QuestionableBridge.ResetCharacterLoadWarning();
         UpdateDtrBar();
         CharacterIntelligenceService.RefreshLocalCharacterPool("login", logRefresh: false);
         RosterCatalogService.RefreshCatalog(CharacterIntelligenceService.CurrentPool);

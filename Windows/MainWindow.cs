@@ -552,7 +552,7 @@ public sealed partial class MainWindow : Window, IDisposable
         DrawStatusRow("This instance", DadStatusText.FormatWorkerRole(plugin.PresenceService.CurrentParticipant.WorkerRole));
         DrawStatusRow("Local-only", localRun.LocalOnlyEnabled ? "Enabled" : "Disabled");
         DrawStatusRow("IPC ready", plugin.RunCoordinatorService.IsReady ? "Yes" : "No");
-        DrawStatusRow("Duty IPC / Questionable", FormatDutyIpcAndBridgeStatus(plugin.DutyIpcService.GetStatus(), plugin.QuestionableBridge.GetStatus()));
+        DrawStatusRow("Duty IPC", FormatDutyIpcStatus(plugin.DutyIpcService.GetStatus()));
 
         DrawSectionHeader("Active Request / Run", "Live request truth from visible authority/local state.");
         if (activeRun.Status == DadRunStatus.Idle)
@@ -1418,17 +1418,14 @@ public sealed partial class MainWindow : Window, IDisposable
         UiGui.TextDisabled(rouletteDiagnostic.Summary);
         DrawAlliancePartyFinderDebug();
         var dutyIpc = plugin.DutyIpcService.GetStatus();
-        var bridge = plugin.QuestionableBridge.GetStatus();
         DrawStatusRow("Name privacy", plugin.KrangleService.BuildStatus(characterPool));
-        DrawStatusRow("Duty IPC / Questionable", FormatDutyIpcAndBridgeStatus(dutyIpc, bridge));
+        DrawStatusRow("Duty IPC", FormatDutyIpcStatus(dutyIpc));
         DrawStatusRow("Duty IPC registration", $"{(dutyIpc.Registered ? "Registered" : FormatText(dutyIpc.RegistrationState, "Not registered"))} | mode {dutyIpc.LastMode}");
         DrawStatusRow("Duty IPC probe", dutyIpc.LastContentHasPathResult.HasValue
             ? $"territory {dutyIpc.LastContentHasPathTerritoryType} | result {dutyIpc.LastContentHasPathResult.Value} | candidates {dutyIpc.LastContentHasPathCandidateCount} / compatible {dutyIpc.LastContentHasPathCompatibleCandidateCount} | blocker {FormatText(dutyIpc.LastContentHasPathBlocker, "(none)")}"
             : "No ContentHasPath probe observed yet.");
         DrawStatusRow("Duty IPC run", $"run {FormatText(dutyIpc.LastRunId, "(none)")} | territory {dutyIpc.LastTerritoryType} | bare mode {dutyIpc.LastBareMode} | failure {FormatText(dutyIpc.LastFailure, "(none)")}");
         DrawStatusRow("Duty IPC cleanup", $"{dutyIpc.LastCleanupResult} | {FormatTime(dutyIpc.LastCleanupUtc)} | failed commands {(dutyIpc.LastCleanupFailedCommands.Count == 0 ? "(none)" : string.Join(", ", dutyIpc.LastCleanupFailedCommands))}");
-        DrawStatusRow("Questionable bridge", $"{(bridge.QuestionableLoaded ? "loaded" : "not loaded")} | {bridge.PatchState} | {(bridge.QuestionableRunning ? "running" : "idle")} | blocker {FormatText(bridge.LastBlocker, "(none)")}");
-        DrawStatusRow("Questionable cosmetic", $"{bridge.CosmeticPatchState} | blocker {FormatText(bridge.CosmeticLastBlocker, "(none)")}");
         DrawStatusRow("Character pool", characterPool.LastSummary);
         DrawStatusRow("XADB", characterPool.XadbStatus.LastStatus);
         DrawStatusRow("Peer transport", characterPool.PeerTransport.LastRequestStatus);
@@ -8429,26 +8426,9 @@ public sealed partial class MainWindow : Window, IDisposable
     private static string BuildPlannerGroupScheduleSignature(DadPlannerGroup group)
         => $"{group.SchedulePriority.ToString(CultureInfo.InvariantCulture)}\n{group.ScheduleCadenceHours.ToString(CultureInfo.InvariantCulture)}\n{group.ScheduleRequester}\n{group.MapRunTemplate}";
 
-    private static string FormatDutyIpcAndBridgeStatus(
-        DadDutyIpcStatus dutyIpc,
-        DadQuestionableReflectionBridgeStatus bridge)
+    private static string FormatDutyIpcStatus(DadDutyIpcStatus dutyIpc)
     {
         var state = (dutyIpc.Registered ? "IPC registered" : dutyIpc.RegistrationState) + " | " + dutyIpc.SessionState;
-        var bridgeState = UiText.T(bridge.Patched
-            ? "runtime patched"
-            : bridge.Pending
-                ? "runtime pending"
-                : bridge.QuestionableLoaded
-                    ? "runtime blocked"
-                    : "runtime not loaded");
-        var cosmeticState = UiText.T(bridge.CosmeticPatched
-            ? "cosmetic patched"
-            : bridge.QuestionableLoaded
-                ? "cosmetic blocked"
-                : "cosmetic not loaded");
-        var cosmeticBlocker = string.IsNullOrWhiteSpace(bridge.CosmeticLastBlocker)
-            ? "(none)"
-            : bridge.CosmeticLastBlocker;
         var territory = dutyIpc.LastTerritoryType == 0 ? "(none)" : dutyIpc.LastTerritoryType.ToString(UiText.Current.Culture);
         var runId = string.IsNullOrWhiteSpace(dutyIpc.LastRunId) ? "(none)" : dutyIpc.LastRunId;
         var failure = string.IsNullOrWhiteSpace(dutyIpc.LastFailure) ? "(none)" : dutyIpc.LastFailure;
@@ -8456,7 +8436,7 @@ public sealed partial class MainWindow : Window, IDisposable
         var cleanupFailed = dutyIpc.LastCleanupFailedCommands.Count == 0
             ? "(none)"
             : string.Join(", ", dutyIpc.LastCleanupFailedCommands);
-        return $"{state} | {bridgeState} | {cosmeticState} | cosmetic blocker {cosmeticBlocker} | territory {territory} | mode {dutyIpc.LastMode} | bareMode {dutyIpc.LastBareMode} | run {runId} | failure {failure} | cleanup {dutyIpc.LastCleanupResult} @ {cleanupUtc} | cleanup failed {cleanupFailed}";
+        return $"{state} | territory {territory} | mode {dutyIpc.LastMode} | bareMode {dutyIpc.LastBareMode} | run {runId} | failure {failure} | cleanup {dutyIpc.LastCleanupResult} @ {cleanupUtc} | cleanup failed {cleanupFailed}";
     }
 
     private string FormatAccount(DadAcquiredCharacter character)

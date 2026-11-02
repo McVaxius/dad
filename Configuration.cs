@@ -136,7 +136,6 @@ public sealed class Configuration : IPluginConfiguration
 
     // Review M19: operator opt-out for the Questionable reflection bridge (invasive runtime field patching).
     // Default on (preserves the AutoDuty/ADS handoff); disabling restores any patched values and stops it.
-    public bool QuestionableBridgeEnabled { get; set; } = true;
 
     public bool MigrateTransportSettings()
     {

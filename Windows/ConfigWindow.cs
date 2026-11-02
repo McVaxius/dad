@@ -258,17 +258,6 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.EndDisabled();
         DrawStatusRow("ADS mode", repairPolicy.AdsMode);
 
-        DrawSectionHeader("Integrations");
-
-        var questionableBridge = configuration.QuestionableBridgeEnabled;
-        if (UiGui.Checkbox("Enable AutoDuty / ADS handoff through Questionable", ref questionableBridge))
-        {
-            configuration.QuestionableBridgeEnabled = questionableBridge;
-            configuration.Save();
-        }
-
-        UiGui.TextWrapped("Disabling restores any patched Questionable values and stops the bridge. Leave on unless it causes issues.");
-
         DrawSectionHeader("Global completion defaults");
         UiGui.TextWrapped("Used by presets that do not define their own completion actions.");
 
@@ -1054,24 +1043,6 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         var state = status.Registered ? "Registered" : status.RegistrationState;
         return $"{FormatText(state, "Not registered")} | mode {status.LastMode}";
-    }
-
-    private static string FormatQuestionableBridgeStatus(DadQuestionableReflectionBridgeStatus status)
-    {
-        var loaded = status.QuestionableLoaded ? "loaded" : "not loaded";
-        var running = status.QuestionableRunning ? "running" : "idle";
-        var gate = status.DutyGateEnabled.HasValue
-            ? status.DutyGateEnabled.Value ? "enabled" : "disabled"
-            : "unknown";
-        var version = FormatText(status.QuestionableVersion, "unknown");
-        var blocker = FormatText(status.LastBlocker, "(none)");
-        return $"{loaded} | {status.PatchState} | {running} | gate {gate} | version {version} | blocker {blocker}";
-    }
-
-    private static string FormatQuestionableCosmeticStatus(DadQuestionableReflectionBridgeStatus status)
-    {
-        var blocker = FormatText(status.CosmeticLastBlocker, "(none)");
-        return $"{status.CosmeticPatchState} | blocker {blocker}";
     }
 
     private static string FormatDutyIpcProbeStatus(DadDutyIpcStatus status)

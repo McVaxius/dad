@@ -95,26 +95,6 @@ public sealed class DadP1218AutoDutyContractTests
     }
 
     [Fact]
-    public void QuestionableRollbackRetainsPerFieldOwnershipUntilEveryRestoreSucceeds()
-    {
-        var source = ReadRepositorySource("Services", "DadQuestionableReflectionBridge.cs");
-        var apply = Slice(source, "private void ApplyPatch", "private bool IsFullyOwned");
-        var cosmeticApply = Slice(source, "private void ApplyCosmeticPatch", "private void ApplyPatch");
-        var restore = Slice(source, "private void RestoreOwnedValues", "private void RestoreOwnedCosmeticValue");
-
-        Assert.True(apply.IndexOf("ownership = newOwnership", StringComparison.Ordinal) <
-                    apply.IndexOf("foreach (var subscriber in prepared.Subscribers)", StringComparison.Ordinal));
-        Assert.Contains("RestoreOwnedValues();", apply, StringComparison.Ordinal);
-        Assert.Contains("patch.Subscribers.ToList()", restore, StringComparison.Ordinal);
-        Assert.Contains("patch.Subscribers.Remove(subscriber)", restore, StringComparison.Ordinal);
-        Assert.Contains("patch.Subscribers.Count == 0 && !patch.DutyGateOwned", restore, StringComparison.Ordinal);
-        Assert.DoesNotContain("var patch = ownership;\n        ownership = null;", NormalizeLines(restore), StringComparison.Ordinal);
-        Assert.True(cosmeticApply.IndexOf("cosmeticOwnership = new CosmeticPatchOwnership", StringComparison.Ordinal) <
-                    cosmeticApply.IndexOf("RecommendedPluginsField.SetValue", StringComparison.Ordinal));
-        Assert.Contains("RestoreOwnedCosmeticValue();", cosmeticApply, StringComparison.Ordinal);
-    }
-
-    [Fact]
     public void PerDadDiscordPilotAndFileCourierRuntimeAreRemoved()
     {
         Assert.False(File.Exists(RepositoryPath("Services", "DadMeasuredPilotService.cs")));
