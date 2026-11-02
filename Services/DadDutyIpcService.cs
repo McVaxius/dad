@@ -81,6 +81,12 @@ public sealed class DadDutyIpcDiagnostic
 
 public sealed class DadDutyIpcService : IDisposable
 {
+    // Existing native FrenRider runtime overlay; never saves a character profile.
+    private const string FrenRiderDutySettings = """
+        {"AdsSoloEnabled":true,"AdsSoloMaturityThreshold":0,"AdsSoloHandoffDelaySeconds":10,
+         "AdsFourManEnabled":true,"AdsFourManMaturityThreshold":0,"AdsFourManHandoffDelaySeconds":2,
+         "UseAdsLeaveAfterAdsDuty":true,"ExitAfterDutyEnds":false,"LeaveWhenAllLeft":false,"ExitAfterDutySeconds":20}
+        """;
     private static readonly string[] SuccessfulSessionCleanupCommands =
     [
         "/fr off",
@@ -105,6 +111,7 @@ public sealed class DadDutyIpcService : IDisposable
     private readonly DadDutyIpcStatus status = new();
     private readonly DadDutyLootSettings lootSettings = new();
     private string activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
+    private string frenRiderSettingsOwner = string.Empty;
 
     private string dutyMode = "Support";
     private bool unsynced;
@@ -305,7 +312,8 @@ public sealed class DadDutyIpcService : IDisposable
     }
 
     private string GetConfig(string key)
-        => lootSettings.Get(NormalizeConfigKey(key)) ?? (NormalizeConfigKey(key).ToLowerInvariant() switch
+        => lootSettings.Get(NormalizeConfigKey(key), beginRequest: sessionStage == DadDutyIpcSessionStage.Stopped)
+           ?? (NormalizeConfigKey(key).ToLowerInvariant() switch
         {
             "leveling" => leveling,
             "autodutymodeenum" => autoDutyMode,
@@ -391,7 +399,8 @@ public sealed class DadDutyIpcService : IDisposable
             status.LastFailure = disposed ? "DAD duty IPC is disposed." : "DAD is still waiting for the previous duty to exit.";
             return;
         }
-        StopBridgeSession("Replaced by a new Dad duty IPC run.", clearFailure: true);
+        StopBridgeSession("Replaced by a new Dad duty IPC run.", clearFailure: true, preserveLootRequest: true);
+        if (!string.IsNullOrEmpty(status.LastFailure)) return;
 
         status.LastTerritoryType = territoryType;
         status.LastBareMode = bareMode;
@@ -419,12 +428,17 @@ public sealed class DadDutyIpcService : IDisposable
                 FailSession(lootSettings.Failure);
                 return;
             }
-            var lootPolicy = lootSettings.Configured
-                ? lootSettings.BuildPolicy(status.LastRunId, duty.TerritoryType, duty.ContentFinderConditionId)
-                : DadDutyLootSettings.InactiveJson;
-            if (lootSettings.Configured && !adsService.TryValidateDutyLootPolicy(lootPolicy, out var lootFailure))
+            var useLootOverride = lootSettings.Configured;
+            var lootPolicy = lootSettings.BuildPolicy(status.LastRunId, duty.TerritoryType, duty.ContentFinderConditionId);
+            if (useLootOverride && !adsService.TryValidateDutyLootPolicy(lootPolicy, out var lootFailure))
             {
                 FailSession(lootFailure);
+                return;
+            }
+
+            if (useLootOverride && !TryApplyFrenRiderDutySettings(status.LastRunId, out var exitFailure))
+            {
+                FailSession(exitFailure);
                 return;
             }
 
@@ -445,7 +459,7 @@ public sealed class DadDutyIpcService : IDisposable
                 route,
                 loopCount,
                 bareMode);
-            log.Information("[dad][DutyIpc] Bare mode semantics: bridge runs have no preset pre-loop, between-loop or termination actions; combat handoff and owned-resource cleanup remain active. Temporary loot override={LootOverride}.", lootSettings.Configured);
+            log.Information("[dad][DutyIpc] Bare mode semantics: bridge runs have no preset pre-loop, between-loop or termination actions; combat handoff and owned-resource cleanup remain active. Temporary loot override={LootOverride}.", useLootOverride);
 
             StartNextLoop();
         }
@@ -516,6 +530,8 @@ public sealed class DadDutyIpcService : IDisposable
     public void Cancel(string reason)
     {
         activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
+        lootSettings.EndRequest();
+        ReleaseFrenRiderDutySettings();
         gearPreparation.Reset();
         leveling = "None";
         if (sessionStage == DadDutyIpcSessionStage.Leaving) return;
@@ -646,6 +662,8 @@ public sealed class DadDutyIpcService : IDisposable
     private void EndSessionWithoutCleanup()
     {
         activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
+        lootSettings.EndRequest();
+        ReleaseFrenRiderDutySettings();
         activeExecutor = null;
         activeDuty = null;
         ownedSessionId = string.Empty;
@@ -700,7 +718,9 @@ public sealed class DadDutyIpcService : IDisposable
     private void FailSession(string reason)
     {
         activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
+        lootSettings.EndRequest();
         status.LastFailure = string.IsNullOrWhiteSpace(reason) ? "Dad duty IPC executor failed." : reason;
+        ReleaseFrenRiderDutySettings();
         log.Warning("[dad][DutyIpc] Bridge session failed: {Reason}", status.LastFailure);
         if (activeDuty != null)
         {
@@ -729,9 +749,12 @@ public sealed class DadDutyIpcService : IDisposable
         }
     }
 
-    private void StopBridgeSession(string reason, bool clearFailure)
+    private void StopBridgeSession(string reason, bool clearFailure, bool preserveLootRequest = false)
     {
         activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
+        if (!preserveLootRequest) lootSettings.EndRequest();
+        if (clearFailure) status.LastFailure = string.Empty;
+        ReleaseFrenRiderDutySettings();
         gearPreparation.Reset();
         var executor = activeExecutor;
         activeExecutor = null;
@@ -740,8 +763,6 @@ public sealed class DadDutyIpcService : IDisposable
         requestedLoops = 0;
         completedLoops = 0;
         sessionStage = DadDutyIpcSessionStage.Stopped;
-        if (clearFailure)
-            status.LastFailure = string.Empty;
         status.UpdatedAtUtc = DateTime.UtcNow;
 
         if (executor == null)
@@ -756,6 +777,49 @@ public sealed class DadDutyIpcService : IDisposable
             status.LastFailure = ex.Message;
             status.UpdatedAtUtc = DateTime.UtcNow;
             log.Warning(ex, "[dad][DutyIpc] Failed to cancel bridge executor.");
+        }
+    }
+
+    private bool TryApplyFrenRiderDutySettings(string runId, out string failure)
+    {
+        // Retain ownership before invoking: a thrown response may follow acceptance.
+        frenRiderSettingsOwner = runId;
+        try
+        {
+            if (pluginInterface.GetIpcSubscriber<string, string, bool>("FrenRider.Dad.ApplyQuestionableDutySettings")
+                .InvokeFunc(runId, FrenRiderDutySettings))
+            {
+                log.Information("[dad][DutyIpc] Temporary FrenRider settings acquired for {SessionId}; ADS owns the final-loot departure path.", runId);
+                failure = string.Empty;
+                return true;
+            }
+            frenRiderSettingsOwner = string.Empty; // Rejection did not grant ownership.
+            failure = "FrenRider rejected temporary duty settings; forced loot requires ADS-managed departure.";
+        }
+        catch (Exception ex)
+        {
+            failure = $"FrenRider temporary duty settings IPC is unavailable; update FrenRider before forcing loot. {ex.Message}";
+        }
+        return false;
+    }
+
+    private void ReleaseFrenRiderDutySettings()
+    {
+        if (string.IsNullOrEmpty(frenRiderSettingsOwner)) return;
+        var owner = frenRiderSettingsOwner;
+        frenRiderSettingsOwner = string.Empty;
+        try
+        {
+            if (!pluginInterface.GetIpcSubscriber<string, bool>("FrenRider.Dad.ReleaseQuestionableDutySettings").InvokeFunc(owner))
+                throw new InvalidOperationException("FrenRider rejected the matching owner's release.");
+            log.Information("[dad][DutyIpc] Temporary FrenRider settings released for {SessionId}.", owner);
+        }
+        catch (Exception ex)
+        {
+            frenRiderSettingsOwner = owner;
+            var failure = $"Cannot release temporary FrenRider duty settings: {ex.Message}";
+            status.LastFailure = string.IsNullOrEmpty(status.LastFailure) ? failure : $"{status.LastFailure} {failure}";
+            log.Warning(ex, "[dad][DutyIpc] Temporary FrenRider settings release failed for {SessionId}.", owner);
         }
     }
 
