@@ -19,6 +19,7 @@ public sealed unsafe class DadDutySupportAdsService
     private const string AdsStopCommand = "/ads stop";
     private readonly IPluginLog log;
     private readonly ICallGateSubscriber<string, string> patchConfiguration;
+    private readonly ICallGateSubscriber<string, string> validateDutyLootPolicy;
     private readonly ICallGateSubscriber<string, bool> startRepair;
     private readonly ICallGateSubscriber<string> getStatusJson;
     private readonly ICallGateSubscriber<string> getShopListPresetsJson;
@@ -31,6 +32,7 @@ public sealed unsafe class DadDutySupportAdsService
     {
         this.log = log;
         patchConfiguration = pluginInterface.GetIpcSubscriber<string, string>("ADS.PatchConfigurationJson");
+        validateDutyLootPolicy = pluginInterface.GetIpcSubscriber<string, string>("ADS.Duty.ValidateLootPolicy");
         startRepair = pluginInterface.GetIpcSubscriber<string, bool>("ADS.StartRepair");
         getStatusJson = pluginInterface.GetIpcSubscriber<string>("ADS.GetStatusJson");
         getShopListPresetsJson = pluginInterface.GetIpcSubscriber<string>("ADS.GetShopListPresetsJson");
@@ -60,6 +62,26 @@ public sealed unsafe class DadDutySupportAdsService
 
     public bool TryArmOutside(out string failureReason)
         => TrySendCommand(AdsOutsideCommand, "arm ADS outside ownership", out failureReason);
+
+    internal bool TryValidateDutyLootPolicy(string policyJson, out string failureReason)
+    {
+        try
+        {
+            var response = validateDutyLootPolicy.InvokeFunc(policyJson);
+            using var document = System.Text.Json.JsonDocument.Parse(response);
+            if (document.RootElement.GetProperty("schemaVersion").GetInt32() != 1)
+            {
+                failureReason = "ADS duty loot IPC returned an unsupported schema version.";
+                return false;
+            }
+            return DadAdsConfigurationPatchRules.TryParseResponse(response, out failureReason);
+        }
+        catch (Exception ex)
+        {
+            failureReason = $"ADS temporary duty loot IPC is unavailable; update ADS before forcing looting. {ex.Message}";
+            return false;
+        }
+    }
 
     public bool TryLeave(out string failureReason)
         => TrySendCommand(AdsLeaveCommand, "request ADS duty leave", out failureReason);

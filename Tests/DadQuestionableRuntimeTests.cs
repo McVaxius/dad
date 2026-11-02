@@ -269,37 +269,33 @@ public sealed class DadQuestionableRuntimeTests
                 "AutoManageRotationPluginState", "AutoManageBossModAISettings", "UnknownKey" };
             var existingResponses = existingKeys.ToDictionary(key => key, get);
             var savedConfiguration = JsonSerializer.Serialize(configuration);
-            var savedStatus = JsonSerializer.Serialize(duty.GetStatus());
-            var savedFields = typeof(DutyIpc).GetFields(PrivateInstance).Where(field => !field.IsInitOnly)
-                .ToDictionary(field => field, field => field.GetValue(duty));
-            var statusField = typeof(DutyIpc).GetField("status", PrivateInstance)!;
             var loot = new[] { (Key: "LootTreasure", Expected: "True", Opposite: "False"),
                 (Key: "LootBossTreasureOnly", Expected: "False", Opposite: "True"),
-                (Key: "LootMethodEnum", Expected: "AutoDuty", Opposite: "None") };
+                (Key: "LootMethodEnum", Expected: "AutoDuty", Opposite: "Pandora") };
             var original = loot.ToDictionary(item => item.Key, item => get(dutyPrefix + item.Key));
             Assert.True(stopped());
             Assert.Empty(outbound);
             foreach (var item in loot)
                 Assert.Equal(item.Expected, original[item.Key]);
 
+            var current = new Dictionary<string, string>(original);
+            Assert.Equal((1, 0), Assert.IsType<Func<(int Major, int Minor)>>(handlers["dad.Duty.ApiVersion"])());
             // Force the caller's values, try contrary values, then restore its captured values.
             foreach (var phase in new[] { "force", "opposite", "restore" })
             foreach (var item in loot)
             {
                 var value = phase == "force" ? item.Expected : phase == "opposite" ? item.Opposite : original[item.Key];
                 set(phase == "force" ? dutyPrefix + item.Key : $" \t{dutyPrefix}{item.Key.ToUpperInvariant()} ", $" {value} ");
+                current[item.Key] = value;
                 foreach (var expected in loot)
                 {
-                    Assert.Equal(expected.Expected, get(expected.Key));
-                    Assert.Equal(expected.Expected, get(dutyPrefix + expected.Key));
-                    Assert.Equal(expected.Expected, get($" \t{expected.Key.ToLowerInvariant()} "));
+                    Assert.Equal(current[expected.Key], get(expected.Key));
+                    Assert.Equal(current[expected.Key], get(dutyPrefix + expected.Key));
+                    Assert.Equal(current[expected.Key], get($" \t{expected.Key.ToLowerInvariant()} "));
                 }
                 foreach (var (key, response) in existingResponses)
                     Assert.Equal(response, get(key));
                 Assert.Equal(savedConfiguration, JsonSerializer.Serialize(configuration));
-                Assert.Equal(savedStatus, JsonSerializer.Serialize(statusField.GetValue(duty)));
-                foreach (var (field, valueBefore) in savedFields)
-                    Assert.Equal(valueBefore, field.GetValue(duty));
                 Assert.True(stopped());
                 Assert.Empty(outbound);
             }
@@ -374,6 +370,23 @@ public sealed class DadQuestionableRuntimeTests
             Assert.False(contentHasPath.InvokeFunc(903));
             Assert.Empty(outbound);
             Assert.Equal("Stopped", duty.GetStatus().SessionState);
+            var set = Assert.IsType<Action<string, string>>(handlers["dad.Duty.SetConfig"]);
+            var failure = Assert.IsType<Func<string>>(handlers["dad.Duty.GetLastFailure"]);
+            var policy = Assert.IsType<Func<string>>(handlers["dad.Duty.GetLootPolicyJson"]);
+            var run = Assert.IsType<Action<uint, int, bool>>(handlers["dad.Duty.Run"]);
+            set("DutyConfig.LootTreasure", "invalid");
+            Assert.Contains("Invalid LootTreasure", failure());
+            run(901, 1, true);
+            Assert.Contains("Invalid LootTreasure", failure());
+            Assert.Empty(outbound); // Invalid settings cannot touch ADS or queue state.
+            set("DutyConfig.LootTreasure", "True");
+            run(901, 1, true);
+            Assert.Contains("ADS temporary duty loot IPC is unavailable", failure());
+            Assert.Equal(new[] { "ADS.Duty.ValidateLootPolicy.InvokeFunc" }, outbound);
+            Assert.Equal("Stopped", duty.GetStatus().SessionState);
+            Assert.True(duty.GetStatus().LastBareMode);
+            using var state = JsonDocument.Parse(policy());
+            Assert.False(state.RootElement.GetProperty("active").GetBoolean());
         }
         finally
         {
