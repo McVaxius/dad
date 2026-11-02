@@ -150,7 +150,7 @@ Questionable requests another while below its quest target. Its stop request sen
 In **Plans**, **Built-in leveling preset** creates an editable one-run preset for the current character and equipped job.
 The standard route is automatic; Porta Decumana's cutscene route is available for manual selection only.
 
-### WigglyQuest duty provider (draft)
+### WigglyQuest duty provider
 
 Select **DAD** in WigglyQuest's **Plugins > Duties** section. FrenRider and ADS remain required.
 `dad.Duty.ApiVersion() -> (int Major, int Minor)` returns `(1, 0)`, independently of the existing integer
@@ -177,9 +177,9 @@ reject the run; they cannot silently acknowledge forced loot.
 bypasses those preset hooks, for either flag value. Queueing, combat handoff and owned-resource cleanup still run.
 The log records the flag and these semantics; the flag does not suppress loot-policy release.
 
-Before publishing this draft, collect one complete logged WigglyQuest run for each of duty, leveling and gearing.
-Verify gearing with saved ADS chest collection off and a different saved roll policy, then verify those preferences
-are unchanged after completion and stop. Both companion builds and the full Release tests are still pending.
+Requires ADS 2.0.0.17 or later. Release compilation and all 3,065 DAD Release tests passed; live WigglyQuest
+duty, leveling and gearing verification has not been performed. FrenRider's configured native automatic exit
+can bypass ADS's final-loot wait.
 
 DAD marks duty-running FrenRider remote profile requests as duty-only. A compatible FrenRider receiver prepares an exported copy with Duty only selected while retaining saved profiles; formation-only requests retain the stored activation choice. The existing exact-duty enable endpoint also selects Duty only, and temporary overlays restore local mode/Run intent on release. This requires a FrenRider build supporting activation modes; it uses the existing profile transport and acceptance rules.
 

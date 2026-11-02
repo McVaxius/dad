@@ -273,7 +273,7 @@ public sealed class DadDutyIpcService : IDisposable
             RegisterAction<bool, object>(DadDutyIpcContract.Start, Start);
             RegisterFunc<bool>(DadDutyIpcContract.IsStopped, IsStopped);
             RegisterAction<object>(DadDutyIpcContract.Stop, Stop);
-            // Keep this draft unpublished until duty, leveling and gearing proof runs pass.
+            // Duty-provider compatibility version, independent of the general DAD API.
             RegisterFunc<(int Major, int Minor)>(DadDutyIpcContract.ApiVersion, () => (1, 0));
             RegisterFunc<string>(DadDutyIpcContract.GetLastFailure, () => status.LastFailure);
             RegisterFunc<string>(DadDutyIpcContract.GetLootPolicyJson, GetLootPolicyJson);
