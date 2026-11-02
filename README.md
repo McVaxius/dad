@@ -150,6 +150,37 @@ Questionable requests another while below its quest target. Its stop request sen
 In **Plans**, **Built-in leveling preset** creates an editable one-run preset for the current character and equipped job.
 The standard route is automatic; Porta Decumana's cutscene route is available for manual selection only.
 
+### WigglyQuest duty provider (draft)
+
+Select **DAD** in WigglyQuest's **Plugins > Duties** section. FrenRider and ADS remain required.
+`dad.Duty.ApiVersion() -> (int Major, int Minor)` returns `(1, 0)`, independently of the existing integer
+`dad.ApiVersion`. The seven existing duty gates keep their names and signatures.
+`dad.Duty.GetLastFailure() -> string` exposes configuration, preflight and runner failures; a new accepted run
+or successful completion clears the last failure. Stopping alone does not erase a failure.
+
+`LootTreasure`, `LootBossTreasureOnly` and `LootMethodEnum` are real in-memory compatibility values.
+Bare, `DutyConfig.` and `Meta.` key names address the same values. Writes do not start work or save ADS settings.
+Each accepted `Run` freezes the requested loot settings for that session and validates them through the companion
+`ADS.Duty.ValidateLootPolicy` endpoint before queueing. Later restore writes affect subsequent sessions.
+ADS reads `dad.Duty.GetLootPolicyJson()` only for the exact active territory/CFC. Completion, stop, failure,
+replacement and disposal release the temporary policy. Current saved ADS preferences then take effect, including
+edits made during the run; no saved chest or roll preference is overwritten.
+
+WigglyQuest gearing's `True`, `False`, `AutoDuty` combination forces ADS chest collection and Need rolls with
+native eligibility/fallback rules. `False` disables ADS chest collection; `Pandora` assigns chest opening to that
+external provider without enabling it, and leaves ADS's saved roll policy in use. `All` includes ADS collection.
+ADS cannot reliably identify boss-only coffers, so an ADS-owned `LootTreasure=True`/`LootBossTreasureOnly=True`
+request is rejected before queueing with an IPC-visible explanation. Invalid values and an older ADS build also
+reject the run; they cannot silently acknowledge forced loot.
+
+`bareMode` means no preset pre-loop, between-loop or termination actions. Every direct DAD duty bridge run already
+bypasses those preset hooks, for either flag value. Queueing, combat handoff and owned-resource cleanup still run.
+The log records the flag and these semantics; the flag does not suppress loot-policy release.
+
+Before publishing this draft, collect one complete logged WigglyQuest run for each of duty, leveling and gearing.
+Verify gearing with saved ADS chest collection off and a different saved roll policy, then verify those preferences
+are unchanged after completion and stop. Both companion builds and the full Release tests are still pending.
+
 DAD marks duty-running FrenRider remote profile requests as duty-only. A compatible FrenRider receiver prepares an exported copy with Duty only selected while retaining saved profiles; formation-only requests retain the stored activation choice. The existing exact-duty enable endpoint also selects Duty only, and temporary overlays restore local mode/Run intent on release. This requires a FrenRider build supporting activation modes; it uses the existing profile transport and acceptance rules.
 
 With the Questionable bridge enabled and **Use FrenRider** selected, entering a solo duty that exactly matches

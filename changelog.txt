@@ -1,3 +1,9 @@
+2026-11-02 - WigglyQuest duty IPC contract (draft, unpublished)
+
+- Add the independent tuple-version duty gate, last-failure endpoint and provider setup hint; preserve the seven existing signatures and FrenRider requirement.
+- Store and read back actual temporary loot settings, preflight them through ADS and publish only the exact active session policy. Release it on every terminal path without saving ADS settings.
+- Document bareMode's existing preset-hook-free bridge semantics and reject unsupported boss-only selection visibly. Duty, leveling and gearing proof runs and Release tests remain pending.
+
 2026-11-01 - Remove Questionable reflection integration
 
 - Remove private Questionable subscriber and recommendation patching, temporary FrenRider overrides, solo-duty reflection, and the related configuration/status controls.

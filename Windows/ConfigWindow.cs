@@ -910,6 +910,7 @@ public sealed class ConfigWindow : Window, IDisposable
         UiGui.TextWrapped("Fren Rider and AI Duty Solver are required whenever DAD is enabled, regardless of the combat handoff selected below.");
         if (ImGui.IsItemHovered())
             UiGui.SetTooltip("Use FrenRider is the default: Dad queues first, sends /fr on after confirmed duty entry, then FrenRider owns in-duty behavior, ADS handoff, stop, and exit choices. Normal planner, manual, and scheduler runs do not send disable commands. A successful final dad.Duty.Run IPC session preserves Fren Rider while Questionable is actively questing or DAD owns its AutoDuty command slots; otherwise cleanup also sends /fr off.");
+        UiGui.TextWrapped("WigglyQuest: select DAD under Plugins > Duties; updating does not select it automatically.");
         ImGui.Separator();
 
         DrawCombatRotationModeRadio(

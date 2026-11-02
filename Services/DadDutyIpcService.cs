@@ -103,6 +103,8 @@ public sealed class DadDutyIpcService : IDisposable
     private readonly DadLevelingGearPreparation gearPreparation;
     private readonly List<Action> disposeActions = [];
     private readonly DadDutyIpcStatus status = new();
+    private readonly DadDutyLootSettings lootSettings = new();
+    private string activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
 
     private string dutyMode = "Support";
     private bool unsynced;
@@ -271,6 +273,10 @@ public sealed class DadDutyIpcService : IDisposable
             RegisterAction<bool, object>(DadDutyIpcContract.Start, Start);
             RegisterFunc<bool>(DadDutyIpcContract.IsStopped, IsStopped);
             RegisterAction<object>(DadDutyIpcContract.Stop, Stop);
+            // Keep this draft unpublished until duty, leveling and gearing proof runs pass.
+            RegisterFunc<(int Major, int Minor)>(DadDutyIpcContract.ApiVersion, () => (1, 0));
+            RegisterFunc<string>(DadDutyIpcContract.GetLastFailure, () => status.LastFailure);
+            RegisterFunc<string>(DadDutyIpcContract.GetLootPolicyJson, GetLootPolicyJson);
 
             status.Registered = true;
             status.RegistrationState = "Dad duty IPC registered.";
@@ -299,18 +305,14 @@ public sealed class DadDutyIpcService : IDisposable
     }
 
     private string GetConfig(string key)
-        => NormalizeConfigKey(key).ToLowerInvariant() switch
+        => lootSettings.Get(NormalizeConfigKey(key)) ?? (NormalizeConfigKey(key).ToLowerInvariant() switch
         {
             "leveling" => leveling,
             "autodutymodeenum" => autoDutyMode,
             "unsynced" => unsynced.ToString(),
             "dutymodeenum" => dutyMode,
-            // Compatibility acknowledgements; ADS retains control of actual duty looting.
-            "loottreasure" => "True",
-            "lootbosstreasureonly" => "False",
-            "lootmethodenum" => "AutoDuty",
             _ => DadQuestionableAutoDutyConfigResolver.Resolve(NormalizeConfigKey(key), combatRotationService.CombatRotationMode),
-        };
+        });
 
     private bool ContentHasPath(uint territoryType)
     {
@@ -341,12 +343,15 @@ public sealed class DadDutyIpcService : IDisposable
     private void SetConfig(string key, string value)
     {
         var normalizedKey = NormalizeConfigKey(key);
-        if (normalizedKey.Equals("LootTreasure", StringComparison.OrdinalIgnoreCase) ||
-            normalizedKey.Equals("LootBossTreasureOnly", StringComparison.OrdinalIgnoreCase) ||
-            normalizedKey.Equals("LootMethodEnum", StringComparison.OrdinalIgnoreCase))
-            return; // Accept forcing and restoration writes without changing config or session state.
-
         var normalizedValue = value.Trim();
+
+        if (lootSettings.Set(normalizedKey, normalizedValue))
+        {
+            if (!string.IsNullOrEmpty(lootSettings.Failure))
+                status.LastFailure = lootSettings.Failure;
+            status.UpdatedAtUtc = DateTime.UtcNow;
+            return;
+        }
 
         if (normalizedKey.Equals("Unsynced", StringComparison.OrdinalIgnoreCase))
         {
@@ -381,7 +386,11 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void Run(uint territoryType, int loops, bool bareMode)
     {
-        if (disposed || sessionStage == DadDutyIpcSessionStage.Leaving) return;
+        if (disposed || sessionStage == DadDutyIpcSessionStage.Leaving)
+        {
+            status.LastFailure = disposed ? "DAD duty IPC is disposed." : "DAD is still waiting for the previous duty to exit.";
+            return;
+        }
         StopBridgeSession("Replaced by a new Dad duty IPC run.", clearFailure: true);
 
         status.LastTerritoryType = territoryType;
@@ -405,6 +414,20 @@ public sealed class DadDutyIpcService : IDisposable
                 return;
             }
 
+            if (!string.IsNullOrEmpty(lootSettings.Failure))
+            {
+                FailSession(lootSettings.Failure);
+                return;
+            }
+            var lootPolicy = lootSettings.Configured
+                ? lootSettings.BuildPolicy(status.LastRunId, duty.TerritoryType, duty.ContentFinderConditionId)
+                : DadDutyLootSettings.InactiveJson;
+            if (lootSettings.Configured && !adsService.TryValidateDutyLootPolicy(lootPolicy, out var lootFailure))
+            {
+                FailSession(lootFailure);
+                return;
+            }
+
             ownedSessionId = status.LastRunId;
             activeDuty = duty;
             activeRoute = route;
@@ -412,6 +435,7 @@ public sealed class DadDutyIpcService : IDisposable
             requestedLoops = loopCount;
             completedLoops = 0;
             sessionStage = DadDutyIpcSessionStage.Running;
+            activeLootPolicyJson = lootPolicy;
             status.LastFailure = string.Empty;
 
             log.Information(
@@ -421,6 +445,7 @@ public sealed class DadDutyIpcService : IDisposable
                 route,
                 loopCount,
                 bareMode);
+            log.Information("[dad][DutyIpc] Bare mode semantics: bridge runs have no preset pre-loop, between-loop or termination actions; combat handoff and owned-resource cleanup remain active. Temporary loot override={LootOverride}.", lootSettings.Configured);
 
             StartNextLoop();
         }
@@ -434,12 +459,21 @@ public sealed class DadDutyIpcService : IDisposable
     private bool IsStopped()
         => sessionStage == DadDutyIpcSessionStage.Stopped;
 
+    private string GetLootPolicyJson()
+        => !disposed && sessionStage == DadDutyIpcSessionStage.Running
+            ? activeLootPolicyJson
+            : DadDutyLootSettings.InactiveJson;
+
     private void Stop()
         => Cancel("Stopped by Dad duty IPC.");
 
     private void Start(bool startFromZero)
     {
-        if (disposed || sessionStage != DadDutyIpcSessionStage.Stopped) return;
+        if (disposed || sessionStage != DadDutyIpcSessionStage.Stopped)
+        {
+            status.LastFailure = disposed ? "DAD duty IPC is disposed." : "DAD already has an active duty IPC session.";
+            return;
+        }
         try
         {
             if (!leveling.Equals("Support", StringComparison.OrdinalIgnoreCase) ||
@@ -481,6 +515,7 @@ public sealed class DadDutyIpcService : IDisposable
 
     public void Cancel(string reason)
     {
+        activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
         gearPreparation.Reset();
         leveling = "None";
         if (sessionStage == DadDutyIpcSessionStage.Leaving) return;
@@ -588,6 +623,7 @@ public sealed class DadDutyIpcService : IDisposable
                     CompleteSession();
                 break;
             case DadRunStatus.Cancelled:
+                status.LastFailure = ResolveExecutorFailure(executorStatus);
                 EndSessionWithoutCleanup();
                 break;
             case DadRunStatus.Rejected:
@@ -601,19 +637,21 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void CompleteSession()
     {
+        log.Information("[dad][DutyIpc] Completed bridge session {SessionId}; loops={CompletedLoops}; releasing temporary ADS loot policy.", ownedSessionId, completedLoops);
+        status.LastFailure = string.Empty;
         RunSuccessfulSessionCleanup();
         EndSessionWithoutCleanup();
     }
 
     private void EndSessionWithoutCleanup()
     {
+        activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
         activeExecutor = null;
         activeDuty = null;
         ownedSessionId = string.Empty;
         requestedLoops = 0;
         completedLoops = 0;
         sessionStage = DadDutyIpcSessionStage.Stopped;
-        status.LastFailure = string.Empty;
         status.UpdatedAtUtc = DateTime.UtcNow;
     }
 
@@ -661,6 +699,7 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void FailSession(string reason)
     {
+        activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
         status.LastFailure = string.IsNullOrWhiteSpace(reason) ? "Dad duty IPC executor failed." : reason;
         log.Warning("[dad][DutyIpc] Bridge session failed: {Reason}", status.LastFailure);
         if (activeDuty != null)
@@ -692,6 +731,7 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void StopBridgeSession(string reason, bool clearFailure)
     {
+        activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
         gearPreparation.Reset();
         var executor = activeExecutor;
         activeExecutor = null;
@@ -1223,6 +1263,9 @@ internal enum DadDutyIpcSessionStage
 
 internal static class DadDutyIpcContract
 {
+    public const string ApiVersion = "dad.Duty.ApiVersion";
+    public const string GetLastFailure = "dad.Duty.GetLastFailure";
+    public const string GetLootPolicyJson = "dad.Duty.GetLootPolicyJson";
     public const string ContentHasPath = "dad.Duty.ContentHasPath";
     public const string GetConfig = "dad.Duty.GetConfig";
     public const string SetConfig = "dad.Duty.SetConfig";
