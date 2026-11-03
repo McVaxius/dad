@@ -14,6 +14,7 @@ public sealed class DadDutyIpcStatus
     public string LastRunId { get; set; } = string.Empty;
     public bool LastBareMode { get; set; }
     public string LastFailure { get; set; } = string.Empty;
+    public string LastAdsMaturity { get; set; } = "Not queried.";
     public string SessionState { get; set; } = "Stopped";
     public uint LastContentHasPathTerritoryType { get; set; }
     public bool? LastContentHasPathResult { get; set; }
@@ -38,6 +39,7 @@ public sealed class DadDutyIpcStatus
             LastRunId = LastRunId,
             LastBareMode = LastBareMode,
             LastFailure = LastFailure,
+            LastAdsMaturity = LastAdsMaturity,
             SessionState = SessionState,
             LastContentHasPathTerritoryType = LastContentHasPathTerritoryType,
             LastContentHasPathResult = LastContentHasPathResult,
@@ -56,6 +58,7 @@ public sealed class DadDutyIpcStatus
 
 public sealed class DadDutyIpcDiagnostic
 {
+    public string AdsMaturity { get; set; } = string.Empty;
     public string Query { get; set; } = string.Empty;
     public bool Registered { get; set; }
     public string RegistrationState { get; set; } = string.Empty;
@@ -81,6 +84,12 @@ public sealed class DadDutyIpcDiagnostic
 
 public sealed class DadDutyIpcService : IDisposable
 {
+    // Existing native FrenRider runtime overlay; never saves a character profile.
+    private const string FrenRiderDutySettings = """
+        {"AdsSoloEnabled":true,"AdsSoloMaturityThreshold":0,"AdsSoloHandoffDelaySeconds":10,
+         "AdsFourManEnabled":true,"AdsFourManMaturityThreshold":0,"AdsFourManHandoffDelaySeconds":2,
+         "UseAdsLeaveAfterAdsDuty":true,"ExitAfterDutyEnds":false,"LeaveWhenAllLeft":false,"ExitAfterDutySeconds":20}
+        """;
     private static readonly string[] SuccessfulSessionCleanupCommands =
     [
         "/fr off",
@@ -105,6 +114,7 @@ public sealed class DadDutyIpcService : IDisposable
     private readonly DadDutyIpcStatus status = new();
     private readonly DadDutyLootSettings lootSettings = new();
     private string activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
+    private string frenRiderSettingsOwner = string.Empty;
 
     private string dutyMode = "Support";
     private bool unsynced;
@@ -305,7 +315,8 @@ public sealed class DadDutyIpcService : IDisposable
     }
 
     private string GetConfig(string key)
-        => lootSettings.Get(NormalizeConfigKey(key)) ?? (NormalizeConfigKey(key).ToLowerInvariant() switch
+        => lootSettings.Get(NormalizeConfigKey(key), beginRequest: sessionStage == DadDutyIpcSessionStage.Stopped)
+           ?? (NormalizeConfigKey(key).ToLowerInvariant() switch
         {
             "leveling" => leveling,
             "autodutymodeenum" => autoDutyMode,
@@ -391,7 +402,12 @@ public sealed class DadDutyIpcService : IDisposable
             status.LastFailure = disposed ? "DAD duty IPC is disposed." : "DAD is still waiting for the previous duty to exit.";
             return;
         }
-        StopBridgeSession("Replaced by a new Dad duty IPC run.", clearFailure: true);
+        StopBridgeSession("Replaced by a new Dad duty IPC run.", clearFailure: true, preserveLootRequest: true);
+        if (!string.IsNullOrEmpty(status.LastFailure))
+        {
+            lootSettings.EndRequest();
+            return;
+        }
 
         status.LastTerritoryType = territoryType;
         status.LastBareMode = bareMode;
@@ -403,6 +419,11 @@ public sealed class DadDutyIpcService : IDisposable
         {
             var route = ResolveRoute();
             var loopCount = Math.Max(1, loops);
+            if (!string.IsNullOrEmpty(lootSettings.Failure))
+            {
+                FailSession(lootSettings.Failure);
+                return;
+            }
             if (!TryResolveDuty(territoryType, route, logAmbiguousSelection: true, out var duty, out var blocker) || duty == null)
             {
                 FailSession(blocker);
@@ -414,17 +435,17 @@ public sealed class DadDutyIpcService : IDisposable
                 return;
             }
 
-            if (!string.IsNullOrEmpty(lootSettings.Failure))
-            {
-                FailSession(lootSettings.Failure);
-                return;
-            }
-            var lootPolicy = lootSettings.Configured
-                ? lootSettings.BuildPolicy(status.LastRunId, duty.TerritoryType, duty.ContentFinderConditionId)
-                : DadDutyLootSettings.InactiveJson;
-            if (lootSettings.Configured && !adsService.TryValidateDutyLootPolicy(lootPolicy, out var lootFailure))
+            var useLootOverride = lootSettings.Configured;
+            var lootPolicy = lootSettings.BuildPolicy(status.LastRunId, duty.TerritoryType, duty.ContentFinderConditionId);
+            if (useLootOverride && !adsService.TryValidateDutyLootPolicy(lootPolicy, out var lootFailure))
             {
                 FailSession(lootFailure);
+                return;
+            }
+
+            if (!TryApplyFrenRiderDutySettings(status.LastRunId, out var exitFailure))
+            {
+                FailSession(exitFailure);
                 return;
             }
 
@@ -439,13 +460,14 @@ public sealed class DadDutyIpcService : IDisposable
             status.LastFailure = string.Empty;
 
             log.Information(
-                "[dad][DutyIpc] Starting bridge session territory={TerritoryType} cfc={ContentFinderConditionId} route={Route} loops={Loops} bareMode={BareMode}.",
+                "[dad][DutyIpc] Starting bridge session territory={TerritoryType} cfc={ContentFinderConditionId} route={Route} loops={Loops} bareMode={BareMode}; {AdsMaturity}.",
                 territoryType,
                 duty.ContentFinderConditionId,
                 route,
                 loopCount,
-                bareMode);
-            log.Information("[dad][DutyIpc] Bare mode semantics: bridge runs have no preset pre-loop, between-loop or termination actions; combat handoff and owned-resource cleanup remain active. Temporary loot override={LootOverride}.", lootSettings.Configured);
+                bareMode,
+                status.LastAdsMaturity);
+            log.Information("[dad][DutyIpc] Bare mode semantics: bridge runs have no preset pre-loop, between-loop or termination actions; combat handoff and owned-resource cleanup remain active. Temporary loot override={LootOverride}.", useLootOverride);
 
             StartNextLoop();
         }
@@ -498,8 +520,9 @@ public sealed class DadDutyIpcService : IDisposable
         try
         {
             var duty = DadDutySupportLevelingPresets.Select(readLevelingPlayer(),
-                presetProviderService.GetPlannerDutyOptionsForTerritory, readDutyUnlocked, out var blocker);
-            if (duty == null) { FailSession(blocker); return; }
+                territory => presetProviderService.GetPlannerDutyOptionsForTerritory(territory)
+                    .Where(IsMatureDutyCandidate).ToList(), readDutyUnlocked, out var blocker);
+            if (duty == null) { FailSession($"{blocker} {status.LastAdsMaturity}"); return; }
             // Questionable owns the quest target and asks again after this one dungeon.
             // Do not inherit unsync or job-selection settings from another bridge call.
             dutyMode = "Support";
@@ -516,6 +539,8 @@ public sealed class DadDutyIpcService : IDisposable
     public void Cancel(string reason)
     {
         activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
+        lootSettings.EndRequest();
+        ReleaseFrenRiderDutySettings();
         gearPreparation.Reset();
         leveling = "None";
         if (sessionStage == DadDutyIpcSessionStage.Leaving) return;
@@ -646,6 +671,8 @@ public sealed class DadDutyIpcService : IDisposable
     private void EndSessionWithoutCleanup()
     {
         activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
+        lootSettings.EndRequest();
+        ReleaseFrenRiderDutySettings();
         activeExecutor = null;
         activeDuty = null;
         ownedSessionId = string.Empty;
@@ -700,7 +727,9 @@ public sealed class DadDutyIpcService : IDisposable
     private void FailSession(string reason)
     {
         activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
+        lootSettings.EndRequest();
         status.LastFailure = string.IsNullOrWhiteSpace(reason) ? "Dad duty IPC executor failed." : reason;
+        ReleaseFrenRiderDutySettings();
         log.Warning("[dad][DutyIpc] Bridge session failed: {Reason}", status.LastFailure);
         if (activeDuty != null)
         {
@@ -729,9 +758,12 @@ public sealed class DadDutyIpcService : IDisposable
         }
     }
 
-    private void StopBridgeSession(string reason, bool clearFailure)
+    private void StopBridgeSession(string reason, bool clearFailure, bool preserveLootRequest = false)
     {
         activeLootPolicyJson = DadDutyLootSettings.InactiveJson;
+        if (!preserveLootRequest) lootSettings.EndRequest();
+        if (clearFailure) status.LastFailure = string.Empty;
+        ReleaseFrenRiderDutySettings();
         gearPreparation.Reset();
         var executor = activeExecutor;
         activeExecutor = null;
@@ -740,8 +772,6 @@ public sealed class DadDutyIpcService : IDisposable
         requestedLoops = 0;
         completedLoops = 0;
         sessionStage = DadDutyIpcSessionStage.Stopped;
-        if (clearFailure)
-            status.LastFailure = string.Empty;
         status.UpdatedAtUtc = DateTime.UtcNow;
 
         if (executor == null)
@@ -756,6 +786,49 @@ public sealed class DadDutyIpcService : IDisposable
             status.LastFailure = ex.Message;
             status.UpdatedAtUtc = DateTime.UtcNow;
             log.Warning(ex, "[dad][DutyIpc] Failed to cancel bridge executor.");
+        }
+    }
+
+    private bool TryApplyFrenRiderDutySettings(string runId, out string failure)
+    {
+        // Retain ownership before invoking: a thrown response may follow acceptance.
+        frenRiderSettingsOwner = runId;
+        try
+        {
+            if (pluginInterface.GetIpcSubscriber<string, string, bool>("FrenRider.Dad.ApplyQuestionableDutySettings")
+                .InvokeFunc(runId, FrenRiderDutySettings))
+            {
+                log.Information("[dad][DutyIpc] Temporary FrenRider settings acquired for {SessionId}; ADS owns the final-loot departure path.", runId);
+                failure = string.Empty;
+                return true;
+            }
+            frenRiderSettingsOwner = string.Empty; // Rejection did not grant ownership.
+            failure = "FrenRider rejected temporary duty settings; the duty bridge requires ADS handoff and ADS-managed departure.";
+        }
+        catch (Exception ex)
+        {
+            failure = $"FrenRider temporary duty settings IPC is unavailable; update FrenRider before running the duty bridge. {ex.Message}";
+        }
+        return false;
+    }
+
+    private void ReleaseFrenRiderDutySettings()
+    {
+        if (string.IsNullOrEmpty(frenRiderSettingsOwner)) return;
+        var owner = frenRiderSettingsOwner;
+        frenRiderSettingsOwner = string.Empty;
+        try
+        {
+            if (!pluginInterface.GetIpcSubscriber<string, bool>("FrenRider.Dad.ReleaseQuestionableDutySettings").InvokeFunc(owner))
+                throw new InvalidOperationException("FrenRider rejected the matching owner's release.");
+            log.Information("[dad][DutyIpc] Temporary FrenRider settings released for {SessionId}.", owner);
+        }
+        catch (Exception ex)
+        {
+            frenRiderSettingsOwner = owner;
+            var failure = $"Cannot release temporary FrenRider duty settings: {ex.Message}";
+            status.LastFailure = string.IsNullOrEmpty(status.LastFailure) ? failure : $"{status.LastFailure} {failure}";
+            log.Warning(ex, "[dad][DutyIpc] Temporary FrenRider settings release failed for {SessionId}.", owner);
         }
     }
 
@@ -823,10 +896,13 @@ public sealed class DadDutyIpcService : IDisposable
         var requestedDutyBlocker = requestedDuty == null || requestedRouteMatch == true
             ? string.Empty
             : BuildRequestedDutyBlocker(requestedDuty, route);
+        if (requestedDuty != null && requestedRouteMatch == true && !IsMatureDutyCandidate(requestedDuty))
+            requestedDutyBlocker = status.LastAdsMaturity;
 
         var blocker = ResolveDiagnosticBlocker(probe, routeAvailable, routeBlocker, requestedDutyBlocker);
         return new DadDutyIpcDiagnostic
         {
+            AdsMaturity = status.LastAdsMaturity,
             Query = query,
             Registered = status.Registered,
             RegistrationState = status.RegistrationState,
@@ -891,11 +967,12 @@ public sealed class DadDutyIpcService : IDisposable
             .OrderBy(static option => option.ContentFinderConditionId)
             .ToList();
 
-        duty = route switch
+        var routeCandidates = route switch
         {
-            DadDutyIpcRoute.DutySupport => candidates.FirstOrDefault(static option => option.SupportsDutySupport),
-            _ => candidates.FirstOrDefault(option => !unsynced || option.AllowUndersized),
+            DadDutyIpcRoute.DutySupport => candidates.Where(static option => option.SupportsDutySupport),
+            _ => candidates.Where(option => !unsynced || option.AllowUndersized),
         };
+        duty = routeCandidates.FirstOrDefault(IsMatureDutyCandidate);
 
         if (duty != null)
         {
@@ -913,7 +990,9 @@ public sealed class DadDutyIpcService : IDisposable
             return true;
         }
 
-        blocker = route == DadDutyIpcRoute.DutySupport
+        blocker = routeCandidates.Any()
+            ? $"No QST-eligible ADS maturity for territory {territoryType}: {status.LastAdsMaturity}"
+            : route == DadDutyIpcRoute.DutySupport
             ? $"Territory {territoryType} has no Dad Duty Support-compatible ContentFinderCondition row."
             : unsynced
                 ? $"Territory {territoryType} has no Dad local duty row that allows undersized/unsynced queueing."
@@ -923,24 +1002,30 @@ public sealed class DadDutyIpcService : IDisposable
 
     private DadDutyContentPathProbe EvaluateContentHasPath(uint territoryType)
     {
+        status.LastAdsMaturity = "No compatible catalog row for this territory.";
         var candidates = presetProviderService.GetPlannerDutyOptionsForTerritory(territoryType)
             .OrderBy(static option => option.ContentFinderConditionId)
             .ToList();
-        var compatibleCandidates = candidates
+        var queriedCandidates = candidates
             .Where(IsDutyIpcCompatibleCandidate)
-            .OrderBy(static option => option.ContentFinderConditionId)
+            .Select(option => (Duty: option, Maturity: ReadDutyMaturity(option)))
+            .ToList();
+        var compatibleCandidates = queriedCandidates
+            .Where(candidate => candidate.Maturity.Eligible)
             .ToList();
         var selected = compatibleCandidates.FirstOrDefault();
+        if (selected.Duty != null)
+            status.LastAdsMaturity = $"{selected.Duty.DutyDisplayName} #{selected.Duty.ContentFinderConditionId}: {selected.Maturity.Summary}";
         return new DadDutyContentPathProbe
         {
             TerritoryType = territoryType,
-            Result = selected != null,
+            Result = selected.Duty != null,
             CandidateCount = candidates.Count,
             CompatibleCandidateCount = compatibleCandidates.Count,
-            SelectedContentFinderConditionId = selected?.ContentFinderConditionId ?? 0,
-            SelectedDutyName = selected?.DutyDisplayName ?? string.Empty,
-            Blocker = selected == null
-                ? $"No Dad-compatible duty route found for territory {territoryType}."
+            SelectedContentFinderConditionId = selected.Duty?.ContentFinderConditionId ?? 0,
+            SelectedDutyName = selected.Duty?.DutyDisplayName ?? string.Empty,
+            Blocker = selected.Duty == null
+                ? $"No Dad-compatible duty with ADS maturity > 0 found for territory {territoryType}. {status.LastAdsMaturity}"
                 : string.Empty,
         };
     }
@@ -1245,6 +1330,17 @@ public sealed class DadDutyIpcService : IDisposable
     private static bool IsDutyIpcCompatibleCandidate(DadPlannerDutyOption option)
         => option.ContentFinderConditionId != 0 &&
            (option.SupportsDutySupport || option.SupportsTrust || !string.IsNullOrWhiteSpace(option.DutyDisplayName));
+
+    private bool IsMatureDutyCandidate(DadPlannerDutyOption option)
+        => ReadDutyMaturity(option).Eligible;
+
+    private DadAdsDutyMaturity ReadDutyMaturity(DadPlannerDutyOption option)
+    {
+        var maturity = adsService.GetDutyMaturity(option.TerritoryType, option.ContentFinderConditionId);
+        status.LastAdsMaturity = $"{option.DutyDisplayName} #{option.ContentFinderConditionId}: {maturity.Summary}";
+        log.Debug("[dad][DutyIpc] {Maturity}", status.LastAdsMaturity);
+        return maturity;
+    }
 }
 
 internal enum DadDutyIpcRoute

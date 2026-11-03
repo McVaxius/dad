@@ -110,6 +110,7 @@
     <Compile Include="..\Services\DadRunHistoryPersistenceRules.cs" Link="DadRunHistoryPersistenceRules.cs" />
     <Compile Include="..\Services\DadAdsConfigurationPatchRules.cs" Link="DadAdsConfigurationPatchRules.cs" />
     <Compile Include="..\Services\DadDutyLootSettings.cs" Link="DadDutyLootSettings.cs" />
+    <Compile Include="..\Services\DadAdsDutyMaturity.cs" Link="DadAdsDutyMaturity.cs" />
     <Compile Include="..\Services\DadPromptOwnershipRules.cs" Link="DadPromptOwnershipRules.cs" />
     <Compile Include="..\Services\DadPartyTeardownRules.cs" Link="DadPartyTeardownRules.cs" />
     <Compile Include="..\Services\DadParticipantPartyDepartureRules.cs" Link="DadParticipantPartyDepartureRules.cs" />

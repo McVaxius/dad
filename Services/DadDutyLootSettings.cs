@@ -8,23 +8,32 @@ internal sealed class DadDutyLootSettings
     private bool treasure = true;
     private bool bossOnly;
     private string method = "AutoDuty";
+    private bool requestOpen = true;
     internal bool Configured { get; private set; }
     private readonly Dictionary<string, string> errors = new(StringComparer.Ordinal);
     internal string Failure => string.Join("; ", errors.Values);
     internal const string InactiveJson = "{\"schemaVersion\":1,\"active\":false}";
 
-    internal string? Get(string key) => key.ToLowerInvariant() switch
+    internal string? Get(string key, bool beginRequest = true)
     {
-        "loottreasure" => treasure.ToString(),
-        "lootbosstreasureonly" => bossOnly.ToString(),
-        "lootmethodenum" => method,
-        _ => null,
-    };
+        var value = key.ToLowerInvariant() switch
+        {
+            "loottreasure" => treasure.ToString(),
+            "lootbosstreasureonly" => bossOnly.ToString(),
+            "lootmethodenum" => method,
+            _ => null,
+        };
+        // Wiggly captures loot values before a new force request. Its later
+        // restore is write-only and must not arm another session, even when
+        // the captured values and forced values are identical.
+        if (value != null && beginRequest) requestOpen = true;
+        return value;
+    }
 
     internal bool Set(string key, string value)
     {
         var normalized = key.ToLowerInvariant();
-        if (Get(normalized) == null) return false;
+        if (Get(normalized, beginRequest: false) == null) return false;
         if (normalized == "lootmethodenum")
         {
             var canonical = new[] { "AutoDuty", "Pandora", "All" }
@@ -46,15 +55,25 @@ internal sealed class DadDutyLootSettings
             if (normalized == "loottreasure") treasure = parsed;
             else bossOnly = parsed;
         }
-        errors.Remove(normalized);
-        Configured = true;
+        if (errors.Remove(normalized)) requestOpen = true;
+        Configured |= requestOpen;
         return true;
     }
 
     internal string BuildPolicy(string sessionId, uint territoryTypeId, uint contentFinderConditionId)
-        => JsonSerializer.Serialize(new
+    {
+        var policy = Configured ? JsonSerializer.Serialize(new
         {
             schemaVersion = 1, active = true, sessionId, territoryTypeId, contentFinderConditionId,
             lootTreasure = treasure, lootBossTreasureOnly = bossOnly, lootMethodEnum = method,
-        });
+        }) : InactiveJson;
+        EndRequest();
+        return policy;
+    }
+
+    internal void EndRequest()
+    {
+        Configured = false;
+        requestOpen = false;
+    }
 }

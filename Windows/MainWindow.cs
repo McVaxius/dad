@@ -1420,6 +1420,7 @@ public sealed partial class MainWindow : Window, IDisposable
         var dutyIpc = plugin.DutyIpcService.GetStatus();
         DrawStatusRow("Name privacy", plugin.KrangleService.BuildStatus(characterPool));
         DrawStatusRow("Duty IPC", FormatDutyIpcStatus(dutyIpc));
+        DrawStatusRow("Duty IPC ADS maturity", dutyIpc.LastAdsMaturity);
         DrawStatusRow("Duty IPC registration", $"{(dutyIpc.Registered ? "Registered" : FormatText(dutyIpc.RegistrationState, "Not registered"))} | mode {dutyIpc.LastMode}");
         DrawStatusRow("Duty IPC probe", dutyIpc.LastContentHasPathResult.HasValue
             ? $"territory {dutyIpc.LastContentHasPathTerritoryType} | result {dutyIpc.LastContentHasPathResult.Value} | candidates {dutyIpc.LastContentHasPathCandidateCount} / compatible {dutyIpc.LastContentHasPathCompatibleCandidateCount} | blocker {FormatText(dutyIpc.LastContentHasPathBlocker, "(none)")}"

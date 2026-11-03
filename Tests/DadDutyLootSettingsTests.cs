@@ -7,6 +7,35 @@ namespace dad.Tests;
 public sealed class DadDutyLootSettingsTests
 {
     [Fact]
+    public void ReadForceFreezeAndWriteBackDoNotConfigureAnotherSession()
+    {
+        var settings = new DadDutyLootSettings();
+        var keys = new[] { "LootTreasure", "LootBossTreasureOnly", "LootMethodEnum" };
+        var original = keys.ToDictionary(key => key, key => settings.Get(key)!);
+        Assert.All(original.Values, value => Assert.False(string.IsNullOrEmpty(value)));
+
+        settings.Set("LootTreasure", "True");
+        settings.Set("LootBossTreasureOnly", "False");
+        if (original["LootMethodEnum"] is not ("AutoDuty" or "All"))
+            settings.Set("LootMethodEnum", "AutoDuty");
+        Assert.True(settings.Configured);
+        using var active = JsonDocument.Parse(settings.BuildPolicy("run-a", 901, 41));
+        Assert.True(active.RootElement.GetProperty("active").GetBoolean());
+
+        foreach (var key in keys)
+            Assert.True(settings.Set(key, original[key]));
+        Assert.Empty(settings.Failure);
+        Assert.False(settings.Configured);
+
+        // Wiggly's next forced run captures the values again before writing.
+        foreach (var key in keys)
+            Assert.Equal(original[key], settings.Get(key));
+        settings.Set("LootTreasure", "True");
+        settings.Set("LootBossTreasureOnly", "False");
+        Assert.True(settings.Configured);
+    }
+
+    [Fact]
     public void SettingsAreRealAndPolicyFreezesTheAcceptedSessionValues()
     {
         var settings = new DadDutyLootSettings();

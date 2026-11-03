@@ -1,3 +1,12 @@
+2026-11-02 - 2.1.0.2 - WigglyQuest session override corrections
+
+- Consume temporary loot requests per bridge session. Keep the existing compatibility readback values; write-only restoration cannot enable a later run, and a fresh loot capture/write sequence can request another override.
+- Acquire FrenRider's existing native runtime overlay for all bridge sessions, including unforced leveling, selecting ADS-managed departure and suppressing competing automatic exits without saving profiles. Release the matching owner on all terminal paths; unavailable/rejected acquisition blocks queueing visibly.
+- Add a regression for identical force/restore values and registered-handler A–E sequencing without DAD reload, plus terminal and rejected/uncertain-acquisition coverage. Keep the seven original duty gates and tuple API version (1, 0). Live proof runs and DAD/ADS excerpts remain unverified.
+
+- Close a refused request when prior-owner release fails, so later writeback cannot force loot on the next unforced run; reproduce the failure sequence before the fix.
+- Query ADS maturity for exact territory/CFC. Allow every nonzero known maturity in every QST mode; block 0 or unavailable data before queueing, filter leveling selection and report diagnostics/logs. Requires the companion ADS 2.0.0.18 query; other DAD duty workflows are unchanged.
+
 2026-11-02 - 2.1.0.1 - WigglyQuest duty IPC contract
 
 - Add the independent tuple-version duty gate, last-failure endpoint and provider setup hint; preserve the seven existing signatures and FrenRider requirement.

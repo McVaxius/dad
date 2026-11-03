@@ -20,6 +20,7 @@ public sealed unsafe class DadDutySupportAdsService
     private readonly IPluginLog log;
     private readonly ICallGateSubscriber<string, string> patchConfiguration;
     private readonly ICallGateSubscriber<string, string> validateDutyLootPolicy;
+    private readonly ICallGateSubscriber<uint, uint, string> getDutyMaturityJson;
     private readonly ICallGateSubscriber<string, bool> startRepair;
     private readonly ICallGateSubscriber<string> getStatusJson;
     private readonly ICallGateSubscriber<string> getShopListPresetsJson;
@@ -33,6 +34,7 @@ public sealed unsafe class DadDutySupportAdsService
         this.log = log;
         patchConfiguration = pluginInterface.GetIpcSubscriber<string, string>("ADS.PatchConfigurationJson");
         validateDutyLootPolicy = pluginInterface.GetIpcSubscriber<string, string>("ADS.Duty.ValidateLootPolicy");
+        getDutyMaturityJson = pluginInterface.GetIpcSubscriber<uint, uint, string>("ADS.Duty.GetMaturityJson");
         startRepair = pluginInterface.GetIpcSubscriber<string, bool>("ADS.StartRepair");
         getStatusJson = pluginInterface.GetIpcSubscriber<string>("ADS.GetStatusJson");
         getShopListPresetsJson = pluginInterface.GetIpcSubscriber<string>("ADS.GetShopListPresetsJson");
@@ -43,6 +45,19 @@ public sealed unsafe class DadDutySupportAdsService
     }
 
     public string MissingAdsBlocker => "ADS is not loaded; cannot run Duty Support automation after queue";
+
+    internal DadAdsDutyMaturity GetDutyMaturity(uint territoryTypeId, uint contentFinderConditionId)
+    {
+        try
+        {
+            return DadAdsDutyMaturity.Parse(getDutyMaturityJson.InvokeFunc(territoryTypeId, contentFinderConditionId),
+                territoryTypeId, contentFinderConditionId);
+        }
+        catch (Exception ex)
+        {
+            return DadAdsDutyMaturity.Unavailable($"ADS maturity IPC is unavailable; update ADS to a build providing ADS.Duty.GetMaturityJson. {ex.Message}");
+        }
+    }
 
     public bool IsAdsLoaded()
     {
