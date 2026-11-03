@@ -13,16 +13,74 @@ public sealed class WigglyDutyRuntimeCollection;
 [Collection("Wiggly duty runtime")]
 public sealed class DadWigglyQuestSessionRuntimeTests
 {
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void AllQstModesUseTheSameNonzeroMaturityRule(int level)
+    {
+        foreach (var mode in new[] { "Support", "Regular", "Leveling" })
+        {
+            using var fixture = new Fixture { MaturityLevel = level };
+            Assert.Equal(level > 0, fixture.HasPath());
+            if (mode == "Leveling")
+            {
+                fixture.Set("leveling", "Support");
+                fixture.Start();
+            }
+            else
+            {
+                fixture.Set("Meta.DutyModeEnum", mode);
+                fixture.Set("Meta.Unsynced", (mode == "Regular").ToString());
+                fixture.Run();
+            }
+            if (level == 0)
+            {
+                fixture.Until(fixture.Stopped);
+                Assert.Contains("ADS maturity 0", fixture.Failure());
+                Assert.Null(fixture.ExitOwner);
+                Assert.DoesNotContain(fixture.Events, line => line.StartsWith("native:npc-register:") ||
+                    line == "native:callback:ContentsFinder:12,0");
+            }
+            else
+            {
+                fixture.Until(() => fixture.Duty.GetStatus().SessionState == "Running");
+                Assert.Contains($"ADS maturity {level}", fixture.Duty.GetStatus().LastAdsMaturity);
+                fixture.CompleteDungeon();
+                Assert.Empty(fixture.Failure());
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MissingOrMalformedMaturityBlocksBeforeQueueWithActionableFailure(bool missing)
+    {
+        using var fixture = new Fixture { MaturityUnavailable = missing, MaturityPayload = "{}" };
+        Assert.False(fixture.HasPath());
+        fixture.ForceLoot();
+        fixture.Run();
+        Assert.True(fixture.Stopped());
+        Assert.Contains("maturity", fixture.Failure());
+        Assert.Empty(fixture.Applies);
+        Assert.Empty(fixture.Validations);
+        Assert.DoesNotContain(fixture.Events, line => line.StartsWith("native:npc-register:"));
+    }
+
     [Fact]
-    public void ExactWigglySequencesCompleteAThroughDWithoutReloadOrStickyOverrides()
+    public void ExactWigglySequencesCompleteAThroughEWithoutReloadOrStickyOverrides()
     {
         using var fixture = new Fixture();
         fixture.AssertContract();
         var ids = new HashSet<string>();
-        foreach (var run in new[] { "A", "B", "C", "D" })
+        foreach (var run in new[] { "A", "B", "C", "D", "E" })
         {
-            var forceLoot = run is "A" or "C";
+            var forceLoot = run is "A" or "C" or "E";
             var leveling = run is "B" or "C";
+            var unsynced = run == "E";
+            if (unsynced) fixture.ObserveOverleveledPlayer();
             var loot = forceLoot ? fixture.ForceLoot() : null;
             var saved = new List<(string Key, string Value)>();
             if (!leveling) fixture.Set("leveling", "None");
@@ -34,8 +92,8 @@ public sealed class DadWigglyQuestSessionRuntimeTests
             }
             else
             {
-                fixture.CheckedWrite("Meta.Unsynced", "False", saved);
-                fixture.CheckedWrite("Meta.DutyModeEnum", "Support", saved);
+                fixture.CheckedWrite("Meta.Unsynced", unsynced.ToString(), saved);
+                fixture.CheckedWrite("Meta.DutyModeEnum", unsynced ? "Regular" : "Support", saved);
                 fixture.Run();
             }
 
@@ -44,13 +102,13 @@ public sealed class DadWigglyQuestSessionRuntimeTests
             Assert.True(ids.Add(id));
             using var policy = JsonDocument.Parse(fixture.Policy());
             Assert.Equal(forceLoot, policy.RootElement.GetProperty("active").GetBoolean());
-            Assert.Equal(forceLoot ? id : null, fixture.ExitOwner);
+            Assert.Equal(id, fixture.ExitOwner);
+            fixture.AssertExitSettings();
             if (forceLoot)
             {
                 Assert.True(policy.RootElement.GetProperty("lootTreasure").GetBoolean());
                 Assert.False(policy.RootElement.GetProperty("lootBossTreasureOnly").GetBoolean());
                 Assert.Equal("AutoDuty", policy.RootElement.GetProperty("lootMethodEnum").GetString());
-                fixture.AssertExitSettings();
                 // A read while running and a writeback cannot arm the next run
                 // or change the frozen policy published for this one.
                 Assert.Equal("True", fixture.Get("DutyConfig.LootTreasure"));
@@ -68,11 +126,13 @@ public sealed class DadWigglyQuestSessionRuntimeTests
             if (loot != null)
                 foreach (var (key, value) in loot) fixture.Set(key, value);
         }
-        Assert.Equal(2, fixture.Applies.Count);
+        Assert.Equal(5, fixture.Applies.Count);
         Assert.Equal(fixture.Applies, fixture.Releases);
-        Assert.Equal(2, fixture.Validations.Count);
+        Assert.Equal(3, fixture.Validations.Count);
         Assert.Equal(4, fixture.Events.Count(line => line.StartsWith("native:npc-register:DutySupport")));
-        Assert.Equal(4, fixture.Events.Count(line => line.Contains("[dad][DutyIpc] Starting bridge session")));
+        Assert.Single(fixture.Events, line => line == "native:callback:ContentsFinder:12,0");
+        Assert.Contains("native:unrestricted:True", fixture.Events);
+        Assert.Equal(5, fixture.Events.Count(line => line.Contains("[dad][DutyIpc] Starting bridge session")));
         Assert.Empty(fixture.State.GetProperty("unexpected").EnumerateArray());
     }
 
@@ -99,7 +159,12 @@ public sealed class DadWigglyQuestSessionRuntimeTests
             case "replacement": fixture.Run(); break;
             case "dispose": fixture.Duty.Dispose(); break;
         }
-        Assert.Null(fixture.ExitOwner);
+        if (terminal == "replacement")
+        {
+            Assert.False(string.IsNullOrEmpty(fixture.ExitOwner));
+            Assert.NotEqual(owner, fixture.ExitOwner);
+        }
+        else Assert.Null(fixture.ExitOwner);
         Assert.Equal(new[] { owner }, fixture.Releases);
         if (terminal != "dispose")
         {
@@ -109,12 +174,14 @@ public sealed class DadWigglyQuestSessionRuntimeTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void RejectedOrUncertainExitSettingsFailBeforeQueueAndReleaseAnyUncertainOwnership(bool uncertain)
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void RejectedOrUncertainExitSettingsFailBeforeQueueAndReleaseAnyUncertainOwnership(bool forceLoot, bool uncertain)
     {
         using var fixture = new Fixture { RejectExit = !uncertain, ThrowAfterExitAcceptance = uncertain };
-        fixture.ForceLoot();
+        if (forceLoot) fixture.ForceLoot();
         fixture.Run();
         Assert.True(fixture.Stopped());
         Assert.Contains("FrenRider", fixture.Failure());
@@ -126,7 +193,7 @@ public sealed class DadWigglyQuestSessionRuntimeTests
     }
 
     [Fact]
-    public void FailedReleaseRemainsVisibleAndBlocksAnotherRunUntilTheOwnerIsReleased()
+    public void RefusedForcedRunClosesLootRequestBeforeWritebackAndNextUnforcedRun()
     {
         using var fixture = new Fixture();
         fixture.ForceLoot();
@@ -136,18 +203,29 @@ public sealed class DadWigglyQuestSessionRuntimeTests
         var owner = fixture.ExitOwner;
         Assert.NotNull(owner);
         Assert.Contains("Cannot release temporary FrenRider", fixture.Failure());
+        // Repeat F while the prior owner cannot be released, then restore the
+        // captured values exactly as Wiggly does after the refused Run.
+        var saved = fixture.ForceLoot();
         fixture.Run();
         Assert.True(fixture.Stopped());
         Assert.Equal(owner, fixture.ExitOwner);
         Assert.Contains("Cannot release temporary FrenRider", fixture.Failure());
         Assert.Single(fixture.Applies);
+        foreach (var (key, value) in saved) fixture.Set(key, value);
         fixture.RejectRelease = false;
         fixture.Run();
-        Assert.Null(fixture.ExitOwner);
+        Assert.NotNull(fixture.ExitOwner);
+        Assert.NotEqual(owner, fixture.ExitOwner);
         Assert.Equal(new[] { owner }, fixture.Releases);
         Assert.Empty(fixture.Failure());
         using var policy = JsonDocument.Parse(fixture.Policy());
         Assert.False(policy.RootElement.GetProperty("active").GetBoolean());
+        Assert.Single(fixture.Validations);
+        fixture.CompleteDungeon();
+        Assert.True(fixture.Stopped());
+        Assert.Empty(fixture.Failure());
+        Assert.Null(fixture.ExitOwner);
+        Assert.Equal(fixture.Applies, fixture.Releases);
     }
 
     private sealed class Fixture : IDisposable
@@ -168,6 +246,9 @@ public sealed class DadWigglyQuestSessionRuntimeTests
         public bool RejectExit;
         public bool ThrowAfterExitAcceptance;
         public bool RejectRelease;
+        public int MaturityLevel = 2;
+        public string? MaturityPayload;
+        public bool MaturityUnavailable;
         public JsonElement State;
         public DutyIpc Duty { get; }
 
@@ -183,6 +264,17 @@ public sealed class DadWigglyQuestSessionRuntimeTests
             }))!;
             handlers = (Dictionary<string, Delegate>)nodeType.GetField("ipcProviders", Private)!.GetValue(node)!;
             Duty = (DutyIpc)nodeType.GetField("dutyIpc", Private)!.GetValue(node)!;
+            handlers["ADS.Duty.GetMaturityJson"] = (Func<uint, uint, string>)((territory, cfc) =>
+            {
+                if (MaturityUnavailable) throw new IOException("Synthetic ADS maturity endpoint unavailable.");
+                return MaturityPayload ?? JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1, success = true, territoryTypeId = territory, contentFinderConditionId = cfc,
+                    clearanceLevel = MaturityLevel, clearanceStatus = new[]
+                    { "NotCleared", "OnePlayerUnsyncCleared", "OnePlayerDutySupport", "FourPlayerSyncCleared" }[MaturityLevel],
+                    eligibleForQuest = MaturityLevel > 0,
+                });
+            });
             handlers["ADS.Duty.ValidateLootPolicy"] = (Func<string, string>)(policy =>
             {
                 Validations.Add(policy);
@@ -226,9 +318,11 @@ public sealed class DadWigglyQuestSessionRuntimeTests
         public string Policy() => ((Func<string>)handlers["dad.Duty.GetLootPolicyJson"])();
         public string Failure() => ((Func<string>)handlers["dad.Duty.GetLastFailure"])();
         public bool Stopped() => ((Func<bool>)handlers["dad.Duty.IsStopped"])();
+        public bool HasPath() => ((Func<uint, bool>)handlers["dad.Duty.ContentHasPath"])(1036);
         public void Start() => ((Action<bool>)handlers["dad.Duty.Start"])(true);
         public void Run() => ((Action<uint, int, bool>)handlers["dad.Duty.Run"])(1036, 1, true);
         public void Stop() => ((Action)handlers["dad.Duty.Stop"])();
+        public void ObserveOverleveledPlayer() => Observe(new { op = "observe", jobId = 1, level = 100, itemLevel = 700 });
 
         public List<(string Key, string Value)> ForceLoot()
         {
@@ -253,6 +347,12 @@ public sealed class DadWigglyQuestSessionRuntimeTests
             using var document = JsonDocument.Parse(ExitSettings!);
             var settings = document.RootElement;
             Assert.Equal(10, settings.EnumerateObject().Count());
+            Assert.True(settings.GetProperty("AdsSoloEnabled").GetBoolean());
+            Assert.Equal(0, settings.GetProperty("AdsSoloMaturityThreshold").GetInt32());
+            Assert.Equal(10, settings.GetProperty("AdsSoloHandoffDelaySeconds").GetInt32());
+            Assert.True(settings.GetProperty("AdsFourManEnabled").GetBoolean());
+            Assert.Equal(0, settings.GetProperty("AdsFourManMaturityThreshold").GetInt32());
+            Assert.Equal(2, settings.GetProperty("AdsFourManHandoffDelaySeconds").GetInt32());
             Assert.True(settings.GetProperty("UseAdsLeaveAfterAdsDuty").GetBoolean());
             Assert.False(settings.GetProperty("ExitAfterDutyEnds").GetBoolean());
             Assert.False(settings.GetProperty("LeaveWhenAllLeft").GetBoolean());

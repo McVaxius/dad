@@ -331,6 +331,13 @@ public sealed class DadQuestionableRuntimeTests
             "GetIpcSubscriber" => Proxy(method.ReturnType, (call, values) =>
             {
                 var channel = (string)args![0]!;
+                if (channel == "ADS.Duty.GetMaturityJson" && call.Name == "InvokeFunc")
+                    return System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        schemaVersion = 1, success = true, territoryTypeId = (uint)values![0]!,
+                        contentFinderConditionId = (uint)values[1]!, clearanceLevel = 1,
+                        clearanceStatus = "OnePlayerUnsyncCleared", eligibleForQuest = true,
+                    });
                 return channel == "dad.Duty.ContentHasPath" && call.Name == "InvokeFunc"
                     ? Assert.IsType<Func<uint, bool>>(handlers[channel])((uint)values![0]!)
                     : Unexpected($"{channel}.{call.Name}");

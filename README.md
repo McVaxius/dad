@@ -181,18 +181,20 @@ reject the run; they cannot silently acknowledge forced loot.
 bypasses those preset hooks, for either flag value. Queueing, combat handoff and owned-resource cleanup still run.
 The log records the flag and these semantics; the flag does not suppress loot-policy release.
 
-Forced-loot runs also acquire FrenRider's existing native runtime settings overlay through
+Every duty bridge run, including unforced leveling, acquires FrenRider's existing native runtime settings overlay through
 `FrenRider.Dad.ApplyQuestionableDutySettings`, using the DAD session ID as owner. Its supported fixed settings
 enable ADS solo/four-player handoff at maturity 0 (10/2-second readiness delays), select ADS-managed departure
 after 20 seconds, and suppress native completion/empty-party exits. `/ads leave` performs ADS's final-coffer sweep
 and outstanding-loot wait before departure; 20 seconds is the request delay, not a deadline for finishing loot.
 The matching owner is released on completion, stop, failure, replacement and disposal through
 `FrenRider.Dad.ReleaseQuestionableDutySettings`. This overlay never saves a FrenRider profile. An unavailable or
-rejected overlay refuses forced loot before queueing and exposes the reason through `GetLastFailure()`.
+rejected overlay refuses the bridge run before queueing and exposes the reason through `GetLastFailure()`.
 
-Requires ADS 2.0.0.17 or later and a FrenRider build providing those existing native runtime-overlay endpoints.
+`ContentHasPath` queries `ADS.Duty.GetMaturityJson(territoryTypeId, contentFinderConditionId)` for exact catalog identity. **Maturity 0 is blocked; 1, 2 and 3 are eligible in every QST mode**, including Duty Support, leveling, gearing and unsynced. No higher mode-specific threshold or support-level restriction is added. Missing, unreadable, invalid or mismatched maturity is unavailable, not permission to queue; update ADS if its query endpoint is missing. Direct `Run` rechecks maturity, and leveling filters ineligible candidates before selecting a duty. The Duty IPC debug status, diagnostics and bridge-start logs report the maturity and the reason for refusal. Clearance is recorded evidence, not a guarantee of completion. FrenRider's temporary threshold remains 0; DAD performs this QST eligibility check before entry.
+
+Requires ADS 2.0.0.18 or later and a FrenRider build providing those existing native runtime-overlay endpoints.
 The local regression replays WigglyQuest's duty, leveling, gearing and unforced-duty sequences on one DAD
-instance. In-game A–D proof runs, final-chest observation and DAD/ADS log excerpts remain unverified.
+instance, followed by the solo overleveled unsynced E sequence through the local-duty executor. In-game A–E proof runs, final-chest observation and DAD/ADS log excerpts remain unverified.
 
 DAD marks duty-running FrenRider remote profile requests as duty-only. A compatible FrenRider receiver prepares an exported copy with Duty only selected while retaining saved profiles; formation-only requests retain the stored activation choice. The existing exact-duty enable endpoint also selects Duty only, and temporary overlays restore local mode/Run intent on release. This requires a FrenRider build supporting activation modes; it uses the existing profile transport and acceptance rules.
 
