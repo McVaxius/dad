@@ -54,6 +54,9 @@ internal static class DadWorkerCommandValidationRules
         if (!Enum.IsDefined(command.Plan.Request.PreDutyRepairPolicy.InnDestination))
             return Fail("Worker command contains an unsupported pre-duty repair inn destination.", out blocker);
         command.Plan.Request.PreDutyRepairPolicy.Normalize();
+        if (command.Plan.Request.PreDutyRepairPolicy.RequiresCityRepairSchema &&
+            command.SchemaVersion < DadWorkerCommandSchemaRules.CityRepairSchema)
+            return Fail("Worker command schema 7 is required for city-specific NPC repair without an inn; update every assigned DAD worker.", out blocker);
         if (command.Plan.Request.PreDutyRepairPolicy.RequiresInnRepairSchema &&
             command.SchemaVersion < DadWorkerCommandSchemaRules.InnRepairSchema)
         {

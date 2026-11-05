@@ -54,11 +54,15 @@ public sealed class DadPreDutyRepairGateTests
         Assert.Equal(DadPreDutyRepairAction.Ready, blunderville.Action);
     }
 
-    [Fact]
-    public void InnReturnCannotReleaseQueueWhileAdsIsStillReturningWithRepairedGear()
+    [Theory]
+    [InlineData(DadPreDutyRepairMode.NpcThenInn, DadRepairInnDestination.Automatic)]
+    [InlineData(DadPreDutyRepairMode.NpcExcludingInns, DadRepairInnDestination.Limsa)]
+    public void TravelingRepairCannotReleaseQueueWhileAdsIsStillRunningWithRepairedGear(
+        DadPreDutyRepairMode mode, DadRepairInnDestination destination)
     {
         var policy = EnabledPolicy();
-        policy.Mode = (DadPreDutyRepairMode)4;
+        policy.Mode = mode;
+        policy.InnDestination = destination;
         var gate = new DadPreDutyRepairGate();
         var request = new DadRunRequest();
         Assert.Equal(DadPreDutyRepairAction.InvokeAds, gate.Evaluate(policy,
@@ -67,7 +71,7 @@ public sealed class DadPreDutyRepairGateTests
         gate.RecordInvocationResult(new(DadAdsRepairInvocationOutcome.Accepted, "accepted"), Now);
         Assert.Equal(DadPreDutyRepairAction.Wait, gate.Evaluate(policy,
             DadModuleId.PremadeDuty, request, DadEquippedDurabilityObservation.ReadableAt(100),
-            DadAdsRepairObservation.Running(true, "NPC repair", "npc-yes-inn", "Returning to the inn room."),
+            DadAdsRepairObservation.Running(true, "NPC repair", policy.AdsMode, "Finishing the owned repair trip."),
             Now.AddSeconds(5)).Action);
         Assert.Equal(DadPreDutyRepairAction.Ready, gate.Evaluate(policy,
             DadModuleId.PremadeDuty, request, DadEquippedDurabilityObservation.ReadableAt(100),

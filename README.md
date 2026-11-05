@@ -9,19 +9,23 @@ The setting remains disabled by default.
 
 Existing route IDs remain unchanged: Self, NPC excluding inns, and Nearby NPC without teleport/inn.
 Additional choices are **NPC, allowing inn fallback** (`npc`) and **NPC repair, then enter inn** (`npc-yes-inn`).
-The latter offers Automatic (ADS), Ul'dah, Gridania, Limsa Lominsa, Ishgard, the Crystarium, Old Sharlayan and
-Tuliyollal destinations. Explicit destinations use ADS's corresponding `npc-yes-inn-<destination>` contract;
-ADS owns route availability, unlock checks, travel and inn entry. DAD does not implement a separate NPC catalog.
+Both traveling NPC modes offer Automatic (ADS), Ul'dah, Gridania, Limsa Lominsa, Ishgard, the Crystarium,
+Old Sharlayan and Tuliyollal destinations. Explicit destinations use ADS's corresponding
+`npc-yes-inn-<destination>` or `npc-no-inn-<destination>` contract. New no-inn city requests require the
+exact token in ADS's advertised `repairModes`; an older provider receives no substituted request.
+ADS owns native unlock checks, eligible starting-city fallback, travel and optional inn entry.
+DAD does not implement a separate NPC catalog.
 
-For repair-then-inn, sufficient durability alone does not release preparation while the observed or requested
+For repair-then-inn and selected-city no-inn trips, sufficient durability alone does not release preparation while the observed or requested
 ADS repair utility is still running. DAD keeps polling until the utility is idle and durability is sufficient,
 within the existing overall 180-second limit; unavailable/unreadable status fails closed. Healthy gear without
 an active repair does not start an unnecessary inn trip. Legacy routes retain their durability-based behavior.
 This does not repair FrenRider's independent repair/exit lifecycle or establish live inn-route acceptance.
 
-All assigned DAD workers must support worker-command schema 6 for the new enabled routes; older workers reject
-the command rather than silently normalizing the new numeric mode to Self. Existing disabled policies and old
-routes retain their prior schemas. LAN cloning and AutoParty mode conversion preserve the selected destination;
+All assigned DAD workers must support worker-command schema 6 for the additional enabled routes, and schema 7
+for an enabled city-specific no-inn route. Older workers reject an unsupported command rather than silently
+discarding the city or normalizing the mode to Self. Existing disabled policies and unchanged routes retain
+their prior schemas. LAN cloning and AutoParty mode conversion preserve the selected destination;
 unsupported inbound mode strings are rejected explicitly. ADS must support the selected route on each worker.
 
 #### Bounded recovery after an ADS repair failure
@@ -470,8 +474,8 @@ dotnet restore .\Tests\dad.Tests.csproj --source $packageSource --source $nugetS
 dotnet test .\Tests\dad.Tests.csproj -c Release -p:Platform=x64 --no-restore
 ```
 
-The complete unfiltered Release suite is required. CI runs it without `continue-on-error` before any build artifact can be
-uploaded or promoted to a release.
+Run the complete unfiltered Release suite locally before publishing. The current CI workflow restores, builds and
+packages the plugin; it does not run the test suite.
 
 ## Crew and persistence
 

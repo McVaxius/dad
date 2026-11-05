@@ -311,6 +311,13 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
     [Theory]
     [InlineData("self")]
     [InlineData("npc-no-inn")]
+    [InlineData("npc-no-inn-uldah")]
+    [InlineData("npc-no-inn-gridania")]
+    [InlineData("npc-no-inn-limsa")]
+    [InlineData("npc-no-inn-ishgard")]
+    [InlineData("npc-no-inn-crystarium")]
+    [InlineData("npc-no-inn-sharlayan")]
+    [InlineData("npc-no-inn-tuliyollal")]
     [InlineData("npc-no-teleport-no-inn")]
     [InlineData("npc")]
     [InlineData("npc-yes-inn")]
@@ -394,7 +401,9 @@ public sealed class DadAutoPartyInboundAdmissionServiceTests
         Assert.Equal(repairMode, settle.Plan.Request.PreDutyRepairPolicy.AdsMode);
         Assert.True(queue.Plan.Request.PreDutyRepairPolicy.Enabled);
         Assert.Equal(42, queue.Plan.Request.PreDutyRepairPolicy.ThresholdPercent);
-        var expectedSchema = repairMode is "self" or "npc-no-inn" or "npc-no-teleport-no-inn" ? 2 : 6;
+        var expectedSchema = repairMode.StartsWith("npc-no-inn-", StringComparison.Ordinal)
+            ? 7
+            : repairMode is "self" or "npc-no-inn" or "npc-no-teleport-no-inn" ? 2 : 6;
         Assert.Equal(expectedSchema, queue.SchemaVersion);
         Assert.Equal(expectedSchema, settle.SchemaVersion);
         var roundTrip = DadIpcJson.Deserialize<DadWorkerExecutionCommand>(DadIpcJson.Serialize(queue));

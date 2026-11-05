@@ -244,16 +244,19 @@ public sealed class ConfigWindow : Window, IDisposable
             repairPolicy.Mode = (DadPreDutyRepairMode)Math.Clamp(repairMode, 0, PreDutyRepairModes.Length - 1);
             configuration.Save();
         }
-        if (repairPolicy.RequiresInnCompletion)
+        if (repairPolicy.Mode is DadPreDutyRepairMode.NpcExcludingInns or DadPreDutyRepairMode.NpcThenInn)
         {
             var innDestination = (int)repairPolicy.InnDestination;
             ImGui.SetNextItemWidth(260f);
-            if (UiGui.Combo("Repair inn destination", ref innDestination, RepairInnDestinations, RepairInnDestinations.Length))
+            if (UiGui.Combo("Repair city", ref innDestination, RepairInnDestinations, RepairInnDestinations.Length))
             {
                 repairPolicy.InnDestination = (DadRepairInnDestination)Math.Clamp(innDestination, 0, RepairInnDestinations.Length - 1);
                 configuration.Save();
             }
-            UiGui.TextWrapped("ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route.");
+            UiGui.TextWrapped(repairPolicy.RequiresInnCompletion
+                ? "ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout."
+                : "ADS repairs in the selected city without entering an inn. Automatic keeps ADS's normal city selection.");
+            UiGui.TextWrapped("ADS checks destination access and uses an eligible starter-city fallback when needed. All workers need an ADS version supporting the selected route.");
         }
         ImGui.EndDisabled();
         DrawStatusRow("ADS mode", repairPolicy.AdsMode);
@@ -980,7 +983,6 @@ public sealed class ConfigWindow : Window, IDisposable
         UiGui.TextWrapped("Compatibility mode. Dad preserves the current Dad+ADS flow: /ads outside before queue, fixed rotation commands after entry, and /ads leave after DutyCompleted. Rotation command failures are warning-only.");
         UiGui.TextUnformatted("Fixed commands after entry");
         UiGui.BulletText(DadCombatRotationService.BossModRotationCommand);
-        UiGui.BulletText(DadCombatRotationService.AutoRotationCommand);
     }
 
     private void DrawAboutTab()

@@ -1,3 +1,10 @@
+2026-11-04 - 2.1.0.4 - BMR force commands and ADS repair cities (I724/I734-I737)
+
+- Use BMR alone for forced combat activation instead of also enabling RSR. Preserve optional providers, ordinary FrenRider selection and owned cleanup.
+- Offer all seven cities for both traveling NPC repair modes and retain existing local/self routes. Require ADS's exact capability before new no-inn city dispatch.
+- Use worker-command schema 7 only when enabled no-inn city selection needs it, so older workers cannot silently discard the destination. Preserve prior schemas for unchanged modes and carry cities through cloning and serialization.
+- Keep queue preparation blocked until an accepted or already-running selected-city repair finishes, even if durability has already recovered; continue reading ADS status during adopted trips and preserve legacy self/local completion behavior.
+
 2026-11-02 - 2.1.0.2 - WigglyQuest session override corrections
 
 - Consume temporary loot requests per bridge session. Keep the existing compatibility readback values; write-only restoration cannot enable a later run, and a fresh loot capture/write sequence can request another override.

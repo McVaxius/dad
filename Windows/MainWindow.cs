@@ -5754,7 +5754,7 @@ public sealed partial class MainWindow : Window, IDisposable
         var entryAutomation = ExtractSentence(summary,
             "sent no Duty Support entry command",
             "sent no Trust entry command",
-            "sent /bmrai on and /rotation auto after Duty Support entry",
+            "sent /bmrai on after Duty Support entry",
             "sent /fr on after duty entry",
             "could not send /fr on after duty entry",
             "failed to send /fr on after duty entry",

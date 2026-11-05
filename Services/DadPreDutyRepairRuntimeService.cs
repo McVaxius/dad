@@ -67,7 +67,7 @@ public sealed class DadPreDutyRepairRuntimeService
         nextPollUtc = nowUtc + DurabilityPollInterval;
         var durability = readDurability();
         var ads = durability.Readable &&
-                  (durability.MinimumConditionPercent < policy.ThresholdPercent || policy.RequiresInnCompletion || gate.IsRepairInProgress)
+                  (durability.MinimumConditionPercent < policy.ThresholdPercent || policy.RequiresInnCompletion || policy.RequiresCityRepairSchema || gate.IsRepairInProgress)
             ? readAds()
             : DadAdsRepairObservation.Absent("ADS repair truth was not needed for this durability observation.");
         var retrySafety = gate.NeedsRecoverySafety ? readRetrySafety() : default;

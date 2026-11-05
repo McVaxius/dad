@@ -34,6 +34,20 @@ public sealed class DadPreDutyRepairPolicy
     public DadRepairInnDestination InnDestination { get; set; } = DadRepairInnDestination.Automatic;
     public bool RequiresInnCompletion => Mode == DadPreDutyRepairMode.NpcThenInn;
     public bool RequiresInnRepairSchema => Enabled && Mode is DadPreDutyRepairMode.NpcWithInnFallback or DadPreDutyRepairMode.NpcThenInn;
+    public bool RequiresCityRepairSchema => Enabled && Mode == DadPreDutyRepairMode.NpcExcludingInns && InnDestination != DadRepairInnDestination.Automatic;
+
+    public static bool IsCityModeAdvertised(string mode, string? capabilitiesJson)
+    {
+        if (string.IsNullOrWhiteSpace(capabilitiesJson)) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(capabilitiesJson);
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("repairModes", out var modes) && modes.ValueKind == JsonValueKind.Array &&
+                modes.EnumerateArray().Any(value => value.ValueKind == JsonValueKind.String && value.GetString() == mode);
+        }
+        catch (JsonException) { return false; }
+    }
 
     private static readonly IReadOnlyDictionary<DadRepairInnDestination, string> InnTokens =
         new Dictionary<DadRepairInnDestination, string>
@@ -71,7 +85,9 @@ public sealed class DadPreDutyRepairPolicy
 
     public string AdsMode => Mode switch
     {
-        DadPreDutyRepairMode.NpcExcludingInns => "npc-no-inn",
+        DadPreDutyRepairMode.NpcExcludingInns => InnTokens.TryGetValue(InnDestination, out var repairCity)
+            ? $"npc-no-inn-{repairCity}"
+            : "npc-no-inn",
         DadPreDutyRepairMode.NearbyNpcNoTeleportOrInn => "npc-no-teleport-no-inn",
         DadPreDutyRepairMode.NpcWithInnFallback => "npc",
         DadPreDutyRepairMode.NpcThenInn => InnTokens.TryGetValue(InnDestination, out var token)
@@ -98,14 +114,18 @@ public sealed class DadPreDutyRepairPolicy
             policy.Mode = parsed.Value;
             return true;
         }
-        const string prefix = "npc-yes-inn-";
+        var prefix = mode.StartsWith("npc-no-inn-", StringComparison.Ordinal)
+            ? "npc-no-inn-"
+            : "npc-yes-inn-";
         if (!mode.StartsWith(prefix, StringComparison.Ordinal))
             return false;
         foreach (var (destination, token) in InnTokens)
         {
             if (!string.Equals(mode[prefix.Length..], token, StringComparison.Ordinal))
                 continue;
-            policy.Mode = DadPreDutyRepairMode.NpcThenInn;
+            policy.Mode = prefix == "npc-no-inn-"
+                ? DadPreDutyRepairMode.NpcExcludingInns
+                : DadPreDutyRepairMode.NpcThenInn;
             policy.InnDestination = destination;
             return true;
         }
@@ -318,8 +338,9 @@ public sealed class DadPreDutyRepairGate
         if (terminalFailure)
             return Reject(terminalSummary);
 
+        var requiresTravelCompletion = normalized.RequiresInnCompletion || normalized.RequiresCityRepairSchema;
         if (now - startedAtUtc >= OverallTimeout)
-            return Fail((normalized.RequiresInnCompletion
+            return Fail((requiresTravelCompletion
                 ? "Pre-duty repair/inn utility did not finish with sufficient durability within the 180-second timeout."
                 : "Pre-duty repair did not prove sufficient durability within the 180-second timeout.") + FailureContext());
 
@@ -330,12 +351,12 @@ public sealed class DadPreDutyRepairGate
                 : Fail($"Equipped durability remained unreadable for five seconds. {durability.Summary}".Trim());
         }
 
-        // A returning-to-inn utility still owns movement after durability improves.
+        // An inn return or selected-city trip can still own movement after durability improves.
         // Legacy repair routes retain their durability-only completion behavior.
-        if (normalized.RequiresInnCompletion && ads.Available && ads.Readable && ads.RepairRunning)
+        if (requiresTravelCompletion && ads.Available && ads.Readable && ads.RepairRunning)
             innRepairObserved = true;
         var durabilityReady = durability.MinimumConditionPercent >= normalized.ThresholdPercent;
-        var waitForInn = normalized.RequiresInnCompletion && (invocationAccepted || innRepairObserved);
+        var waitForTravel = requiresTravelCompletion && (invocationAccepted || innRepairObserved);
         if (ads.Available && ads.Readable && invocationAccepted)
         {
             if (ads.UtilityRunning)
@@ -362,7 +383,7 @@ public sealed class DadPreDutyRepairGate
                 recoveryFailureCompletedUtc = completed;
             }
         }
-        if (durabilityReady && !waitForInn && !recoveryPending)
+        if (durabilityReady && !waitForTravel && !recoveryPending)
         {
             return Ready(
                 $"Equipped durability is sufficient: {durability.MinimumConditionPercent}% is not below {normalized.ThresholdPercent}%.");

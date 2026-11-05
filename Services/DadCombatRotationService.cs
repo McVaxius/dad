@@ -35,7 +35,6 @@ public sealed class DadCombatRotationService(
     private static readonly string[] BootstrapCommands =
     [
         BossModRotationCommand,
-        AutoRotationCommand,
     ];
 
     private readonly DadFrenRiderEntryEnableGate frenRiderEntryEnableGate = new();
@@ -285,7 +284,7 @@ public sealed class DadCombatRotationService(
 
         if (failedCommands.Count == 0)
         {
-            summary = "Force Commands mode sent /bmrai on and /rotation auto after Duty Support entry.";
+            summary = "Force Commands mode sent /bmrai on after Duty Support entry.";
             log.Information(
                 "[dad][CombatRotation] Sent Duty Support rotation bootstrap commands: {Commands}.",
                 string.Join(", ", BootstrapCommands));

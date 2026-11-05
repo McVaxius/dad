@@ -22,6 +22,7 @@ public sealed unsafe class DadDutySupportAdsService
     private readonly ICallGateSubscriber<string, string> validateDutyLootPolicy;
     private readonly ICallGateSubscriber<uint, uint, string> getDutyMaturityJson;
     private readonly ICallGateSubscriber<string, bool> startRepair;
+    private readonly ICallGateSubscriber<string> getCapabilitiesJson;
     private readonly ICallGateSubscriber<string> getStatusJson;
     private readonly ICallGateSubscriber<string> getShopListPresetsJson;
     private readonly ICallGateSubscriber<string, string> previewShopListPreset;
@@ -36,6 +37,7 @@ public sealed unsafe class DadDutySupportAdsService
         validateDutyLootPolicy = pluginInterface.GetIpcSubscriber<string, string>("ADS.Duty.ValidateLootPolicy");
         getDutyMaturityJson = pluginInterface.GetIpcSubscriber<uint, uint, string>("ADS.Duty.GetMaturityJson");
         startRepair = pluginInterface.GetIpcSubscriber<string, bool>("ADS.StartRepair");
+        getCapabilitiesJson = pluginInterface.GetIpcSubscriber<string>("ADS.GetCapabilitiesJson");
         getStatusJson = pluginInterface.GetIpcSubscriber<string>("ADS.GetStatusJson");
         getShopListPresetsJson = pluginInterface.GetIpcSubscriber<string>("ADS.GetShopListPresetsJson");
         previewShopListPreset = pluginInterface.GetIpcSubscriber<string, string>("ADS.PreviewShopListPreset");
@@ -165,6 +167,18 @@ public sealed unsafe class DadDutySupportAdsService
 
     public DadAdsRepairInvocationResult StartRepair(string mode)
     {
+        if (mode.StartsWith("npc-no-inn-", StringComparison.Ordinal))
+        {
+            try
+            {
+                if (!DadPreDutyRepairPolicy.IsCityModeAdvertised(mode, getCapabilitiesJson.InvokeFunc()))
+                    return new(DadAdsRepairInvocationOutcome.ExplicitFalse, $"ADS does not advertise repair mode '{mode}'; update ADS before using this city route.");
+            }
+            catch (Exception ex)
+            {
+                return new(DadAdsRepairInvocationOutcome.ExplicitFalse, $"ADS repair capabilities are unavailable; no repair request was sent. {ex.Message}");
+            }
+        }
         try
         {
             return startRepair.InvokeFunc(mode)

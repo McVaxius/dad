@@ -145,6 +145,35 @@ public sealed class DadWorkerCommandValidationRulesTests
     }
 
     [Theory]
+    [InlineData(DadRepairInnDestination.Uldah)]
+    [InlineData(DadRepairInnDestination.Gridania)]
+    [InlineData(DadRepairInnDestination.Limsa)]
+    [InlineData(DadRepairInnDestination.Ishgard)]
+    [InlineData(DadRepairInnDestination.Crystarium)]
+    [InlineData(DadRepairInnDestination.Sharlayan)]
+    [InlineData(DadRepairInnDestination.Tuliyollal)]
+    public void NoInnCityCannotBeSilentlyIgnoredByOlderWorkers(DadRepairInnDestination destination)
+    {
+        var command = BuildCommand();
+        command.Plan.Request.PreDutyRepairPolicy = new()
+        {
+            Enabled = true, Mode = DadPreDutyRepairMode.NpcExcludingInns, InnDestination = destination,
+        };
+        Assert.Equal(7, DadWorkerCommandSchemaRules.ResolveEmissionSchema(command.Plan.Request.PreDutyRepairPolicy));
+        for (var old = 1; old <= 6; old++)
+        {
+            command.SchemaVersion = old;
+            AssertRejected(command, RuntimeForX(), "schema 7");
+        }
+        command.SchemaVersion = 7;
+        var roundTrip = DadIpcJson.Deserialize<DadWorkerExecutionCommand>(DadIpcJson.Serialize(command))!;
+        Assert.True(DadWorkerCommandValidationRules.TryValidate(roundTrip, RuntimeForX(), out _, out var blocker), blocker);
+        Assert.Equal(command.Plan.Request.PreDutyRepairPolicy.AdsMode, roundTrip.Plan.Request.PreDutyRepairPolicy.AdsMode);
+        command.Plan.Request.PreDutyRepairPolicy.Enabled = false;
+        Assert.Equal(1, DadWorkerCommandSchemaRules.ResolveEmissionSchema(command.Plan.Request.PreDutyRepairPolicy));
+    }
+
+    [Theory]
     [InlineData(-1, 0, true)]
     [InlineData(99, 0, true)]
     [InlineData(4, -1, true)]

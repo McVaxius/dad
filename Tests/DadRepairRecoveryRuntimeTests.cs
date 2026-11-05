@@ -16,6 +16,35 @@ public sealed class DadRepairRecoveryRuntimeTests
 {
     private static readonly DateTime Now = new(2026, 10, 29, 13, 0, 0, DateTimeKind.Utc);
 
+    [Theory]
+    [InlineData(100)]
+    [InlineData(30)]
+    public void AlreadyRunningSelectedCityRepairRemainsHeldUntilAdsIsIdle(int initialDurability)
+    {
+        using var fixture = new Fixture { Durability = initialDurability };
+        fixture.Request.PreDutyRepairPolicy.Mode = M.DadPreDutyRepairMode.NpcExcludingInns;
+        fixture.Request.PreDutyRepairPolicy.InnDestination = M.DadRepairInnDestination.Limsa;
+        fixture.Ads = M.DadAdsRepairObservation.Running(true, "NPC repair", "npc-no-inn-limsa", "Finishing the selected-city trip.");
+        fixture.Service.Begin(fixture.Request, M.DadModuleId.DutySupport, Now);
+
+        Assert.Equal(M.DadPreDutyRepairAction.Wait, fixture.Tick(0).Action);
+        Assert.Equal(1, fixture.AdsReads);
+        Assert.Equal(0, fixture.Starts);
+
+        fixture.Durability = 100;
+        Assert.Equal(M.DadPreDutyRepairAction.Wait, fixture.Tick(1).Action);
+        Assert.Equal(2, fixture.AdsReads);
+        Assert.Equal(M.DadPreDutyRepairAction.Wait, fixture.Tick(2).Action);
+        Assert.Equal(3, fixture.AdsReads);
+        Assert.Equal(0, fixture.Starts);
+
+        fixture.Ads = M.DadAdsRepairObservation.Idle();
+        Assert.Equal(M.DadPreDutyRepairAction.Ready, fixture.Tick(3).Action);
+        Assert.Equal(4, fixture.AdsReads);
+        Assert.Equal(0, fixture.Starts);
+        Assert.Equal(0, fixture.SafetyReads);
+    }
+
     [Fact]
     public void RuntimeConsumesTerminalStatusWaitsForRealSafetyProbeAndStartsOnlyOneRetry()
     {
@@ -184,12 +213,39 @@ public sealed class DadRepairRecoveryRuntimeTests
         => (M.DadRepairRetrySafetyObservation)typeof(S.DadDutySupportAdsService)
             .GetMethod("ReadRepairRetryNativeSettlement", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [territory, nativeTerritory, queue])!;
 
-    private static S.DadDutySupportAdsService RepairService(Func<string, bool> invoke)
+    [Theory]
+    [InlineData("{\"repairModes\":[\"npc-no-inn-limsa\"]}", true)]
+    [InlineData("{\"repairModes\":[\"npc-no-inn-gridania\"]}", false)]
+    [InlineData("{\"repairModes\":true}", false)]
+    [InlineData("{}", false)]
+    [InlineData("broken json", false)]
+    public void CityRepairRequiresExactAdvertisedCapabilityBeforeDispatch(string capabilities, bool advertised)
+    {
+        var calls = 0;
+        var service = RepairService(_ => { calls++; return true; }, () => capabilities);
+        var result = service.StartRepair("npc-no-inn-limsa");
+        Assert.Equal(advertised ? 1 : 0, calls);
+        Assert.Equal(advertised ? M.DadAdsRepairInvocationOutcome.Accepted : M.DadAdsRepairInvocationOutcome.ExplicitFalse, result.Outcome);
+    }
+
+    [Fact]
+    public void UnavailableCityCapabilitiesDoNotSendAnUncertainRepairRequest()
+    {
+        var calls = 0;
+        var service = RepairService(_ => { calls++; return true; }, () => throw new InvalidOperationException("fixture unavailable"));
+        Assert.Equal(M.DadAdsRepairInvocationOutcome.ExplicitFalse, service.StartRepair("npc-no-inn-limsa").Outcome);
+        Assert.Equal(0, calls);
+    }
+
+    private static S.DadDutySupportAdsService RepairService(Func<string, bool> invoke, Func<string>? capabilities = null)
     {
         var endpoint = DispatchProxy.Create<ICallGateSubscriber<string, bool>, RepairStartProxy>();
         ((RepairStartProxy)endpoint).Call = invoke;
         var service = (S.DadDutySupportAdsService)RuntimeHelpers.GetUninitializedObject(typeof(S.DadDutySupportAdsService));
         typeof(S.DadDutySupportAdsService).GetField("startRepair", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, endpoint);
+        var capabilityEndpoint = DispatchProxy.Create<ICallGateSubscriber<string>, RepairCapabilitiesProxy>();
+        ((RepairCapabilitiesProxy)capabilityEndpoint).Call = capabilities ?? (() => "{}");
+        typeof(S.DadDutySupportAdsService).GetField("getCapabilitiesJson", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(service, capabilityEndpoint);
         return service;
     }
 
@@ -200,9 +256,17 @@ public sealed class DadRepairRecoveryRuntimeTests
             => method?.Name == "InvokeFunc" ? Call((string)args![0]!) : throw new NotSupportedException(method?.Name);
     }
 
+    public class RepairCapabilitiesProxy : DispatchProxy
+    {
+        public Func<string> Call { get; set; } = null!;
+        protected override object? Invoke(MethodInfo? method, object?[]? args)
+            => method?.Name == "InvokeFunc" ? Call() : throw new NotSupportedException(method?.Name);
+    }
+
     private sealed class Fixture : IDisposable
     {
         public int Starts;
+        public int AdsReads;
         public int SafetyReads;
         public int Durability = 30;
         public M.DadAdsRepairObservation Ads = M.DadAdsRepairObservation.Idle();
@@ -220,7 +284,7 @@ public sealed class DadRepairRecoveryRuntimeTests
             var log = DispatchProxy.Create<IPluginLog, DadScheduleDutyExitRetryRuntimeTests.QuietLog>();
             Service = (S.DadPreDutyRepairRuntimeService)constructor.Invoke([
                 new Func<M.DadEquippedDurabilityObservation>(() => M.DadEquippedDurabilityObservation.ReadableAt(Durability)),
-                new Func<M.DadAdsRepairObservation>(() => Ads),
+                new Func<M.DadAdsRepairObservation>(() => { AdsReads++; return Ads; }),
                 new Func<string, M.DadAdsRepairInvocationResult>(mode =>
                 {
                     Assert.Equal("npc", mode); Starts++;

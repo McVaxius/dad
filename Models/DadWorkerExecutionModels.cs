@@ -30,9 +30,10 @@ internal static class DadWorkerCommandSchemaRules
     public const int GatheringSchema = 4;
     public const int MemberRoundSchema = 5;
     public const int InnRepairSchema = 6;
+    public const int CityRepairSchema = 7;
 
     public static bool IsSupported(int schemaVersion)
-        => schemaVersion is LegacySchema or RepairPolicySchema or ShoppingSchema or GatheringSchema or MemberRoundSchema or InnRepairSchema;
+        => schemaVersion is LegacySchema or RepairPolicySchema or ShoppingSchema or GatheringSchema or MemberRoundSchema or InnRepairSchema or CityRepairSchema;
 
     public static bool RequiresMemberRoundSchema(IReadOnlyCollection<DadShoppingRunAssociation>? associations)
     {
@@ -46,7 +47,9 @@ internal static class DadWorkerCommandSchemaRules
         DadPreDutyRepairPolicy? policy,
         IReadOnlyCollection<DadShoppingRunAssociation>? shoppingAssociations = null,
         DadGatherPartyTask? gatherParty = null)
-        => policy?.RequiresInnRepairSchema == true
+        => policy?.RequiresCityRepairSchema == true
+            ? CityRepairSchema
+            : policy?.RequiresInnRepairSchema == true
             ? InnRepairSchema
             : RequiresMemberRoundSchema(shoppingAssociations)
             ? MemberRoundSchema

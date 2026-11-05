@@ -72,9 +72,29 @@ public sealed class DadQuestionableRuntimeTests
             "off-run", out _, out _));
         Assert.True(fixture.Combat.TryApplyDutySupportEntryMode(DadRuntime::dad.DadCombatRotationMode.ForceCommands,
             "force-run", out _, out _));
-        Assert.Equal(new[] { "/fr on", "/bmrai on", "/rotation auto" }, fixture.Events);
+        Assert.Equal(new[] { "/fr on", "/bmrai on" }, fixture.Events);
         Assert.True(fixture.Release("unrelated-duty"));
         Assert.DoesNotContain(fixture.Events, value => value.StartsWith("release:", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ForceCommandsUsesOnlyBossModRotationAndReportsRejectedCommand(bool commandAccepted)
+    {
+        using var fixture = new DungeonTargetingFixture { CommandAccepted = commandAccepted };
+
+        Assert.Equal(commandAccepted, fixture.Combat.TryApplyDutySupportEntryMode(
+            DadRuntime::dad.DadCombatRotationMode.ForceCommands, "force-bmr-run", out var summary, out var shouldFailRun));
+
+        Assert.Equal(new[] { "/bmrai on" }, fixture.Events);
+        Assert.Contains("/bmrai on", summary, StringComparison.Ordinal);
+        Assert.DoesNotContain("/rotation", summary, StringComparison.Ordinal);
+        Assert.False(shouldFailRun);
+        Assert.True(fixture.Release("force-bmr-run"));
+        Assert.Equal(new[] { "/bmrai on" }, fixture.Events);
+        if (!commandAccepted)
+            Assert.True(fixture.WarningCount > 0);
     }
 
     [Fact]
@@ -119,6 +139,7 @@ public sealed class DadQuestionableRuntimeTests
         public bool AcquireAccepted = true;
         public bool ThrowAcquisition;
         public bool ReleaseAccepted = true;
+        public bool CommandAccepted = true;
         public int WarningCount;
 
         public DungeonTargetingFixture()
@@ -128,7 +149,7 @@ public sealed class DadQuestionableRuntimeTests
             {
                 Assert.Equal("ProcessCommand", method.Name);
                 Events.Add((string)args![0]!);
-                return true;
+                return CommandAccepted;
             }));
             var pi = Proxy<IDalamudPluginInterface>((method, args) =>
             {
