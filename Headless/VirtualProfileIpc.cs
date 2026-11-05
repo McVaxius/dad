@@ -8,6 +8,7 @@ internal sealed class VirtualProfileIpc(Action<string> record)
 {
     internal const string ProfileJson = "{\"label\":\"Synthetic shared profile\",\"enabled\":true}";
     private string? activeOwnership;
+    private string? questionableOwner;
     public string? DungeonRunId { get; private set; }
     public object Invoke(string endpoint, object?[] values)
     {
@@ -29,6 +30,42 @@ internal sealed class VirtualProfileIpc(Action<string> record)
             if (DungeonRunId != null && DungeonRunId != runId)
                 return false;
             DungeonRunId = null;
+            return true;
+        }
+        if (endpoint == "FrenRider.Dad.ApplyQuestionableDutySettings")
+        {
+            if (values is not [string leaseOwner, string settings])
+                throw new InvalidOperationException("Invalid synthetic Questionable settings acquisition.");
+            record($"ipc:{endpoint}:{leaseOwner}");
+            if (string.IsNullOrWhiteSpace(leaseOwner) || questionableOwner != null && questionableOwner != leaseOwner)
+                return false;
+            try
+            {
+                using var settingsDocument = JsonDocument.Parse(settings);
+                var root = settingsDocument.RootElement;
+                if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != 10 ||
+                    !root.GetProperty("AdsSoloEnabled").GetBoolean() || root.GetProperty("AdsSoloMaturityThreshold").GetInt32() != 0 ||
+                    root.GetProperty("AdsSoloHandoffDelaySeconds").GetInt32() != 10 || !root.GetProperty("AdsFourManEnabled").GetBoolean() ||
+                    root.GetProperty("AdsFourManMaturityThreshold").GetInt32() != 0 || root.GetProperty("AdsFourManHandoffDelaySeconds").GetInt32() != 2 ||
+                    !root.GetProperty("UseAdsLeaveAfterAdsDuty").GetBoolean() || root.GetProperty("ExitAfterDutyEnds").GetBoolean() ||
+                    root.GetProperty("LeaveWhenAllLeft").GetBoolean() || root.GetProperty("ExitAfterDutySeconds").GetInt32() != 20)
+                    return false;
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or ArgumentException or FormatException)
+            {
+                return false;
+            }
+            questionableOwner = leaseOwner;
+            return true;
+        }
+        if (endpoint == "FrenRider.Dad.ReleaseQuestionableDutySettings")
+        {
+            if (values is not [string leaseOwner])
+                throw new InvalidOperationException("Invalid synthetic Questionable settings release.");
+            record($"ipc:{endpoint}:{leaseOwner}");
+            if (string.IsNullOrWhiteSpace(leaseOwner) || questionableOwner != null && questionableOwner != leaseOwner)
+                return false;
+            questionableOwner = null;
             return true;
         }
         if (values is not [string json]) throw new InvalidOperationException("Invalid synthetic FrenRider payload.");

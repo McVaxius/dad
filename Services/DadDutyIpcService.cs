@@ -399,7 +399,8 @@ public sealed class DadDutyIpcService : IDisposable
     {
         if (disposed || sessionStage == DadDutyIpcSessionStage.Leaving)
         {
-            status.LastFailure = disposed ? "DAD duty IPC is disposed." : "DAD is still waiting for the previous duty to exit.";
+            if (sessionStage != DadDutyIpcSessionStage.Leaving || string.IsNullOrWhiteSpace(status.LastFailure))
+                status.LastFailure = disposed ? "DAD duty IPC is disposed." : "DAD is still waiting for the previous duty to exit.";
             return;
         }
         StopBridgeSession("Replaced by a new Dad duty IPC run.", clearFailure: true, preserveLootRequest: true);
@@ -493,7 +494,8 @@ public sealed class DadDutyIpcService : IDisposable
     {
         if (disposed || sessionStage != DadDutyIpcSessionStage.Stopped)
         {
-            status.LastFailure = disposed ? "DAD duty IPC is disposed." : "DAD already has an active duty IPC session.";
+            if (sessionStage != DadDutyIpcSessionStage.Leaving || string.IsNullOrWhiteSpace(status.LastFailure))
+                status.LastFailure = disposed ? "DAD duty IPC is disposed." : "DAD already has an active duty IPC session.";
             return;
         }
         try

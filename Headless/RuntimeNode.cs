@@ -170,7 +170,7 @@ internal sealed class RuntimeNode : IDisposable
                 if (args.OfType<Exception>().FirstOrDefault() is { } exception)
                     events.Enqueue($"log:{method.Name}:{exception.GetType().Name}:{exception.Message}");
                 else if (args.OfType<string>().FirstOrDefault() is { } format)
-                    events.Enqueue($"log:{method.Name}:{format}: {JsonSerializer.Serialize(args.LastOrDefault())}");
+                    events.Enqueue($"log:{method.Name}:{format}: {string.Join(", ", args.LastOrDefault() is object[] properties ? properties : new object?[] { args.LastOrDefault() })}");
                 return null;
             }
             throw Unexpected($"log:{method.Name}");
@@ -855,6 +855,18 @@ internal sealed class RuntimeNode : IDisposable
                     if (!ipcSubscriptions.TryGetValue(endpoint, out var handlers)) ipcSubscriptions[endpoint] = handlers = [];
                     if (call.Name == "Subscribe") handlers.Add((Delegate)values[0]!); else handlers.Remove((Delegate)values[0]!);
                     return null;
+                }
+                if (call.Name == "InvokeFunc" && endpoint == "ADS.Duty.GetMaturityJson")
+                {
+                    if (values is not [uint territory, uint cfc] ||
+                        presets.GetPlannerDutyOption(cfc) is not { } duty || duty.TerritoryType != territory)
+                        throw Unexpected("Invalid synthetic ADS maturity identity.");
+                    return DadIpcJson.Serialize(new
+                    {
+                        schemaVersion = 1, success = true, territoryTypeId = territory, contentFinderConditionId = cfc,
+                        dutyName = duty.DutyDisplayName, clearanceStatus = "OnePlayerUnsyncCleared", clearanceLevel = 1,
+                        supportLevel = "PassiveOnly", eligibleForQuest = true, message = string.Empty,
+                    });
                 }
                 if (call.Name == "InvokeFunc" && endpoint == "ADS.GetStatusJson")
                     return DadIpcJson.Serialize(new { utilityRunning = repairBusy, utilityTask = "repair", utilityMode = "self", utilityStatus = "Synthetic repair observation" });

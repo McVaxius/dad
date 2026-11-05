@@ -1,5 +1,7 @@
 2026-11-04 - 2.1.0.4 - BMR force commands and ADS repair cities (I724/I734-I737)
 
+- Preserve an actionable duty-leave failure when a restart is rejected during departure; keep waiting for confirmed exit without replaying the leave command.
+- Align the standalone Questionable lifecycle adapters with existing ADS maturity and owned FrenRider settings contracts; preserve strict unknown-callback failures.
 - Use BMR alone for forced combat activation instead of also enabling RSR. Preserve optional providers, ordinary FrenRider selection and owned cleanup.
 - Offer all seven cities for both traveling NPC repair modes and retain existing local/self routes. Require ADS's exact capability before new no-inn city dispatch.
 - Use worker-command schema 7 only when enabled no-inn city selection needs it, so older workers cannot silently discard the destination. Preserve prior schemas for unchanged modes and carry cities through cloning and serialization.

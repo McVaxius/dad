@@ -19,6 +19,29 @@ public sealed class DadQuestionableRuntimeTests
     private const BindingFlags PrivateInstance = BindingFlags.NonPublic | BindingFlags.Instance;
 
     [Fact]
+    public void HeadlessQuestionableSettingsRequireValidPayloadAndMatchingOwner()
+    {
+        var type = typeof(DutyIpc).Assembly.GetType("dad.Headless.VirtualProfileIpc")!;
+        var fake = type.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance).Single()
+            .Invoke([new Action<string>(_ => { })]);
+        var invoke = type.GetMethod("Invoke")!;
+        var settings = (string)typeof(DutyIpc).GetField("FrenRiderDutySettings", BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!;
+        bool Apply(string owner, string json) => Assert.IsType<bool>(invoke.Invoke(fake,
+            ["FrenRider.Dad.ApplyQuestionableDutySettings", new object?[] { owner, json }]));
+        bool Release(string owner) => Assert.IsType<bool>(invoke.Invoke(fake,
+            ["FrenRider.Dad.ReleaseQuestionableDutySettings", new object?[] { owner }]));
+
+        Assert.False(Apply("", settings));
+        Assert.False(Apply("owner-a", "{}"));
+        Assert.True(Apply("owner-a", settings));
+        Assert.True(Apply("owner-a", settings));
+        Assert.False(Apply("owner-b", settings));
+        Assert.False(Release("owner-b"));
+        Assert.True(Release("owner-a"));
+        Assert.True(Apply("owner-b", settings));
+        Assert.True(Release("owner-b"));
+    }
+    [Fact]
     public void DungeonTargetingPrecedesLeaderActivationAndReacquiresForTheNextDuty()
     {
         using var fixture = new DungeonTargetingFixture();

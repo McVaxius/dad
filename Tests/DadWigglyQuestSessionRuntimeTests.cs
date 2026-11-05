@@ -14,6 +14,42 @@ public sealed class WigglyDutyRuntimeCollection;
 public sealed class DadWigglyQuestSessionRuntimeTests
 {
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void RejectedRestartPreservesManualLeaveFailureUntilConfirmedExit(bool useStart)
+    {
+        using var fixture = new Fixture();
+        fixture.Run();
+        fixture.Until(() => fixture.State.GetProperty("dutyFinder").GetProperty("stage").GetString() == "queued");
+        fixture.Observe(new { op = "observe", stage = "duty", rejectLeave = true });
+        for (var i = 0; i < 4; i++) fixture.Observe(new { op = "tick", milliseconds = 1000 });
+        fixture.Stop();
+        var failure = fixture.Failure();
+        Assert.Contains("Leave the duty manually", failure);
+
+        if (useStart) fixture.Start(); else fixture.Run();
+        Assert.Equal(failure, fixture.Failure());
+        Assert.False(fixture.Stopped());
+        fixture.Observe(new { op = "observe", stage = "outside" });
+        fixture.Observe(new { op = "tick", milliseconds = 1000 });
+        Assert.True(fixture.Stopped());
+        Assert.Equal(failure, fixture.Failure());
+        Assert.Single(fixture.Events, line => line == "command:/ads leave");
+    }
+    [Fact]
+    public void BuiltInLabMaturityObservationSupportsKnownDutyWithoutTestOverride()
+    {
+        using var fixture = new Fixture();
+        fixture.UseLabMaturityObservation();
+        Assert.True(fixture.HasPath());
+        fixture.Set("Meta.DutyModeEnum", "Support");
+        fixture.Run();
+        fixture.Until(() => fixture.Duty.GetStatus().SessionState == "Running");
+        fixture.CompleteDungeon();
+        Assert.Empty(fixture.Failure());
+        Assert.Empty(fixture.State.GetProperty("unexpected").EnumerateArray());
+    }
+    [Theory]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
@@ -318,6 +354,7 @@ public sealed class DadWigglyQuestSessionRuntimeTests
         public string Policy() => ((Func<string>)handlers["dad.Duty.GetLootPolicyJson"])();
         public string Failure() => ((Func<string>)handlers["dad.Duty.GetLastFailure"])();
         public bool Stopped() => ((Func<bool>)handlers["dad.Duty.IsStopped"])();
+        public void UseLabMaturityObservation() => handlers.Remove("ADS.Duty.GetMaturityJson");
         public bool HasPath() => ((Func<uint, bool>)handlers["dad.Duty.ContentHasPath"])(1036);
         public void Start() => ((Action<bool>)handlers["dad.Duty.Start"])(true);
         public void Run() => ((Action<uint, int, bool>)handlers["dad.Duty.Run"])(1036, 1, true);
@@ -377,7 +414,7 @@ public sealed class DadWigglyQuestSessionRuntimeTests
             Assert.True(done(), $"DAD did not reach the expected state: {Duty.GetStatus().SessionState}; {Failure()}");
         }
         private void Tick() => Observe(new { op = "tick", milliseconds = 1000 });
-        private void Observe(object command)
+        public void Observe(object command)
         {
             var result = nodeType.GetMethod("Execute")!.Invoke(node, [JsonSerializer.SerializeToElement(command, Json)]);
             State = JsonSerializer.SerializeToElement(result, Json);

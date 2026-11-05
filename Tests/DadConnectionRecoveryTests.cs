@@ -14,6 +14,7 @@ using RecoveryOwner = DadRuntime::dad.Services.DadTitleMenuReadinessService;
 
 namespace dad.Tests;
 
+[Collection("DAD retry clock boundary")]
 public sealed class DadConnectionRecoveryTests
 {
     private static readonly DadConnectionRecoveryIdentity Session = new(
