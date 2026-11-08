@@ -3663,10 +3663,18 @@ public sealed partial class DadCoordinatorService
 
         if (activeSlotManifest != null && activePlan.RequiredParticipantCount > 1)
         {
-            // A completed worker's Finalizing phase is not permission to finalize the run.
-            // Missing fresh teardown proof must return through routing until cleanup starts.
+            // Teardown does not need every LAN client online at once. Build its
+            // immutable targets from the accepted roster; each worker separately
+            // proves its exact live identity before any native mutation.
             CurrentResult.Phase = DadRunPhase.RoutingModules;
-            if (!TryRefreshStrictMutationBoundary("managed party teardown"))
+            if (HasImmutableBoundaryMismatch(activePlan, activeSlotManifest))
+            {
+                FinalizeRun(DadRunStatus.Failed, "Dad rejected managed party teardown because the immutable plan/manifest binding changed.",
+                    "The accepted teardown plan no longer matches its frozen manifest.");
+                return;
+            }
+            if (activeSlotManifest.Slots.Any(static slot => slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland) &&
+                !TryRefreshStrictMutationBoundary("managed party teardown"))
                 return;
             if (!TryBuildAutoPartyRuntimeInviteTargets(out var runtimeInviteTargets, out var runtimeTargetBlocker))
             {
@@ -3696,7 +3704,7 @@ public sealed partial class DadCoordinatorService
             Transition(
                 DadRunPhase.TearingDownParty,
                 DadRunStatus.Running,
-                $"{summary} Waiting for guarded Slot1 teardown before {activePartyTeardownInstructions.Count - 1} exact follower(s) leave or prove solo.");
+                $"{summary} Settling all {activePartyTeardownInstructions.Count} exact party member(s); disconnected clients remain pending while reachable clients clean up.");
             return;
         }
 
@@ -3728,23 +3736,33 @@ public sealed partial class DadCoordinatorService
         if (activePartyTeardownInstructions.Count > 0)
         {
             var latestSummaries = new List<string>();
-            while (true)
+            // Dispatch each pending recipient once per update. No recipient's
+            // completion is a prerequisite for another recipient's cleanup.
             {
-                var leaderWasTerminal = activePartyTeardownInstructions
-                    .Where(static instruction =>
-                        instruction.InstructionKind == DadAssemblyInstructionKind.DisbandParty)
-                    .All(instruction => partyTeardownTerminalResults.ContainsKey(instruction.SlotId));
                 var dispatchable = DadExactPartyTeardownRules.GetDispatchableInstructions(
                     activePartyTeardownInstructions,
                     partyTeardownTerminalResults);
-                if (dispatchable.Count == 0)
-                    break;
 
                 foreach (var instruction in dispatchable)
                 {
                     var frozenSlot = ResolveFrozenSlotForInstruction(instruction);
                     var participant = ResolveParticipantForInstruction(instruction);
                     DadRunStepResultDto? result;
+                    var missingLanRoute = frozenSlot?.RouteKind == DadRunSlotRouteKind.LanWorker && participant == null;
+                    var contradictoryLanRoute = missingLanRoute && activeParticipants.Any(candidate =>
+                        string.Equals(candidate.WorkerSessionId.Value, frozenSlot!.WorkerSessionId.Value, StringComparison.OrdinalIgnoreCase) &&
+                        (!candidate.ManagedAccountKey.IsEmpty &&
+                         !DadRosterIdentity.SameAccount(candidate.ManagedAccountKey, frozenSlot.AccountKey) ||
+                         !string.IsNullOrWhiteSpace(candidate.AssignedSlotId) &&
+                         !string.Equals(candidate.AssignedSlotId, frozenSlot.SlotId, StringComparison.OrdinalIgnoreCase) ||
+                         !candidate.ActiveCharacterKey.IsEmpty &&
+                         !string.Equals(candidate.ActiveCharacterKey.Value, frozenSlot.CharacterKey.Value, StringComparison.OrdinalIgnoreCase) ||
+                         candidate.Character.ContentId != 0 && candidate.Character.ContentId != frozenSlot.ContentId));
+                    if (missingLanRoute && !contradictoryLanRoute)
+                    {
+                        latestSummaries.Add($"{instruction.SlotId} is waiting for its original exact client/character route to reconnect; teardown remains pending.");
+                        continue;
+                    }
                     if (frozenSlot == null || participant == null)
                     {
                         var reason =
@@ -3783,12 +3801,6 @@ public sealed partial class DadCoordinatorService
                         partyTeardownTerminalResults[instruction.SlotId] = result.Clone();
                 }
 
-                var leaderIsTerminal = activePartyTeardownInstructions
-                    .Where(static instruction =>
-                        instruction.InstructionKind == DadAssemblyInstructionKind.DisbandParty)
-                    .All(instruction => partyTeardownTerminalResults.ContainsKey(instruction.SlotId));
-                if (leaderWasTerminal || !leaderIsTerminal)
-                    break;
             }
 
             var aggregate = DadExactPartyTeardownRules.Aggregate(

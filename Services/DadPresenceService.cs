@@ -45,6 +45,8 @@ public sealed class DadPresenceService
     private DateTime nextOceTravelCapacityRefreshUtc = DateTime.MinValue;
     private string lastTravelTransition = string.Empty;
     private string partyTeardownRunId = string.Empty;
+    private string partyTeardownInstructionPayload = string.Empty;
+    private DateTime? partyTeardownRetryAtUtc;
     private DateTime? partyTeardownIdentityWaitStartedUtc;
     private string partyTeardownIdentityWaitPayload = string.Empty;
     private string authenticatedAutoPartyRunId = string.Empty;
@@ -833,10 +835,25 @@ public sealed class DadPresenceService
     private DadRunStepResultDto HandlePartyTeardownInstruction(DadAssemblyInstructionDto instruction)
     {
         var teardownKey = $"{instruction.RunId}|{instruction.SlotId}|{instruction.InstructionKind}";
-        if (!string.Equals(partyTeardownRunId, teardownKey, StringComparison.Ordinal))
+        var newTeardown = !string.Equals(partyTeardownRunId, teardownKey, StringComparison.Ordinal);
+        var payload = DadIpcJson.Serialize(instruction);
+        if (!newTeardown && !string.Equals(partyTeardownInstructionPayload, payload, StringComparison.Ordinal))
+        {
+            const string blocker = "The frozen teardown instruction changed during managed cleanup recovery.";
+            CurrentParticipant.State = DadParticipantState.Failed;
+            CurrentParticipant.StatusText = blocker;
+            return new DadRunStepResultDto
+            {
+                RunId = instruction.RunId, ModuleId = instruction.ModuleId, StepName = "PartyTeardown",
+                ParticipantState = CurrentParticipant.State, Summary = blocker, FailureReason = blocker, BlockedReason = blocker,
+            };
+        }
+        if (newTeardown || partyTeardownRetryAtUtc is { } retryAt && DadClock.UtcNow >= retryAt)
         {
             partyTeardownService.Reset();
             partyTeardownRunId = teardownKey;
+            partyTeardownInstructionPayload = payload;
+            partyTeardownRetryAtUtc = null;
             var follower = instruction.InviteTargets.SingleOrDefault(target =>
                 string.Equals(
                     target.WorkerSessionId.Value,
@@ -860,11 +877,18 @@ public sealed class DadPresenceService
                 mode);
         }
 
-        var decision = partyTeardownService.Update();
+        var decision = partyTeardownService.Update(reconcileOnly: partyTeardownRetryAtUtc != null);
         var complete = decision.Action == DadPartyTeardownAction.Complete;
-        var failed = decision.Action == DadPartyTeardownAction.Fail;
+        var retryable = decision.Action == DadPartyTeardownAction.Fail && decision.Retryable;
+        var failed = decision.Action == DadPartyTeardownAction.Fail && !retryable;
+        if (retryable)
+            partyTeardownRetryAtUtc ??= DadClock.UtcNow + DadPartyTeardownController.ManagedRetryDelay;
+        var summary = retryable
+            ? $"Managed party cleanup is still pending; a fresh identity-checked pass may retry after {partyTeardownRetryAtUtc:O}. Last pass: {decision.Summary}"
+            : decision.Summary;
         if (complete || failed)
         {
+            partyTeardownRetryAtUtc = null;
             partyTeardownIdentityWaitStartedUtc = null;
             partyTeardownIdentityWaitPayload = string.Empty;
         }
@@ -873,7 +897,7 @@ public sealed class DadPresenceService
             : failed
                 ? DadParticipantState.Failed
                 : DadParticipantState.AssemblyPending;
-        CurrentParticipant.StatusText = decision.Summary;
+        CurrentParticipant.StatusText = summary;
         return new DadRunStepResultDto
         {
             RunId = instruction.RunId,
@@ -883,9 +907,9 @@ public sealed class DadPresenceService
             Success = complete,
             Deferred = !complete && !failed,
             TimedOut = failed && decision.Summary.Contains("timed out", StringComparison.OrdinalIgnoreCase),
-            Summary = decision.Summary,
-            FailureReason = failed ? decision.Summary : string.Empty,
-            BlockedReason = failed ? decision.Summary : string.Empty,
+            Summary = summary,
+            FailureReason = failed ? summary : string.Empty,
+            BlockedReason = failed || retryable || partyTeardownRetryAtUtc != null ? summary : string.Empty,
             AuthoritativePartyMembers = partyInviteGateway.ReadAuthoritativePartyMembers()
                 .Select(static member => member.Clone())
                 .ToList(),
@@ -893,7 +917,7 @@ public sealed class DadPresenceService
     }
 
     // A loading/relog observation is not proof of a different character. Keep the
-    // original assignment and a bounded wait; never enter the native teardown
+    // original assignment and a cancellable reconnect wait; never enter the native teardown
     // service until runtime identity is readable and matches it again.
     private DadRunStepResultDto? CheckPartyTeardownIdentityWait(DadAssemblyInstructionDto instruction)
     {
@@ -933,13 +957,15 @@ public sealed class DadPresenceService
             blocker = "The frozen teardown instruction changed during its identity wait.";
 
         var now = DadClock.UtcNow;
-        var timedOut = partyTeardownIdentityWaitStartedUtc is { } started &&
-                       (now < started || now - started >= DadPartyTeardownController.Timeout);
-        if (timedOut && string.IsNullOrWhiteSpace(blocker))
-            blocker = "Party teardown timed out waiting for the exact runtime character identity.";
+        if (partyTeardownIdentityWaitStartedUtc is { } started && now < started && string.IsNullOrWhiteSpace(blocker))
+            blocker = "The teardown reconnect clock moved backwards; refusing an uncertain recovery.";
 
         if (string.IsNullOrWhiteSpace(blocker) && !missingIdentity)
+        {
+            partyTeardownIdentityWaitStartedUtc = null;
+            partyTeardownIdentityWaitPayload = string.Empty;
             return null; // The ordinary full live-identity/native checks still run.
+        }
 
         var deferred = string.IsNullOrWhiteSpace(blocker);
         if (deferred && partyTeardownIdentityWaitStartedUtc == null)
@@ -947,13 +973,17 @@ public sealed class DadPresenceService
             partyTeardownIdentityWaitStartedUtc = now;
             partyTeardownIdentityWaitPayload = payload;
         }
-        var summary = deferred ? "Waiting up to 60 seconds for the exact runtime character identity before party teardown." : blocker;
+        if (deferred)
+            partyTeardownService.SuspendForIdentityWait();
+        var summary = deferred
+            ? "Waiting for the exact assigned character to reconnect before party teardown; the run remains owned and cancellation is available."
+            : blocker;
         CurrentParticipant.State = deferred ? DadParticipantState.WaitingForRequiredCharacter : DadParticipantState.Failed;
         CurrentParticipant.StatusText = summary;
         return new DadRunStepResultDto
         {
             RunId = instruction.RunId, ModuleId = instruction.ModuleId, StepName = "PartyTeardown",
-            ParticipantState = CurrentParticipant.State, Deferred = deferred, TimedOut = timedOut,
+            ParticipantState = CurrentParticipant.State, Deferred = deferred,
             Summary = summary, BlockedReason = summary, FailureReason = deferred ? string.Empty : summary,
         };
     }
@@ -1870,6 +1900,8 @@ public sealed class DadPresenceService
         partyInviteGateway.Reset();
         partyTeardownService.Reset();
         partyTeardownRunId = string.Empty;
+        partyTeardownInstructionPayload = string.Empty;
+        partyTeardownRetryAtUtc = null;
         partyTeardownIdentityWaitStartedUtc = null;
         partyTeardownIdentityWaitPayload = string.Empty;
         ResetRequestedJobPreparation();

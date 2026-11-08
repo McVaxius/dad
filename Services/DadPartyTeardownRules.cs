@@ -37,7 +37,8 @@ public sealed record DadPartyTeardownDecision(
     DadPartyTeardownAction Action,
     string Summary,
     bool PromptOverrideUsed = false,
-    string PromptAudit = "");
+    string PromptAudit = "",
+    bool Retryable = false);
 
 /// <summary>
 /// Stateful, runtime-independent safety gate for successful-run party teardown.
@@ -51,13 +52,15 @@ public sealed class DadPartyTeardownController
     public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(60);
     public static readonly TimeSpan AttemptThrottle = TimeSpan.FromSeconds(8);
     public static readonly TimeSpan SoloConfirmationInterval = TimeSpan.FromSeconds(1);
+    public static readonly TimeSpan ManagedRetryDelay = TimeSpan.FromSeconds(30);
     public const int MaximumAttempts = 7;
 
     private readonly HashSet<ulong> expectedMembers;
     private readonly ulong expectedLeaderContentId;
     private readonly ulong expectedLocalContentId;
     private readonly DadPartyTeardownMutationMode mutationMode;
-    private readonly DateTime startedAtUtc;
+    private DateTime startedAtUtc;
+    private DateTime? identityWaitStartedUtc;
     private DateTime nextAttemptUtc;
     private int commandAttempts;
     private DadPromptObservation commandPromptBaseline;
@@ -116,7 +119,13 @@ public sealed class DadPartyTeardownController
 
     public int CommandAttempts => commandAttempts;
 
-    public DadPartyTeardownDecision Pulse(DadPartyTeardownObservation observation)
+    public void SuspendForIdentityWait(DateTime nowUtc)
+    {
+        identityWaitStartedUtc ??= nowUtc;
+        soloConfirmedSinceUtc = null;
+    }
+
+    public DadPartyTeardownDecision Pulse(DadPartyTeardownObservation observation, bool reconcileOnly = false)
     {
         var actualMembers = observation.PartyMemberContentIds.Where(static id => id != 0).ToHashSet();
         var partyStateConfirmsSolo = !observation.IsCrossRealmParty &&
@@ -133,10 +142,28 @@ public sealed class DadPartyTeardownController
 
         if (observation.LocalContentId == 0)
         {
-            soloConfirmedSinceUtc = null;
-            return observation.NowUtc < startedAtUtc || observation.NowUtc - startedAtUtc >= Timeout
-                ? new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, "Party teardown timed out waiting for readable native character identity.")
-                : new DadPartyTeardownDecision(DadPartyTeardownAction.None, "Waiting for readable native character identity before party teardown.");
+            if (observation.NowUtc < startedAtUtc ||
+                identityWaitStartedUtc is { } waitStarted && observation.NowUtc < waitStarted)
+                return new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, "The teardown reconnect clock moved backwards.");
+            SuspendForIdentityWait(observation.NowUtc);
+            return new DadPartyTeardownDecision(DadPartyTeardownAction.None,
+                "Waiting for readable native character identity before party teardown; reconnect time does not consume the mutation deadline.");
+        }
+
+        if (identityWaitStartedUtc is { } identityWait)
+        {
+            if (observation.NowUtc < identityWait)
+                return new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, "The teardown reconnect clock moved backwards.");
+            var disconnectedFor = observation.NowUtc - identityWait;
+            startedAtUtc += disconnectedFor;
+            nextAttemptUtc += disconnectedFor;
+            identityWaitStartedUtc = null;
+            // UI seen after a reconnect is not fresh evidence for a pre-disconnect
+            // command. Keep the attempt budget, but require a new owned prompt.
+            commandPromptBaseline = new DadPromptObservation(observation.PromptVisible,
+                observation.PromptReady, observation.PromptIdentity, observation.PromptText,
+                observation.PromptVisible && !observation.OtherReadyPromptVisible);
+            partyMenuCallbackAttempts = commandAttempts;
         }
 
         if (mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader &&
@@ -167,16 +194,6 @@ public sealed class DadPartyTeardownController
             return new DadPartyTeardownDecision(DadPartyTeardownAction.Complete, "Party teardown complete; the local character is already solo.");
         }
 
-        if (observation.NowUtc - startedAtUtc >= Timeout)
-        {
-            var operation = mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader
-                ? "breakup"
-                : "leave";
-            return new DadPartyTeardownDecision(
-                DadPartyTeardownAction.Fail,
-                $"Party teardown timed out after {commandAttempts} {operation} command attempt(s).");
-        }
-
         var currentPrompt = new DadPromptObservation(
             observation.PromptVisible,
             observation.PromptReady,
@@ -198,10 +215,12 @@ public sealed class DadPartyTeardownController
                 $"Party membership contains unexpected Content ID(s) {string.Join(",", unexpectedMembers)}; refusing teardown mutation.");
         }
 
-        var soloCompletionAllowed = commandSent &&
-                                    partyStateConfirmsSolo &&
+        // Other exact members can leave independently while this client is
+        // reconnecting. A stable authoritative solo state is sufficient even
+        // when no local disband prompt was needed (or survived the disconnect).
+        var soloCompletionAllowed = partyStateConfirmsSolo &&
                                     (mutationMode == DadPartyTeardownMutationMode.LeaveAsFollower ||
-                                     approvedCommandAttempt > 0);
+                                     approvedCommandAttempt > 0 || observation.IsWorldStable);
         if (soloCompletionAllowed)
         {
             soloConfirmedSinceUtc ??= observation.NowUtc;
@@ -215,9 +234,24 @@ public sealed class DadPartyTeardownController
             return new DadPartyTeardownDecision(
                 DadPartyTeardownAction.Complete,
                 mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader
-                    ? "Party teardown complete; cross-world party state is inactive and PartyList remained solo after prompt approval."
+                    ? "Party teardown complete; authoritative cross-world party state remained inactive and the exact leader remained solo."
                     : "Follower party teardown complete; authoritative party state remained solo after the leave mutation.");
         }
+
+        if (observation.NowUtc - startedAtUtc >= Timeout)
+        {
+            var operation = mutationMode == DadPartyTeardownMutationMode.DisbandAsLeader
+                ? "breakup"
+                : "leave";
+            return new DadPartyTeardownDecision(
+                DadPartyTeardownAction.Fail,
+                $"Party teardown timed out after {commandAttempts} {operation} command attempt(s).",
+                Retryable: true);
+        }
+
+        if (reconcileOnly)
+            return new DadPartyTeardownDecision(DadPartyTeardownAction.None,
+                "Managed party cleanup remains pending; observing native state without mutations during retry backoff.");
 
         if (observation.PromptVisible)
         {

@@ -30,13 +30,13 @@ public static class DadExactPartyTeardownRules
         if (leader == null)
             return [];
 
-        if (!terminalResults.ContainsKey(leader.SlotId))
-            return [leader];
-
+        // A disconnected leader must not prevent exact followers from leaving
+        // their own party. Every recipient still proves its own native authority.
         return instructions
-            .Where(static instruction =>
-                instruction.InstructionKind == DadAssemblyInstructionKind.LeaveParty)
+            .Where(static instruction => instruction.InstructionKind is
+                DadAssemblyInstructionKind.DisbandParty or DadAssemblyInstructionKind.LeaveParty)
             .Where(instruction => !terminalResults.ContainsKey(instruction.SlotId))
+            .OrderByDescending(static instruction => instruction.InstructionKind == DadAssemblyInstructionKind.DisbandParty)
             .ToList();
     }
 

@@ -414,7 +414,7 @@ public sealed class DadPartyAssemblyServiceTests
     }
 
     [Fact]
-    public void ExactTeardownDispatchesLeaderBeforeEveryFollowerAndAggregatesFailures()
+    public void ExactTeardownDispatchesEveryPendingMemberIndependentlyAndAggregatesFailures()
     {
         var instructions = new[]
         {
@@ -425,7 +425,7 @@ public sealed class DadPartyAssemblyServiceTests
         var terminal = new Dictionary<string, DadRunStepResultDto>(StringComparer.OrdinalIgnoreCase);
 
         Assert.Equal(
-            ["Slot1"],
+            ["Slot1", "Slot2", "Slot3"],
             DadExactPartyTeardownRules.GetDispatchableInstructions(instructions, terminal)
                 .Select(static instruction => instruction.SlotId));
 

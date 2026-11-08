@@ -103,8 +103,17 @@ Party recovery preserves the frozen run and inviter. If assembly is interrupted 
 JoinParty instruction can reopen acceptance after sustained safe solo proof; passive party loss does not.
 Native InviteTime values identify invitations rather than order them, so a shorter invitation lifetime cannot
 stall a new invitation behind an earlier larger value. Consumed invitation identities remain blocked, and
-bounded `Party reassembly wait` logs expose the actual blocker. During teardown, missing runtime identity waits
-up to 60 seconds without party actions; contradictory identity or timeout still fails closed.
+bounded `Party reassembly wait` logs expose the actual blocker. During managed LAN teardown, reachable exact
+members clean up independently; a disconnected member or coordinator remains pending through logout/login queues
+without party actions or a terminal schedule failure. Reconnect time pauses the 60-second native-mutation budget,
+not the seven-attempt cap or eight-second command throttle. Exact returning identity and sustained authoritative
+solo proof are required before finishing; contradictory identity still fails closed. Stop/cancellation remains
+available while waiting. A completed duty is not queued again merely because cleanup is waiting for reconnect.
+Managed LAN cleanup also keeps native timeouts and raced party-menu/dialog mutations pending instead of recording
+a terminal participant failure. A 30-second mutation-free backoff precedes each fresh identity-checked pass;
+each pass retains the seven-command, eight-second throttle and 60-second active budget. Native solo proof can
+settle cleanup during backoff. Identity/authority/foreign-party contradictions still fail closed; Stop cancels
+pending retries. An unresolved cleanup remains visibly blocking, never an invented successful completion.
 
 Cold Duty Support starts open the native window before requiring initialized agent data. Opens are throttled
 and initialization is bounded to 30 seconds. Saved Wake/relog NPC presets may prepare the exact offline character

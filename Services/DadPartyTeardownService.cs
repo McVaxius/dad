@@ -118,7 +118,10 @@ internal sealed unsafe class DadPartyTeardownService
         return true;
     }
 
-    public DadPartyTeardownDecision Update()
+    public void SuspendForIdentityWait()
+        => controller?.SuspendForIdentityWait(DadClock.UtcNow);
+
+    public DadPartyTeardownDecision Update(bool reconcileOnly = false)
     {
         if (controller == null)
             return new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, "Party teardown controller was not initialized.");
@@ -171,7 +174,7 @@ internal sealed unsafe class DadPartyTeardownService
             prompt.Text,
             inviterName,
             prompt.Ready,
-            IsOtherReadyPromptVisible()));
+            IsOtherReadyPromptVisible()), reconcileOnly);
 
         var diagnostic = string.Join(
             "|",
@@ -254,7 +257,8 @@ internal sealed unsafe class DadPartyTeardownService
         catch (Exception ex)
         {
             log.Warning(ex, "[dad] Party teardown mutation failed.");
-            return new DadPartyTeardownDecision(DadPartyTeardownAction.Fail, $"Party teardown mutation failed: {ex.Message}");
+            return new DadPartyTeardownDecision(DadPartyTeardownAction.Fail,
+                $"Party teardown mutation failed: {ex.Message}", Retryable: true);
         }
 
         return decision;
