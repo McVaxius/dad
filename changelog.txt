@@ -1,3 +1,7 @@
+2026-11-08 - 2.1.0.5 - Shared UI refresh
+
+- Update the shared UI library with the reviewed text/control and glass-rendering changes while retaining existing controls and duty-coordination behavior.
+
 2026-11-04 - 2.1.0.4 - BMR force commands and ADS repair cities (I724/I734-I737)
 
 - Preserve an actionable duty-leave failure when a restart is rejected during departure; keep waiting for confirmed exit without replaying the leave command.
