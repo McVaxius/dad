@@ -30,13 +30,13 @@ public static class DadExactPartyTeardownRules
         if (leader == null)
             return [];
 
-        if (!terminalResults.ContainsKey(leader.SlotId))
-            return [leader];
-
+        // A disconnected leader must not prevent exact followers from leaving
+        // their own party. Every recipient still proves its own native authority.
         return instructions
-            .Where(static instruction =>
-                instruction.InstructionKind == DadAssemblyInstructionKind.LeaveParty)
+            .Where(static instruction => instruction.InstructionKind is
+                DadAssemblyInstructionKind.DisbandParty or DadAssemblyInstructionKind.LeaveParty)
             .Where(instruction => !terminalResults.ContainsKey(instruction.SlotId))
+            .OrderByDescending(static instruction => instruction.InstructionKind == DadAssemblyInstructionKind.DisbandParty)
             .ToList();
     }
 
@@ -241,6 +241,58 @@ public sealed class DadPartyAssemblyService
         IReadOnlyDictionary<string, DadNativePartyInviteTarget>? runtimeInviteTargets,
         out string blocker)
     {
+        if (manifest.Slots.All(static slot => slot.RouteKind == DadRunSlotRouteKind.LanWorker))
+        {
+            blocker = string.Empty;
+            if (plan.Orchestration.QueueAuthority != DadQueueAuthority.Leader)
+            {
+                blocker = "Managed party teardown requires the accepted leader queue authority.";
+                return [];
+            }
+            if (authorityWorkerSessionId.IsEmpty ||
+                string.IsNullOrWhiteSpace(plan.Request.RequestId) ||
+                !string.Equals(manifest.RequestId, plan.Request.RequestId, StringComparison.Ordinal) ||
+                manifest.ExpectedPartySize != plan.RequiredParticipantCount ||
+                manifest.Slots.Count != plan.RequiredParticipantCount ||
+                manifest.Slots.Any(static slot => string.IsNullOrWhiteSpace(slot.SlotId) ||
+                    slot.AccountKey.IsEmpty || slot.CharacterKey.IsEmpty || slot.ContentId == 0 || slot.WorkerSessionId.IsEmpty) ||
+                manifest.Slots.Select(static slot => slot.SlotId).Distinct(StringComparer.OrdinalIgnoreCase).Count() != manifest.Slots.Count ||
+                manifest.Slots.Select(static slot => slot.AccountKey.Value).Distinct(StringComparer.OrdinalIgnoreCase).Count() != manifest.Slots.Count ||
+                manifest.Slots.Select(static slot => slot.CharacterKey.Value).Distinct(StringComparer.OrdinalIgnoreCase).Count() != manifest.Slots.Count ||
+                manifest.Slots.Select(static slot => slot.ContentId).Distinct().Count() != manifest.Slots.Count ||
+                manifest.Slots.Select(static slot => slot.WorkerSessionId.Value).Distinct(StringComparer.OrdinalIgnoreCase).Count() != manifest.Slots.Count)
+            {
+                blocker = "Managed party teardown requires the exact accepted run, authority, and complete unique frozen LAN roster.";
+                return [];
+            }
+            if (!TryBuildFrozenPartyAuthority(
+                    plan, manifest, participants, runtimeInviteTargets,
+                    out var inviter, out var targets, out blocker,
+                    requireNativeInviteMetadata: false))
+                return [];
+
+            // Freeze cleanup targets from the accepted manifest. Every recipient
+            // proves its current identity at its own mutation boundary.
+            return manifest.Slots
+                .OrderBy(static slot => DadPlannerSlotRules.GetSlotSortKey(slot.SlotId))
+                .Select(slot => new DadAssemblyInstructionDto
+                {
+                    RunId = plan.Request.RequestId,
+                    AuthorityWorkerSessionId = authorityWorkerSessionId,
+                    ModuleId = plan.CompositeModuleId,
+                    SlotId = slot.SlotId,
+                    RequiredCharacterKey = slot.CharacterKey,
+                    InstructionKind = slot.IsLeader
+                        ? DadAssemblyInstructionKind.DisbandParty
+                        : DadAssemblyInstructionKind.LeaveParty,
+                    FrozenInviter = inviter.Clone(),
+                    InviteTargets = targets.Select(static target => target.Clone()).ToList(),
+                    Summary = slot.IsLeader
+                        ? "Slot1 is performing guarded Dad party teardown."
+                        : $"{slot.SlotId} is leaving the exact Dad party or proving it is already solo.",
+                }).ToList();
+        }
+
         var instructions = BuildInstructions(
             plan,
             participants,
@@ -414,7 +466,8 @@ public sealed class DadPartyAssemblyService
         IReadOnlyDictionary<string, DadNativePartyInviteTarget>? runtimeInviteTargets,
         out DadExpectedPartyInviter inviter,
         out List<DadNativePartyInviteTarget> inviteTargets,
-        out string blocker)
+        out string blocker,
+        bool requireNativeInviteMetadata = true)
     {
         inviter = new DadExpectedPartyInviter();
         inviteTargets = [];
@@ -445,18 +498,20 @@ public sealed class DadPartyAssemblyService
             return false;
         }
 
-        var leader = ordered.SingleOrDefault(participant =>
-            string.Equals(participant.AssignedSlotId, slotOne.SlotId, StringComparison.OrdinalIgnoreCase));
+        var leader = requireNativeInviteMetadata
+            ? ordered.SingleOrDefault(participant =>
+                string.Equals(participant.AssignedSlotId, slotOne.SlotId, StringComparison.OrdinalIgnoreCase))
+            : null;
         var remoteLeaderTarget = slotOne.RouteKind == DadRunSlotRouteKind.RegisteredIsland &&
                                  runtimeInviteTargets != null &&
                                  runtimeInviteTargets.TryGetValue(slotOne.SlotId, out var resolvedLeaderTarget)
             ? resolvedLeaderTarget
             : null;
-        if (leader == null ||
+        if (requireNativeInviteMetadata && (leader == null ||
             (remoteLeaderTarget == null &&
              (string.IsNullOrWhiteSpace(leader.Character.CharacterName) ||
               leader.Character.WorldId == 0 ||
-              leader.Character.WorldId > ushort.MaxValue)))
+              leader.Character.WorldId > ushort.MaxValue))))
         {
             blocker = "Frozen Slot1 inviter is missing its exact name or World ID.";
             return false;
@@ -469,21 +524,25 @@ public sealed class DadPartyAssemblyService
             AccountKey = remoteLeaderTarget?.AccountKey ?? slotOne.AccountKey,
             CharacterKey = remoteLeaderTarget?.CharacterKey ?? slotOne.CharacterKey,
             ContentId = remoteLeaderTarget?.ContentId ?? slotOne.ContentId,
-            CharacterName = remoteLeaderTarget?.CharacterName ?? leader.Character.CharacterName,
-            WorldId = remoteLeaderTarget?.WorldId ?? (ushort)leader.Character.WorldId,
+            CharacterName = remoteLeaderTarget?.CharacterName ?? leader?.Character.CharacterName
+                ?? slotOne.CharacterKey.Value.Split('@', 2)[0],
+            WorldId = remoteLeaderTarget?.WorldId ?? (ushort)(leader?.Character.WorldId ?? 0),
         };
 
         foreach (var slot in manifest.Slots.Where(static slot => !slot.IsLeader))
         {
-            var participant = ordered.Single(candidate =>
-                string.Equals(candidate.AssignedSlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase));
+            var participant = requireNativeInviteMetadata
+                ? ordered.Single(candidate =>
+                    string.Equals(candidate.AssignedSlotId, slot.SlotId, StringComparison.OrdinalIgnoreCase))
+                : null;
             var remoteTarget = slot.RouteKind == DadRunSlotRouteKind.RegisteredIsland &&
                                runtimeInviteTargets != null &&
                                runtimeInviteTargets.TryGetValue(slot.SlotId, out var resolvedRemoteTarget)
                 ? resolvedRemoteTarget
                 : null;
-            if (remoteTarget == null &&
-                (string.IsNullOrWhiteSpace(participant.Character.CharacterName) ||
+            if (requireNativeInviteMetadata && remoteTarget == null &&
+                (participant == null ||
+                 string.IsNullOrWhiteSpace(participant.Character.CharacterName) ||
                  participant.Character.WorldId == 0 ||
                  participant.Character.WorldId > ushort.MaxValue))
             {
@@ -499,8 +558,8 @@ public sealed class DadPartyAssemblyService
                 AccountKey = slot.AccountKey,
                 CharacterKey = slot.CharacterKey,
                 ContentId = slot.ContentId,
-                CharacterName = participant.Character.CharacterName,
-                WorldId = (ushort)participant.Character.WorldId,
+                CharacterName = participant?.Character.CharacterName ?? slot.CharacterKey.Value.Split('@', 2)[0],
+                WorldId = (ushort)(participant?.Character.WorldId ?? 0),
                 WorkerSessionId = slot.WorkerSessionId,
             });
         }

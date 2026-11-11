@@ -21,15 +21,72 @@ public sealed class DadPartyTeardownRulesTests
     }
 
     [Fact]
-    public void UnreadableNativeIdentityHasABoundedDeadlineAndCannotUseSoloProof()
+    public void UnreadableNativeIdentityWaitsForReconnectAndCannotUseSoloProof()
     {
         var now = DateTime.UtcNow;
         var controller = FollowerController(now);
         Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now, local: 0, members: [])).Action);
-        var result = controller.Pulse(Observation(now.AddSeconds(60), local: 0, members: []));
-        Assert.Equal(DadPartyTeardownAction.Fail, result.Action);
-        Assert.Contains("timed out", result.Summary);
+        var result = controller.Pulse(Observation(now.AddHours(2), local: 0, members: []));
+        Assert.Equal(DadPartyTeardownAction.None, result.Action);
         Assert.Equal(0, controller.CommandAttempts);
+        Assert.Equal(DadPartyTeardownAction.Complete,
+            controller.Pulse(Observation(now.AddHours(2).AddSeconds(1), local: 2, members: [2UL])).Action);
+    }
+
+    [Fact]
+    public void DisconnectPausesMutationBudgetWithoutResettingAttemptsOrThrottle()
+    {
+        var now = DateTime.UtcNow;
+        var controller = FollowerController(now);
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now, local: 2)).Action);
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(now.AddSeconds(1), local: 0)).Action);
+        var restored = now.AddHours(2).AddSeconds(1);
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(restored, local: 2)).Action);
+        Assert.Equal(1, controller.CommandAttempts);
+        for (var attempt = 1; attempt < 7; attempt++)
+            Assert.Equal(DadPartyTeardownAction.SendBreakup,
+                controller.Pulse(Observation(now.AddHours(2).AddSeconds(attempt * 8), local: 2)).Action);
+        Assert.Equal(7, controller.CommandAttempts);
+        Assert.Equal(DadPartyTeardownAction.None,
+            controller.Pulse(Observation(now.AddHours(2).AddSeconds(59), local: 2)).Action);
+        Assert.Equal(DadPartyTeardownAction.Fail,
+            controller.Pulse(Observation(now.AddHours(2).AddSeconds(60), local: 2)).Action);
+    }
+
+    [Fact]
+    public void ReconnectDoesNotApproveAPromptFromBeforeTheDisconnect()
+    {
+        var now = DateTime.UtcNow;
+        var controller = FollowerController(now);
+        Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now, local: 2)).Action);
+        controller.Pulse(Observation(now.AddSeconds(1), local: 0));
+        var restored = now.AddHours(2).AddSeconds(1);
+        Assert.Equal(DadPartyTeardownAction.None, controller.Pulse(Observation(restored, local: 2,
+            prompt: true, identity: "old", text: "Leave the party?")).Action);
+        Assert.Equal(1, controller.CommandAttempts);
+        Assert.Equal(DadPartyTeardownAction.SendBreakup,
+            controller.Pulse(Observation(restored.AddSeconds(8), local: 2)).Action);
+        Assert.Equal(DadPartyTeardownAction.ApprovePrompt,
+            controller.Pulse(Observation(restored.AddSeconds(9), local: 2,
+                prompt: true, identity: "new", text: "Leave the party?")).Action);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ExactLeaderCanProveSoloAfterFollowersCleanedUpIndependently(bool commandWasSent)
+    {
+        var now = DateTime.UtcNow;
+        var controller = new DadPartyTeardownController([1UL, 2UL], 1, now, false, "");
+        if (commandWasSent)
+            Assert.Equal(DadPartyTeardownAction.SendBreakup, controller.Pulse(Observation(now)).Action);
+        controller.Pulse(Observation(now.AddSeconds(1), local: 0));
+        var restored = now.AddHours(2).AddSeconds(1);
+        Assert.Equal(DadPartyTeardownAction.None,
+            controller.Pulse(Observation(restored, members: [1UL])).Action);
+        Assert.Equal(DadPartyTeardownAction.Complete,
+            controller.Pulse(Observation(restored.AddSeconds(1), members: [1UL])).Action);
+        Assert.Equal(commandWasSent ? 1 : 0, controller.CommandAttempts);
     }
 
     [Theory]
