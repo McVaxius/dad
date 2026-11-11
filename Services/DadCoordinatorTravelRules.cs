@@ -7,15 +7,38 @@ public static class DadCoordinatorTravelRules
     public static readonly TimeSpan MaxLocationProofAge = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan FutureClockTolerance = TimeSpan.FromSeconds(2);
 
+    public static DadPartyLocationRequirement ResolveLocationRequirement(DadRunPlan plan)
+    {
+        if (plan.Orchestration.AutoPartyFormationOnly || plan.Modules.Count == 0)
+            return DadPartyLocationRequirement.DataCenter;
+
+        if (plan.Modules.Any(static module => module.ModuleId == DadModuleId.LootGoblin))
+            return DadPartyLocationRequirement.World;
+
+        return plan.Modules.All(static module => module.ModuleId is
+            DadModuleId.Duty or DadModuleId.Msq or DadModuleId.DutySupport or DadModuleId.Trust or
+            DadModuleId.PremadeDuty or DadModuleId.DailyMsq or DadModuleId.Commendation or
+            DadModuleId.Astrope or DadModuleId.CustomDuty or DadModuleId.Squadron or DadModuleId.VariantVvd)
+            ? DadPartyLocationRequirement.Region
+            : DadPartyLocationRequirement.DataCenter;
+    }
+
     public static bool TryFreezeTarget(
         string runId,
         DadParticipantSnapshot coordinator,
         DateTime nowUtc,
         out DadCoordinatorTravelTarget target,
-        out string blocker)
+        out string blocker,
+        DadPartyLocationRequirement locationRequirement = DadPartyLocationRequirement.DataCenter)
     {
         target = new DadCoordinatorTravelTarget();
         blocker = string.Empty;
+        if (!Enum.IsDefined(locationRequirement))
+        {
+            blocker = "Slot1 assembly location requirement is invalid.";
+            return false;
+        }
+
         var location = coordinator.CurrentLocation;
         if (string.IsNullOrWhiteSpace(runId) ||
             coordinator.WorkerSessionId.IsEmpty ||
@@ -46,6 +69,7 @@ public static class DadCoordinatorTravelRules
             CoordinatorAccountKey = coordinator.ManagedAccountKey,
             CoordinatorCharacterKey = coordinator.ActiveCharacterKey,
             CoordinatorContentId = coordinator.Character.ContentId,
+            LocationRequirement = locationRequirement,
             WorldId = location!.WorldId,
             WorldName = location.WorldName.Trim(),
             DataCenterId = location.DataCenterId,
@@ -102,31 +126,46 @@ public static class DadCoordinatorTravelRules
                     immutableTargetChanged: false);
             }
 
-            if (location!.DataCenterId != target.DataCenterId ||
-                !Same(location.DataCenterName, target.DataCenterName) ||
-                location.RegionId != target.RegionId ||
-                !Same(location.RegionName, target.RegionName))
-            {
-                return Blocked(
-                    $"{slot} is currently on {location.DataCenterName} ({location.RegionName}); frozen Slot1 data center is {target.DataCenterName} ({target.RegionName}).",
-                    immutableTargetChanged: false);
-            }
-
-            if (!Same(participant.WorkerSessionId.Value, target.CoordinatorWorkerSessionId.Value))
-                continue;
-
-            if (location.WorldId != target.WorldId || !Same(location.WorldName, target.WorldName))
+            if (Same(participant.WorkerSessionId.Value, target.CoordinatorWorkerSessionId.Value) &&
+                (location!.WorldId != target.WorldId || !Same(location.WorldName, target.WorldName) ||
+                 location.DataCenterId != target.DataCenterId || !Same(location.DataCenterName, target.DataCenterName) ||
+                 location.RegionId != target.RegionId || !Same(location.RegionName, target.RegionName)))
             {
                 return Blocked(
                     $"Slot1 current world changed from frozen assembly target {target.WorldName} to {location.WorldName}.",
                     immutableTargetChanged: true);
+            }
+
+            if (!MatchesTarget(location, target))
+            {
+                return Blocked(
+                    $"{slot} has not reached the frozen Slot1 {target.LocationRequirement} requirement at {target.WorldName} / {target.DataCenterName} ({target.RegionName}).",
+                    immutableTargetChanged: false);
             }
         }
 
         return new DadCoordinatorTravelProofResult
         {
             Ready = true,
-            Summary = $"All {participants.Count} participant(s) proved current presence on frozen Slot1 data center {target.DataCenterName}.",
+            Summary = $"All {participants.Count} participant(s) proved the frozen Slot1 {target.LocationRequirement} requirement at {target.WorldName} / {target.DataCenterName} ({target.RegionName}).",
+        };
+    }
+
+    public static bool MatchesTarget(DadWorldLocationObservation? current, DadCoordinatorTravelTarget target)
+    {
+        if (current is not { IsComplete: true } || !target.IsComplete ||
+            current.RegionId != target.RegionId || !Same(current.RegionName, target.RegionName))
+            return false;
+
+        return target.LocationRequirement switch
+        {
+            DadPartyLocationRequirement.Region => true,
+            DadPartyLocationRequirement.DataCenter =>
+                current.DataCenterId == target.DataCenterId && Same(current.DataCenterName, target.DataCenterName),
+            DadPartyLocationRequirement.World =>
+                current.WorldId == target.WorldId && Same(current.WorldName, target.WorldName) &&
+                current.DataCenterId == target.DataCenterId && Same(current.DataCenterName, target.DataCenterName),
+            _ => false,
         };
     }
 
@@ -231,10 +270,10 @@ public sealed class DadClientTravelGate
         if (!DadCoordinatorTravelRules.IsFreshComplete(current, nowUtc))
             return WaitWithoutIdleProof("Waiting for fresh current-world, data-center, and region proof before data-center travel.");
 
-        if (IsOnTargetDataCenter(current!, target))
+        if (DadCoordinatorTravelRules.MatchesTarget(current, target))
         {
             ResetIdleProof();
-            return Ready($"Current data center matches frozen Slot1 data center {target.DataCenterName}.");
+            return Ready($"Current location meets the frozen Slot1 {target.LocationRequirement} requirement at {target.WorldName} / {target.DataCenterName} ({target.RegionName}).");
         }
 
         if (!TryAuthorizeDestination(context, target, nowUtc, out var policyBlocker))
@@ -336,10 +375,6 @@ public sealed class DadClientTravelGate
         ResetIdleProof();
         return Wait(summary);
     }
-
-    private static bool IsOnTargetDataCenter(DadWorldLocationObservation current, DadCoordinatorTravelTarget target)
-        => current.DataCenterId == target.DataCenterId && Same(current.DataCenterName, target.DataCenterName) &&
-           current.RegionId == target.RegionId && Same(current.RegionName, target.RegionName);
 
     private static bool TryAuthorizeDestination(
         DadClientTravelContext context,
@@ -457,6 +492,7 @@ public sealed class DadClientTravelGate
             Normalize(target.CoordinatorAccountKey.Value),
             Normalize(target.CoordinatorCharacterKey.Value),
             target.CoordinatorContentId,
+            target.LocationRequirement,
             target.WorldId,
             Normalize(target.WorldName),
             target.DataCenterId,

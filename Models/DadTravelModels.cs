@@ -31,6 +31,13 @@ public sealed class DadWorldLocationObservation
         };
 }
 
+public enum DadPartyLocationRequirement
+{
+    DataCenter,
+    Region,
+    World,
+}
+
 public sealed class DadCoordinatorTravelTarget
 {
     public string RunId { get; set; } = string.Empty;
@@ -38,6 +45,7 @@ public sealed class DadCoordinatorTravelTarget
     public DadAccountKey CoordinatorAccountKey { get; set; } = new(string.Empty);
     public DadCharacterKey CoordinatorCharacterKey { get; set; } = new(string.Empty);
     public ulong CoordinatorContentId { get; set; }
+    public DadPartyLocationRequirement LocationRequirement { get; set; } = DadPartyLocationRequirement.DataCenter;
     public uint WorldId { get; set; }
     public string WorldName { get; set; } = string.Empty;
     public uint DataCenterId { get; set; }
@@ -52,6 +60,7 @@ public sealed class DadCoordinatorTravelTarget
         !CoordinatorAccountKey.IsEmpty &&
         !CoordinatorCharacterKey.IsEmpty &&
         CoordinatorContentId != 0 &&
+        Enum.IsDefined(LocationRequirement) &&
         WorldId != 0 &&
         !string.IsNullOrWhiteSpace(WorldName) &&
         DataCenterId != 0 &&
@@ -67,6 +76,7 @@ public sealed class DadCoordinatorTravelTarget
             CoordinatorAccountKey = CoordinatorAccountKey,
             CoordinatorCharacterKey = CoordinatorCharacterKey,
             CoordinatorContentId = CoordinatorContentId,
+            LocationRequirement = LocationRequirement,
             WorldId = WorldId,
             WorldName = WorldName,
             DataCenterId = DataCenterId,

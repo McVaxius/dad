@@ -183,9 +183,9 @@ internal sealed class DadHubProtocolException : IOException
 
 internal static class DadHubProtocol
 {
-    // Version 5 requires the exact group-ready FrenRider authority proof and LootGoblin module
-    // semantics. Mixed builds are rejected before either peer can mutate party or module state.
-    public const int CurrentVersion = 5;
+    // Version 6 carries the frozen region/data-center/world assembly requirement. Mixed builds
+    // are rejected before a peer can ignore that requirement and mutate party or module state.
+    public const int CurrentVersion = 6;
     public const int MaxFrameBytes = 256 * 1024;
     private const int HeaderBytes = sizeof(int);
 

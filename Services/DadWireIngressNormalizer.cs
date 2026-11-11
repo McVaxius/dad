@@ -105,6 +105,9 @@ internal static class DadWireIngressNormalizer
         if (depth > MaximumDepth)
             throw new InvalidOperationException($"Wire payload exceeds the {MaximumDepth}-level normalization limit.");
 
+        if (value is DadCoordinatorTravelTarget target && !Enum.IsDefined(target.LocationRequirement))
+            throw new InvalidOperationException("Slot1 assembly location requirement is invalid.");
+
         var type = value.GetType();
         if (IsTerminal(type))
             return;

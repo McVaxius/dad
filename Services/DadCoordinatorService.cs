@@ -1118,7 +1118,8 @@ public sealed partial class DadCoordinatorService
                         slotOneParticipant,
                         DadClock.UtcNow,
                         out var travelTarget,
-                        out var travelBlocker))
+                        out var travelBlocker,
+                        DadCoordinatorTravelRules.ResolveLocationRequirement(activePlan)))
                 {
                     blockers.Add(travelBlocker);
                 }

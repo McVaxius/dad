@@ -511,6 +511,7 @@ internal sealed class RuntimeNode : IDisposable
                     if (ResolveWorldObservation(world, clock.Now.UtcDateTime) == null)
                         throw new ArgumentException("Unknown synthetic current world.");
                     currentWorldId = world;
+                    party.CurrentWorldId = world;
                     events.Enqueue($"observation:current-world:{world}");
                 }
                 if (command.TryGetProperty("multiMode", out var multi)) automation.MultiMode = multi.GetBoolean();

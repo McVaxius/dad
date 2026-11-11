@@ -1,3 +1,10 @@
+2026-11-10 - 2.1.0.7 - Regional duty-party invitations
+
+- Updated Duty Parties: Invite LAN participants across data centers in the same region without requiring data-center travel.
+- Updated Party Travel: Require the target World for LootGoblin and retain guarded travel for physical rendezvous.
+- Updated Readiness: Preserve fresh character/location checks and existing registered-party invitation handling.
+- Compatibility: Update DAD on every participating client before starting coordinated runs.
+
 2026-11-10 - 2.1.0.6 - Managed party reconnect recovery
 
 - Start managed party cleanup when a client is already disconnected, allowing reachable party members to finish.

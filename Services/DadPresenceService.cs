@@ -442,7 +442,7 @@ public sealed class DadPresenceService
             CurrentParticipant.PostArReady = false;
             CurrentParticipant.State = DadParticipantState.WaitingForPostArReady;
             CurrentParticipant.StatusText =
-                $"Waiting for guarded travel and fresh current-DC proof on {travelTarget.DataCenterName}.";
+                $"Waiting for guarded travel and fresh {travelTarget.LocationRequirement} proof at {travelTarget.WorldName} / {travelTarget.DataCenterName} ({travelTarget.RegionName}).";
             return BuildReadyResponse(blockerSummary: CurrentParticipant.StatusText, acceptedAssignment: true);
         }
 
@@ -1736,11 +1736,8 @@ public sealed class DadPresenceService
     private static bool CurrentLocationMatchesTarget(
         DadWorldLocationObservation? current,
         DadCoordinatorTravelTarget target)
-        => current is { IsComplete: true } &&
-           current.DataCenterId == target.DataCenterId &&
-           current.RegionId == target.RegionId &&
-           string.Equals(current.DataCenterName.Trim(), target.DataCenterName.Trim(), StringComparison.OrdinalIgnoreCase) &&
-           string.Equals(current.RegionName.Trim(), target.RegionName.Trim(), StringComparison.OrdinalIgnoreCase);
+        => DadCoordinatorTravelRules.IsFreshComplete(current, DadClock.UtcNow) &&
+           DadCoordinatorTravelRules.MatchesTarget(current, target);
 
     private static bool TravelTargetMatchesWorldCatalog(DadCoordinatorTravelTarget target)
     {

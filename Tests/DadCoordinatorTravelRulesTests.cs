@@ -8,6 +8,302 @@ public sealed class DadCoordinatorTravelRulesTests
 {
     private static readonly DateTime Now = new(2026, 7, 15, 12, 0, 0, DateTimeKind.Utc);
 
+    [Theory]
+    [InlineData(DadModuleId.Duty)]
+    [InlineData(DadModuleId.Msq)]
+    [InlineData(DadModuleId.DutySupport)]
+    [InlineData(DadModuleId.Trust)]
+    [InlineData(DadModuleId.PremadeDuty)]
+    [InlineData(DadModuleId.DailyMsq)]
+    [InlineData(DadModuleId.Commendation)]
+    [InlineData(DadModuleId.Astrope)]
+    [InlineData(DadModuleId.CustomDuty)]
+    [InlineData(DadModuleId.Squadron)]
+    [InlineData(DadModuleId.VariantVvd)]
+    public void ConcreteDutyModulesSelectRegionalPartyReadiness(DadModuleId module)
+        => Assert.Equal(DadPartyLocationRequirement.Region,
+            DadCoordinatorTravelRules.ResolveLocationRequirement(LocationPlan(module)));
+
+    [Theory]
+    [InlineData(DadModuleId.LootGoblin, DadPartyLocationRequirement.World)]
+    [InlineData(DadModuleId.GatherParty, DadPartyLocationRequirement.DataCenter)]
+    [InlineData(DadModuleId.Mogtome, DadPartyLocationRequirement.DataCenter)]
+    [InlineData(DadModuleId.Blunderville, DadPartyLocationRequirement.DataCenter)]
+    [InlineData(DadModuleId.None, DadPartyLocationRequirement.DataCenter)]
+    [InlineData(DadModuleId.Mixed, DadPartyLocationRequirement.DataCenter)]
+    [InlineData((DadModuleId)999, DadPartyLocationRequirement.DataCenter)]
+    public void PhysicalAndUnknownModulesRetainTheirRequiredTravelProof(
+        DadModuleId module, DadPartyLocationRequirement expected)
+        => Assert.Equal(expected, DadCoordinatorTravelRules.ResolveLocationRequirement(LocationPlan(module)));
+
+    [Fact]
+    public void ConcreteMixedDutyPlansStayRegionalWhilePhysicalModulesTakePrecedence()
+    {
+        var duties = LocationPlan(DadModuleId.Duty, DadModuleId.DailyMsq);
+        Assert.Equal(DadModuleId.Mixed, duties.CompositeModuleId);
+        Assert.Equal(DadPartyLocationRequirement.Region, DadCoordinatorTravelRules.ResolveLocationRequirement(duties));
+        Assert.Equal(DadPartyLocationRequirement.World, DadCoordinatorTravelRules.ResolveLocationRequirement(
+            LocationPlan(DadModuleId.Duty, DadModuleId.LootGoblin)));
+        Assert.Equal(DadPartyLocationRequirement.World, DadCoordinatorTravelRules.ResolveLocationRequirement(
+            LocationPlan(DadModuleId.LootGoblin, DadModuleId.Duty)));
+        Assert.Equal(DadPartyLocationRequirement.DataCenter, DadCoordinatorTravelRules.ResolveLocationRequirement(
+            LocationPlan(DadModuleId.Duty, DadModuleId.GatherParty)));
+    }
+
+    [Fact]
+    public void FormationOnlyAndEmptyPlansRetainTheExistingDataCenterRequirement()
+    {
+        var formation = LocationPlan(DadModuleId.Duty);
+        formation.Orchestration.AutoPartyFormationOnly = true;
+        Assert.Equal(DadPartyLocationRequirement.DataCenter, DadCoordinatorTravelRules.ResolveLocationRequirement(formation));
+        var orchestrationClone = formation.Orchestration.Clone();
+        Assert.True(orchestrationClone.AutoPartyFormationOnly);
+        formation.Orchestration = orchestrationClone;
+        Assert.Equal(DadPartyLocationRequirement.DataCenter, DadCoordinatorTravelRules.ResolveLocationRequirement(formation));
+        var requestClone = DadAutoPartyRuntimeRequestRules.ClonePreservingRuntimeMetadata(formation.Request);
+        Assert.True(requestClone.Orchestration.AutoPartyFormationOnly);
+        formation.Orchestration = requestClone.Orchestration;
+        Assert.Equal(DadPartyLocationRequirement.DataCenter, DadCoordinatorTravelRules.ResolveLocationRequirement(formation));
+        Assert.Equal(DadPartyLocationRequirement.DataCenter, DadCoordinatorTravelRules.ResolveLocationRequirement(LocationPlan()));
+    }
+
+    [Theory]
+    [InlineData(DadPartyLocationRequirement.DataCenter)]
+    [InlineData(DadPartyLocationRequirement.Region)]
+    [InlineData(DadPartyLocationRequirement.World)]
+    public void FrozenLocationRequirementSurvivesCloneAndWakeSerialization(DadPartyLocationRequirement requirement)
+    {
+        var coordinator = Participant("coordinator", "account-coordinator", "Lead@Home", 111, "slot1",
+            Location(20, "TargetDC", 3, "TargetWorld", 2, "North America", Now));
+        Assert.True(DadCoordinatorTravelRules.TryFreezeTarget("run", coordinator, Now,
+            out var target, out var blocker, requirement), blocker);
+        Assert.Equal(requirement, target.LocationRequirement);
+        var clone = target.Clone();
+        Assert.NotSame(target, clone);
+        Assert.Equal(requirement, clone.LocationRequirement);
+        var wake = new DadWakeRequestDto { RunId = "run", CoordinatorTravelTarget = clone };
+        var restored = DadIpcJson.Deserialize<DadWakeRequestDto>(DadIpcJson.Serialize(wake));
+        Assert.NotNull(restored);
+        Assert.Equal(requirement, restored!.CoordinatorTravelTarget!.LocationRequirement);
+        Assert.Equal(111UL, restored.CoordinatorTravelTarget.CoordinatorContentId);
+        Assert.Equal("coordinator", restored.CoordinatorTravelTarget.CoordinatorWorkerSessionId.Value);
+        Assert.Equal(3u, restored.CoordinatorTravelTarget.WorldId);
+        Assert.Equal(Now, restored.CoordinatorTravelTarget.CapturedAtUtc);
+        Assert.Equal(DadPartyLocationRequirement.DataCenter, new DadCoordinatorTravelTarget().LocationRequirement);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(99)]
+    public void UnknownLocationRequirementsCannotBecomeTravelOrInvitationAuthority(int value)
+    {
+        var context = Context(10, 20, 2, 2);
+        context.Assignment.CoordinatorTravelTarget!.LocationRequirement = (DadPartyLocationRequirement)value;
+        Assert.False(context.Assignment.CoordinatorTravelTarget.IsComplete);
+        Assert.Equal(DadClientTravelAction.Reject, new DadClientTravelGate().Evaluate(context, Now).Action);
+        Assert.False(DadIpcJson.TryDeserialize<DadWakeRequestDto>(DadIpcJson.Serialize(context.Assignment),
+            out var rejectedWireAssignment, out var wireBlocker));
+        Assert.Null(rejectedWireAssignment);
+        Assert.Contains("location requirement", wireBlocker, StringComparison.OrdinalIgnoreCase);
+        var coordinator = Participant("coordinator", "account-coordinator", "Lead@Home", 111, "slot1",
+            Location(20, "TargetDC", 3, "TargetWorld", 2, "North America", Now));
+        Assert.False(DadCoordinatorTravelRules.TryFreezeTarget("run", coordinator, Now,
+            out _, out var blocker, (DadPartyLocationRequirement)value));
+        Assert.NotEmpty(blocker);
+    }
+
+    [Fact]
+    public void FreshSameRegionDutyReadinessAcrossDataCentersDoesNotRequestPhysicalTravel()
+    {
+        var context = Context(10, 20, 2, 2);
+        var target = context.Assignment.CoordinatorTravelTarget!;
+        target.LocationRequirement = DadPartyLocationRequirement.Region;
+        context.Safety = new DadClientTravelSafetyEvidence();
+        var gate = new DadClientTravelGate();
+        Assert.True(DadCoordinatorTravelRules.MatchesTarget(context.Participant.CurrentLocation, target));
+        var decision = gate.Evaluate(context, Now);
+        Assert.Equal(DadClientTravelAction.Ready, decision.Action);
+        Assert.Equal(0, gate.InvocationCount);
+        Assert.True(string.IsNullOrEmpty(decision.DestinationWorldName));
+        Assert.Equal(10u, context.Participant.CurrentLocation!.DataCenterId);
+        Assert.Equal(20u, target.DataCenterId);
+        Assert.Equal(4u, target.WorldId);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("stale")]
+    [InlineData("future")]
+    [InlineData("incomplete")]
+    public void RegionalDutyReadinessStillRequiresFreshCompleteLocation(string problem)
+    {
+        var context = Context(10, 20, 2, 2);
+        context.Assignment.CoordinatorTravelTarget!.LocationRequirement = DadPartyLocationRequirement.Region;
+        switch (problem)
+        {
+            case "missing": context.Participant.CurrentLocation = null; break;
+            case "stale": context.Participant.CurrentLocation!.ObservedAtUtc = Now.AddSeconds(-16); break;
+            case "future": context.Participant.CurrentLocation!.ObservedAtUtc = Now.AddSeconds(3); break;
+            case "incomplete": context.Participant.CurrentLocation!.WorldId = 0; break;
+        }
+        var gate = new DadClientTravelGate();
+        Assert.Equal(DadClientTravelAction.Wait, gate.Evaluate(context, Now).Action);
+        Assert.Equal(0, gate.InvocationCount);
+    }
+
+    [Theory]
+    [InlineData("account")]
+    [InlineData("character")]
+    [InlineData("content")]
+    [InlineData("run")]
+    [InlineData("slot")]
+    [InlineData("worker")]
+    public void RegionalDutyReadinessCannotReuseForeignAssignmentIdentity(string identity)
+    {
+        var context = Context(10, 20, 2, 2);
+        context.Assignment.CoordinatorTravelTarget!.LocationRequirement = DadPartyLocationRequirement.Region;
+        var gate = new DadClientTravelGate();
+        Assert.Equal(DadClientTravelAction.Ready, gate.Evaluate(context, Now).Action);
+        switch (identity)
+        {
+            case "account": context.Participant.ManagedAccountKey = new("foreign-account"); break;
+            case "character": context.Participant.ActiveCharacterKey = new("Foreign@Home"); break;
+            case "content": context.Participant.Character.ContentId++; break;
+            case "run": context.Participant.RunId = "foreign-run"; break;
+            case "slot": context.Participant.AssignedSlotId = "slot3"; break;
+            case "worker": context.Participant.WorkerSessionId = new("foreign-worker"); break;
+        }
+        Assert.NotEqual(DadClientTravelAction.Ready, gate.Evaluate(context, Now).Action);
+        Assert.Equal(0, gate.InvocationCount);
+    }
+
+    [Fact]
+    public void ChangingTheFrozenLocationRequirementPermanentlyRejectsThatTravelAttempt()
+    {
+        var context = Context(10, 20, 2, 2);
+        var target = context.Assignment.CoordinatorTravelTarget!;
+        target.LocationRequirement = DadPartyLocationRequirement.Region;
+        var gate = new DadClientTravelGate();
+        Assert.Equal(DadClientTravelAction.Ready, gate.Evaluate(context, Now).Action);
+        target.LocationRequirement = DadPartyLocationRequirement.DataCenter;
+        Assert.Equal(DadClientTravelAction.Reject, gate.Evaluate(context, Now).Action);
+        target.LocationRequirement = DadPartyLocationRequirement.Region;
+        Assert.Equal(DadClientTravelAction.Reject, gate.Evaluate(context, Now).Action);
+        Assert.Equal(0, gate.InvocationCount);
+    }
+
+    [Fact]
+    public void AnotherRegionDoesNotSatisfyRegionalDutyReadiness()
+    {
+        var context = Context(10, 20, 2, 2);
+        context.Assignment.CoordinatorTravelTarget!.LocationRequirement = DadPartyLocationRequirement.Region;
+        context.Participant.CurrentLocation!.RegionId = 3;
+        context.Participant.CurrentLocation.RegionName = "Europe";
+        Assert.False(DadCoordinatorTravelRules.MatchesTarget(
+            context.Participant.CurrentLocation, context.Assignment.CoordinatorTravelTarget));
+        var decision = new DadClientTravelGate().Evaluate(context, Now);
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, decision.Action);
+        Assert.Equal("TargetWorld", decision.DestinationWorldName);
+    }
+
+    [Fact]
+    public void PhysicalWorldRequirementTravelsEvenWithinTheSameDataCenter()
+    {
+        var context = Context(20, 20, 2, 2);
+        context.Assignment.CoordinatorTravelTarget!.LocationRequirement = DadPartyLocationRequirement.World;
+        Assert.False(DadCoordinatorTravelRules.MatchesTarget(
+            context.Participant.CurrentLocation, context.Assignment.CoordinatorTravelTarget));
+        var decision = new DadClientTravelGate().Evaluate(context, Now);
+        Assert.Equal(DadClientTravelAction.InvokeLifestream, decision.Action);
+        Assert.Equal("TargetWorld", decision.DestinationWorldName);
+    }
+
+    [Theory]
+    [InlineData(39, DadClientTravelAction.InvokeLifestream)]
+    [InlineData(40, DadClientTravelAction.Reject)]
+    public void RegionalDutyPolicyPreservesPhysicalOceTravelAndExactAccountCapacity(
+        int oceCharacters, DadClientTravelAction expected)
+    {
+        var context = Context(10, 40, 4, 2);
+        context.Assignment.CoordinatorTravelTarget!.LocationRequirement = DadPartyLocationRequirement.Region;
+        context.OceCapacityProof = CompleteProof("account-a", oceCharacters);
+        var decision = new DadClientTravelGate().Evaluate(context, Now);
+        Assert.Equal(expected, decision.Action);
+        if (expected == DadClientTravelAction.InvokeLifestream)
+            Assert.Equal("TargetWorld", decision.DestinationWorldName);
+        else
+            Assert.Contains("cap 40", decision.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MixedManifestRegionalReadinessUsesOnlyItsExactLanLocationProof()
+    {
+        var coordinator = Participant("coordinator", "account-coordinator", "Lead@Home", 111, "slot1",
+            Location(20, "TargetDC", 3, "TargetWorld", 2, "North America", Now));
+        var requirement = DadCoordinatorTravelRules.ResolveLocationRequirement(LocationPlan(DadModuleId.Duty));
+        Assert.True(DadCoordinatorTravelRules.TryFreezeTarget("run", coordinator, Now,
+            out var target, out var blocker, requirement), blocker);
+        var client = Participant("client", "account-a", "Client@Home", 222, "slot2",
+            Location(10, "OtherDC", 7, "OtherWorld", 2, "North America", Now));
+        var island = Participant("island-worker", "", "", 0, "slot3", null);
+        island.RegisteredIslandId = "registered-island";
+        var manifest = new DadRunSlotManifest
+        {
+            Slots =
+            [
+                new() { SlotId = "slot1", WorkerSessionId = coordinator.WorkerSessionId, RouteKind = DadRunSlotRouteKind.LanWorker },
+                new() { SlotId = "slot2", WorkerSessionId = client.WorkerSessionId, RouteKind = DadRunSlotRouteKind.LanWorker },
+                new() { SlotId = "slot3", IslandId = "registered-island", RouteKind = DadRunSlotRouteKind.RegisteredIsland },
+            ],
+        };
+        var participants = new[] { coordinator, client, island };
+        var lan = DadCoordinatorTravelRules.SelectLanParticipants(manifest, participants);
+        Assert.Equal(new[] { coordinator, client }, lan);
+        Assert.Null(island.CurrentLocation);
+        Assert.True(DadCoordinatorTravelRules.ValidateParticipants(target, lan, Now).Ready);
+        client.CurrentLocation!.ObservedAtUtc = Now.AddSeconds(-16);
+        Assert.False(DadCoordinatorTravelRules.ValidateParticipants(target, lan, Now).Ready);
+        client.CurrentLocation.ObservedAtUtc = Now;
+        client.CurrentLocation.RegionId = 3;
+        client.CurrentLocation.RegionName = "Europe";
+        Assert.False(DadCoordinatorTravelRules.ValidateParticipants(target, lan, Now).Ready);
+        client.CurrentLocation.RegionId = 2;
+        client.CurrentLocation.RegionName = "North America";
+        client.WorkerSessionId = new("replacement-client");
+        Assert.Single(DadCoordinatorTravelRules.SelectLanParticipants(manifest, participants));
+    }
+
+    [Theory]
+    [InlineData("world")]
+    [InlineData("account")]
+    [InlineData("character")]
+    [InlineData("content")]
+    [InlineData("missing-route")]
+    [InlineData("duplicate-route")]
+    public void RegionalDutyProofRetainsExactFrozenCoordinatorAuthority(string conflict)
+    {
+        var coordinator = Participant("coordinator", "account-coordinator", "Lead@Home", 111, "slot1",
+            Location(20, "TargetDC", 3, "TargetWorld", 2, "North America", Now));
+        Assert.True(DadCoordinatorTravelRules.TryFreezeTarget("run", coordinator, Now,
+            out var target, out var blocker, DadPartyLocationRequirement.Region), blocker);
+        var client = Participant("client", "account-a", "Client@Home", 222, "slot2",
+            Location(10, "OtherDC", 7, "OtherWorld", 2, "North America", Now));
+        var participants = new List<DadParticipantSnapshot> { coordinator, client };
+        Assert.True(DadCoordinatorTravelRules.ValidateParticipants(target, participants, Now).Ready);
+        switch (conflict)
+        {
+            case "world": coordinator.CurrentLocation!.WorldId++; break;
+            case "account": coordinator.ManagedAccountKey = new("foreign-account"); break;
+            case "character": coordinator.ActiveCharacterKey = new("Foreign@Home"); break;
+            case "content": coordinator.Character.ContentId++; break;
+            case "missing-route": participants.Remove(coordinator); break;
+            case "duplicate-route": participants.Add(coordinator.Clone()); break;
+        }
+        var rejected = DadCoordinatorTravelRules.ValidateParticipants(target, participants, Now);
+        Assert.False(rejected.Ready);
+        Assert.NotEmpty(rejected.Summary);
+    }
+
     [Fact]
     public void SameDataCenterIsNoOpEvenWhenMutationGatesAreUnavailable()
     {
@@ -501,6 +797,18 @@ public sealed class DadCoordinatorTravelRulesTests
 
         Assert.False(blocked.Ready);
         Assert.Contains("slot2", blocked.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static DadRunPlan LocationPlan(params DadModuleId[] modules)
+    {
+        var intent = new DadOrchestrationIntent();
+        return new DadRunPlan
+        {
+            Request = new DadRunRequest { Orchestration = intent },
+            Orchestration = intent,
+            CompositeModuleId = modules.Length == 1 ? modules[0] : DadModuleId.Mixed,
+            Modules = modules.Select(module => new DadPlannedModuleExecution { ModuleId = module }).ToList(),
+        };
     }
 
     private static DadClientTravelContext Context(uint currentDcId, uint targetDcId, uint targetRegionId, uint homeRegionId)
