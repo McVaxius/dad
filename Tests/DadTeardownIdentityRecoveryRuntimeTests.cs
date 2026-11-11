@@ -162,11 +162,169 @@ public sealed class DadTeardownIdentityRecoveryRuntimeTests
     {
         using var f = new Fixture(localLeader);
         var coordinator = CoordinatorFor(f);
+        var localSlot = localLeader ? "Slot1" : "Slot2";
+        var missingSlot = localLeader ? "Slot2" : "Slot1";
+        var rows = (List<M.DadParticipantSnapshot>)Get(coordinator, "activeParticipants")!;
+        rows.RemoveAll(row => row.AssignedSlotId == missingSlot);
+        rows.Single().PostArReady = false;
+        // Enter through the actual builder after a route has disappeared.
+        // Discard CoordinatorFor's pre-populated teardown instructions first.
+        Set(coordinator, "activePartyTeardownInstructions", new List<M.DadAssemblyInstructionDto>());
         f.HideIdentity(); // Accepted frozen roster remains; live coordinator is at login.
         Invoke(coordinator, "BeginPartyTeardown", "Duty already completed.");
         Assert.Equal(M.DadRunPhase.TearingDownParty, coordinator.CurrentResult.Phase);
-        Assert.Equal(2, ((List<M.DadAssemblyInstructionDto>)Get(coordinator, "activePartyTeardownInstructions")!).Count);
+        var instructions = (List<M.DadAssemblyInstructionDto>)Get(coordinator, "activePartyTeardownInstructions")!;
+        Assert.Equal(2, instructions.Count);
+        Assert.Equal("Leader@World", instructions[0].RequiredCharacterKey.Value);
+        Assert.Equal("Follower@World", instructions[1].RequiredCharacterKey.Value);
+        Assert.All(instructions, instruction =>
+        {
+            Assert.Equal(1UL, instruction.FrozenInviter.ContentId);
+            Assert.Equal(2UL, Assert.Single(instruction.InviteTargets).ContentId);
+            Assert.Equal(f.Presence.WorkerSessionId, instruction.AuthorityWorkerSessionId);
+        });
+        coordinator.Update();
+        f.Clock.Now += TimeSpan.FromHours(2);
+        coordinator.Update();
         Assert.False(coordinator.CurrentResult.IsTerminal);
+        Assert.Equal(M.DadRunPhase.TearingDownParty, coordinator.CurrentResult.Phase);
+        Assert.Empty(coordinator.CurrentResult.FailureReason);
+        Assert.Empty(f.Actions);
+        Assert.Empty((Dictionary<string, M.DadRunStepResultDto>)Get(coordinator, "partyTeardownTerminalResults")!);
+
+        f.RestoreIdentity();
+        for (var tick = 0; tick < 5; tick++)
+        {
+            coordinator.Update();
+            f.Clock.Now += TimeSpan.FromSeconds(1);
+        }
+        var terminal = (Dictionary<string, M.DadRunStepResultDto>)Get(coordinator, "partyTeardownTerminalResults")!;
+        Assert.True(terminal[localSlot].Success);
+        Assert.False(terminal.ContainsKey(missingSlot));
+        Assert.Equal(M.DadRunPhase.TearingDownParty, coordinator.CurrentResult.Phase);
+        Assert.False((bool)Get(coordinator, "successfulPartyBoundarySettled")!);
+    }
+
+    [Theory]
+    [InlineData("authority")]
+    [InlineData("slot")]
+    [InlineData("account")]
+    [InlineData("character")]
+    [InlineData("content")]
+    [InlineData("stored-content")]
+    [InlineData("foreign-party")]
+    public void TeardownBuiltWhileRouteIsMissingStillRejectsFreshContradictions(string contradiction)
+    {
+        using var f = new Fixture(true);
+        var coordinator = CoordinatorFor(f);
+        ((List<M.DadParticipantSnapshot>)Get(coordinator, "activeParticipants")!)
+            .RemoveAll(row => row.AssignedSlotId == "Slot2");
+        Set(coordinator, "activePartyTeardownInstructions", new List<M.DadAssemblyInstructionDto>());
+        Invoke(coordinator, "BeginPartyTeardown", "Duty already completed.");
+        var instructions = (List<M.DadAssemblyInstructionDto>)Get(coordinator, "activePartyTeardownInstructions")!;
+        Assert.Equal(2, instructions.Count);
+        var leader = instructions.Single(instruction => instruction.SlotId == "Slot1");
+        switch (contradiction)
+        {
+            case "authority": leader.AuthorityWorkerSessionId = new("foreign"); break;
+            case "slot": Set(f.Presence, "assignedSlotId", "Slot3"); break;
+            case "account": f.Presence.CurrentParticipant.ManagedAccountKey = new("foreign"); break;
+            case "character": f.Presence.CurrentParticipant.ActiveCharacterKey = new("Foreign@World"); break;
+            case "content": f.Presence.CurrentParticipant.Character.ContentId = 99; break;
+            case "stored-content": Set(f.Presence, "requiredContentId", 99UL); break;
+            case "foreign-party": f.SetNativeForeignMember(); break;
+        }
+        coordinator.Update();
+        var terminal = (Dictionary<string, M.DadRunStepResultDto>)Get(coordinator, "partyTeardownTerminalResults")!;
+        Assert.False(terminal["Slot1"].Success);
+        Assert.False(terminal["Slot1"].Deferred);
+        Assert.NotEmpty(terminal["Slot1"].FailureReason);
+        Assert.False(terminal.ContainsKey("Slot2"));
+        Assert.Empty(f.Actions);
+    }
+
+    [Fact]
+    public void CompleteFollowerIdentityRejectsAChangedInviteTargetSlotBeforeLeaving()
+    {
+        using var f = new Fixture(false);
+        f.JoinNativeParty();
+        var coordinator = CoordinatorFor(f);
+        ((List<M.DadParticipantSnapshot>)Get(coordinator, "activeParticipants")!)
+            .RemoveAll(row => row.AssignedSlotId == "Slot1");
+        Set(coordinator, "activePartyTeardownInstructions", new List<M.DadAssemblyInstructionDto>());
+        Invoke(coordinator, "BeginPartyTeardown", "Duty already completed.");
+        var instructions = (List<M.DadAssemblyInstructionDto>)Get(coordinator, "activePartyTeardownInstructions")!;
+        var instruction = instructions.Single(candidate => candidate.SlotId == "Slot2");
+        var target = Assert.Single(instruction.InviteTargets);
+        Assert.Equal("Slot2", target.SlotId);
+        Assert.Equal("Slot2", f.Presence.CurrentParticipant.AssignedSlotId);
+        Assert.Equal("Follower@World", f.Presence.CurrentParticipant.ActiveCharacterKey.Value);
+        Assert.Equal(2UL, f.Presence.CurrentParticipant.Character.ContentId);
+        Assert.Null(Get(f.Presence, "partyTeardownIdentityWaitStartedUtc"));
+        typeof(M.DadNativePartyInviteTarget).GetProperty(nameof(M.DadNativePartyInviteTarget.SlotId))!
+            .SetValue(target, "Slot3");
+
+        var failed = f.Presence.HandleAssemblyInstruction(instruction);
+        Assert.False(failed.Success);
+        Assert.False(failed.Deferred);
+        Assert.Contains("frozen Slot1 invite target", failed.FailureReason);
+        Assert.Empty(f.Actions);
+    }
+
+    [Theory]
+    [InlineData("run")]
+    [InlineData("account")]
+    [InlineData("content")]
+    [InlineData("worker")]
+    [InlineData("duplicate-worker")]
+    [InlineData("leader")]
+    [InlineData("inviter")]
+    public void RouteIndependentTeardownRequiresAnExactAcceptedFrozenManifest(string contradiction)
+    {
+        using var f = new Fixture(true);
+        var coordinator = CoordinatorFor(f);
+        var manifest = Get(coordinator, "activeSlotManifest")!;
+        var slots = (IList)manifest.GetType().GetProperty("Slots")!.GetValue(manifest)!;
+        var leader = slots[0]!;
+        void Property(object target, string name, object value) => target.GetType().GetProperty(name)!.SetValue(target, value);
+        switch (contradiction)
+        {
+            case "run": Property(manifest, "RequestId", "foreign-run"); break;
+            case "account": Property(leader, "AccountKey", new M.DadAccountKey("")); break;
+            case "content": Property(leader, "ContentId", 0UL); break;
+            case "worker": Property(leader, "WorkerSessionId", new M.DadWorkerSessionId("")); break;
+            case "duplicate-worker": Property(slots[1]!, "WorkerSessionId", new M.DadWorkerSessionId("worker-1")); break;
+            case "leader": Property(leader, "IsLeader", false); break;
+            case "inviter": Property(leader, "IsInviter", false); break;
+        }
+        var builder = new DadRuntime::dad.Services.DadPartyAssemblyService();
+        var method = builder.GetType().GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+            .Single(candidate => candidate.Name == "BuildTeardownInstructions" && candidate.GetParameters().Length == 6);
+        object?[] arguments = [Get(coordinator, "activePlan"), Array.Empty<M.DadParticipantSnapshot>(),
+            manifest, f.Presence.WorkerSessionId, null, null];
+        var instructions = (List<M.DadAssemblyInstructionDto>)method.Invoke(builder, arguments)!;
+        Assert.Empty(instructions);
+        Assert.NotEmpty((string)arguments[^1]!);
+        Assert.Empty(f.Actions);
+    }
+
+    [Fact]
+    public void FrozenCleanupIdentityCannotAuthorizePartyFormation()
+    {
+        using var f = new Fixture(true);
+        var coordinator = CoordinatorFor(f);
+        ((List<M.DadParticipantSnapshot>)Get(coordinator, "activeParticipants")!).Clear();
+        Set(coordinator, "activePartyTeardownInstructions", new List<M.DadAssemblyInstructionDto>());
+        Invoke(coordinator, "BeginPartyTeardown", "Duty already completed.");
+        var instructions = (List<M.DadAssemblyInstructionDto>)Get(coordinator, "activePartyTeardownInstructions")!;
+        Assert.Equal(2, instructions.Count);
+        var instruction = instructions[0].Clone();
+        Assert.Equal((ushort)0, instruction.FrozenInviter.WorldId);
+        instruction.InstructionKind = M.DadAssemblyInstructionKind.FormParty;
+        var failed = f.Presence.HandleAssemblyInstruction(instruction);
+        Assert.False(failed.Success);
+        Assert.False(failed.Deferred);
+        Assert.Contains("World ID", failed.FailureReason);
         Assert.Empty(f.Actions);
     }
 
