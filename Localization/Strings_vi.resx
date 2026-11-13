@@ -8990,4 +8990,6 @@
   <data name="Old Sharlayan" xml:space="preserve"><value>Old Sharlayan</value></data>
   <data name="Tuliyollal" xml:space="preserve"><value>Tuliyollal</value></data>
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>ADS quản lý việc sửa đồ và lộ trình trở về quán trọ. DAD cũng chờ tiện ích ADS hoàn tất trước khi đăng ký hàng chờ, trong giới hạn chuẩn bị 180 giây hiện có. Mọi máy khách thực thi cần dùng phiên bản ADS hỗ trợ lộ trình này.</value></data>
+  <data name="Highlight contrast" xml:space="preserve"><value>Độ tương phản tô sáng</value></data>
+  <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>Giúp phân biệt rõ hơn các điều khiển và trạng thái được chọn.</value></data>
 </root>

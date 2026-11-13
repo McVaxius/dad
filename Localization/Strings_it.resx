@@ -9028,4 +9028,6 @@ Tempo di recupero di</value>
   <data name="Old Sharlayan" xml:space="preserve"><value>Vecchia Sharlayan</value></data>
   <data name="Tuliyollal" xml:space="preserve"><value>Tuliyollal</value></data>
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>ADS gestisce la riparazione e il ritorno in locanda. DAD attende anche che l'utilità ADS termini prima di avviare la ricerca del gruppo, entro il limite di preparazione esistente di 180 secondi. Tutti i client esecutori devono avere una versione di ADS che supporti questo percorso.</value></data>
+  <data name="Highlight contrast" xml:space="preserve"><value>Contrasto delle evidenziazioni</value></data>
+  <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>Rende più distinti i controlli e gli stati di selezione.</value></data>
 </root>

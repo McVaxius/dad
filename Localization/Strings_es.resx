@@ -9035,4 +9035,6 @@ Bloqueador(es) de lista</value>
   <data name="Old Sharlayan" xml:space="preserve"><value>Vieja Sharlayan</value></data>
   <data name="Tuliyollal" xml:space="preserve"><value>Tuliyollal</value></data>
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>ADS gestiona la reparación y el regreso a la posada. DAD también espera a que termine la utilidad de ADS antes de iniciar la búsqueda de grupo, dentro del límite de preparación existente de 180 segundos. Todos los clientes ejecutores necesitan una versión de ADS compatible con esta ruta.</value></data>
+  <data name="Highlight contrast" xml:space="preserve"><value>Contraste de resaltado</value></data>
+  <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>Distingue mejor los controles y los estados de selección.</value></data>
 </root>

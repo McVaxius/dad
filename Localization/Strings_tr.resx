@@ -8990,4 +8990,6 @@
   <data name="Old Sharlayan" xml:space="preserve"><value>Eski Sharlayan</value></data>
   <data name="Tuliyollal" xml:space="preserve"><value>Tuliyollal</value></data>
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>Onarımı ve hana dönüş yolunu ADS yönetir. DAD, kuyruğa girmeden önce ADS yardımcı işleminin bitmesini de bekler; mevcut 180 saniyelik hazırlık sınırı geçerlidir. Tüm yürütücü istemcilerde bu yolu destekleyen bir ADS sürümü gerekir.</value></data>
+  <data name="Highlight contrast" xml:space="preserve"><value>Vurgu karşıtlığı</value></data>
+  <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>Denetimleri ve seçim durumlarını daha belirgin hâle getirir.</value></data>
 </root>

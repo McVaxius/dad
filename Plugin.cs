@@ -695,7 +695,21 @@ public sealed partial class Plugin : IDalamudPlugin
 
     private bool DrawColourEditor(string id)
     {
-        var changed = MaterialAppearanceSelector.DrawColors(id, ref colorDraft, ref accentDraft,
+        var contrast = Configuration.UiHighlightContrastPercent;
+        bool contrastChanged;
+        ImGui.PushID(id);
+        try
+        {
+            if (MaterialSettings.Field("##UiHighlightContrastPercent", UiText.T("Highlight contrast"), 180 * MaterialTheme.Metrics.Scale,
+                native => { using var field = MaterialSkin.NativeFieldStyle(); return ImGui.SliderInt(native, ref contrast, 0, 100, "%d%%", ImGuiSliderFlags.AlwaysClamp); }))
+                Configuration.UiHighlightContrastPercent = contrast;
+            contrastChanged = ImGui.IsItemDeactivatedAfterEdit();
+            MaterialText.Text(UiText.T("Makes controls and selection states more distinct."), Math.Max(1, ImGui.GetContentRegionAvail().X));
+            ImGui.Spacing();
+        }
+        finally { ImGui.PopID(); }
+        var changed = contrastChanged;
+        changed |= MaterialAppearanceSelector.DrawColors(id, ref colorDraft, ref accentDraft,
             new(UiText.T("Color"), UiText.T("Language"), UiText.T("Teal"), UiText.T("Blue"), UiText.T("Pink"), UiText.T("Custom RGB")),
             new(UiText.T("Auto"), UiText.T("Picker"), UiText.T("Default"), UiText.T("Background, controls and text follow your theme."), UiText.T("Theme colour"), UiText.T("Choose each colour independently."), UiText.T("Background"), UiText.T("Controls"), UiText.T("Text"), UiText.T("Aa  Preview text"), UiText.T("Control"), UiText.T("Switch to Picker to set each colour yourself."), UiText.T("Switch back to Auto to use the automatic theme."))
             {
@@ -952,6 +966,7 @@ public sealed partial class Plugin : IDalamudPlugin
             var rgb = DadPresentation.Rgb(appliedAccent);
             accentDraft = new(rgb.X, rgb.Y, rgb.Z);
         }
+        uiTheme.HighlightContrastPercent = Configuration.UiHighlightContrastPercent;
         uiTheme.Density = Configuration.UiCompact ? MaterialDensity.Compact : MaterialDensity.Standard;
     }
 

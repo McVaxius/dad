@@ -8998,4 +8998,6 @@
   <data name="Old Sharlayan" xml:space="preserve"><value>旧萨雷安</value></data>
   <data name="Tuliyollal" xml:space="preserve"><value>图莱尤拉</value></data>
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>修理和返回旅馆的路线由 ADS 管理。DAD 还会在排队前等待 ADS 工具完成，仍受现有的 180 秒准备时限约束。所有执行客户端都需要支持此路线的 ADS 版本。</value></data>
+  <data name="Highlight contrast" xml:space="preserve"><value>高亮对比度</value></data>
+  <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>让控件与选中状态更容易区分。</value></data>
 </root>

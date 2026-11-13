@@ -8991,4 +8991,6 @@
   <data name="Old Sharlayan" xml:space="preserve"><value>オールド・シャーレアン</value></data>
   <data name="Tuliyollal" xml:space="preserve"><value>トライヨラ</value></data>
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>修理と宿屋へ戻る経路はADSが管理します。DADは申請前にADSユーティリティの完了も待ちます。準備の制限時間は従来どおり180秒です。すべての実行クライアントに、この経路に対応したADSが必要です。</value></data>
+  <data name="Highlight contrast" xml:space="preserve"><value>ハイライトのコントラスト</value></data>
+  <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>コントロールと選択状態を見分けやすくします。</value></data>
 </root>

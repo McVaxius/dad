@@ -1,3 +1,8 @@
+2026-11-12 - 2.1.0.8 - Highlight contrast
+
+- Add Highlight contrast (0–100%) to Appearance and Colour, defaulting to 50% when absent. Preserve saved zero and custom values.
+- Use AethertekUI 0.3.2 for clearer controls and selection states while retaining palettes, native styling, opacity, language and existing plugin behavior.
+
 2026-11-10 - 2.1.0.7 - Regional duty-party invitations
 
 - Updated Duty Parties: Invite LAN participants across data centers in the same region without requiring data-center travel.

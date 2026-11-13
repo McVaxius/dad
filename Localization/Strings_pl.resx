@@ -8990,4 +8990,6 @@
   <data name="Old Sharlayan" xml:space="preserve"><value>Stare Sharlayan</value></data>
   <data name="Tuliyollal" xml:space="preserve"><value>Tuliyollal</value></data>
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>ADS obsługuje naprawę i drogę powrotną do gospody. DAD czeka też na zakończenie narzędzia ADS przed dołączeniem do kolejki, w ramach dotychczasowego limitu przygotowań wynoszącego 180 sekund. Wszystkie klienty wykonujące zadanie potrzebują wersji ADS obsługującej tę trasę.</value></data>
+  <data name="Highlight contrast" xml:space="preserve"><value>Kontrast wyróżnienia</value></data>
+  <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>Wyraźniej rozróżnia elementy sterujące i stany zaznaczenia.</value></data>
 </root>

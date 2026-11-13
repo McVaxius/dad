@@ -8990,4 +8990,6 @@
   <data name="Old Sharlayan" xml:space="preserve"><value>ओल्ड शार्लायन</value></data>
   <data name="Tuliyollal" xml:space="preserve"><value>तुलियोलाल</value></data>
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>मरम्मत और सराय लौटने का रास्ता ADS संभालता है। DAD कतार में लगने से पहले ADS उपयोगिता के पूरा होने की भी प्रतीक्षा करता है। तैयारी की मौजूदा 180 सेकंड की समय सीमा लागू रहती है। सभी कार्य निष्पादित करने वाले क्लाइंट पर इस रास्ते का समर्थन करने वाला ADS संस्करण होना चाहिए।</value></data>
+  <data name="Highlight contrast" xml:space="preserve"><value>हाइलाइट कंट्रास्ट</value></data>
+  <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>नियंत्रणों और चयन स्थितियों को अधिक स्पष्ट बनाता है।</value></data>
 </root>

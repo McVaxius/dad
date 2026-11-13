@@ -8993,4 +8993,6 @@
   <data name="Old Sharlayan" xml:space="preserve"><value>올드 샬레이안</value></data>
   <data name="Tuliyollal" xml:space="preserve"><value>툴라이욜라</value></data>
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>수리와 여관 복귀 경로는 ADS가 관리합니다. DAD는 참가 신청 전에 ADS 유틸리티가 끝날 때까지 기다리며, 기존 준비 제한 시간인 180초가 그대로 적용됩니다. 모든 실행 클라이언트에는 이 경로를 지원하는 ADS 버전이 필요합니다.</value></data>
+  <data name="Highlight contrast" xml:space="preserve"><value>강조 대비</value></data>
+  <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>컨트롤과 선택 상태를 더 뚜렷하게 표시합니다.</value></data>
 </root>
