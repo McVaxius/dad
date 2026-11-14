@@ -1,3 +1,9 @@
+2026-11-14 - 2.1.0.9 - Class gearset promotion
+
+- When a requested job has no saved gearset, equip a valid gearset for its base class, equip the owned soul crystal, and update that gearset after confirming the requested job.
+- Read class/job relationships and soul crystals from game data, including both Arcanist promotions. Existing job gearsets retain priority.
+- Preserve exact character and safe equipment checks between steps. Missing stones, rejected equips, cancellation and unverified job changes never save an unconfirmed promotion.
+
 2026-11-12 - 2.1.0.8 - Highlight contrast
 
 - Add Highlight contrast (0–100%) to Appearance and Colour, defaulting to 50% when absent. Preserve saved zero and custom values.

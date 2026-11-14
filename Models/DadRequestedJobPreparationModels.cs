@@ -36,6 +36,8 @@ public sealed class DadRequestedJobPreparationProof
     public DadRequestedJobPreparationStatus Status { get; set; }
     public int AttemptCount { get; set; }
     public int? SelectedGearsetId { get; set; }
+    public uint? PromotionBaseClassJobId { get; set; }
+    public bool SoulCrystalEquipSubmitted { get; set; }
     public DateTime? StartedAtUtc { get; set; }
     public DateTime? LastAttemptAtUtc { get; set; }
     public DateTime? EquipAcceptedAtUtc { get; set; }
@@ -50,6 +52,8 @@ public sealed class DadRequestedJobPreparationProof
             Status = Status,
             AttemptCount = AttemptCount,
             SelectedGearsetId = SelectedGearsetId,
+            PromotionBaseClassJobId = PromotionBaseClassJobId,
+            SoulCrystalEquipSubmitted = SoulCrystalEquipSubmitted,
             StartedAtUtc = StartedAtUtc,
             LastAttemptAtUtc = LastAttemptAtUtc,
             EquipAcceptedAtUtc = EquipAcceptedAtUtc,
@@ -131,6 +135,8 @@ public readonly record struct DadClassJobGearsetSnapshot(
     bool Exists,
     bool IsValid);
 
+public readonly record struct DadClassJobPromotionSnapshot(uint JobId, uint BaseClassJobId, uint SoulCrystalItemId);
+
 public static class DadClassJobGearsetSelectionRules
 {
     public static int? SelectFirstMatching(
@@ -156,14 +162,17 @@ public sealed class DadClassJobGearsetCatalogSnapshot
 {
     public bool Available { get; set; }
     public List<DadClassJobGearsetSnapshot> Gearsets { get; set; } = [];
+    public List<DadClassJobPromotionSnapshot> Promotions { get; set; } = [];
     public string FailureReason { get; set; } = string.Empty;
 
     public static DadClassJobGearsetCatalogSnapshot Success(
-        IEnumerable<DadClassJobGearsetSnapshot> gearsets)
+        IEnumerable<DadClassJobGearsetSnapshot> gearsets,
+        IEnumerable<DadClassJobPromotionSnapshot>? promotions = null)
         => new()
         {
             Available = true,
             Gearsets = gearsets.ToList(),
+            Promotions = promotions?.ToList() ?? [],
         };
 
     public static DadClassJobGearsetCatalogSnapshot Unavailable(string failureReason)

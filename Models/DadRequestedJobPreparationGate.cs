@@ -36,7 +36,9 @@ public sealed class DadRequestedJobPreparationGate
         DadRequestedJobPreparationKey expected,
         DadRequestedJobPreparationObservation observation,
         DateTime nowUtc,
-        Func<int, DadClassJobEquipAttemptResult>? tryEquip)
+        Func<int, DadClassJobEquipAttemptResult>? tryEquip,
+        Func<int, DadClassJobEquipAttemptResult>? tryEquipSoulCrystal = null,
+        Func<int, DadClassJobEquipAttemptResult>? tryUpdateGearset = null)
     {
         if (!expected.IsValid)
             return CancelInvalid(expected, nowUtc);
@@ -69,6 +71,9 @@ public sealed class DadRequestedJobPreparationGate
 
             return proof.Clone();
         }
+
+        if (proof.Status == DadRequestedJobPreparationStatus.AwaitingVerification && proof.PromotionBaseClassJobId.HasValue)
+            return AdvancePromotion(proof, observation, nowUtc, tryEquipSoulCrystal, tryUpdateGearset);
 
         if (observation.CurrentJobId == requiredJobId)
         {
@@ -123,6 +128,15 @@ public sealed class DadRequestedJobPreparationGate
         }
 
         var gearsetId = DadClassJobGearsetSelectionRules.SelectFirstMatching(catalog.Gearsets, requiredJobId);
+        proof.PromotionBaseClassJobId = null;
+        if (!gearsetId.HasValue)
+        {
+            var promotion = catalog.Promotions.FirstOrDefault(row => row.JobId == requiredJobId &&
+                row.BaseClassJobId != 0 && row.BaseClassJobId != requiredJobId && row.SoulCrystalItemId != 0);
+            gearsetId = DadClassJobGearsetSelectionRules.SelectFirstMatching(catalog.Gearsets, promotion.BaseClassJobId);
+            if (gearsetId.HasValue)
+                proof.PromotionBaseClassJobId = promotion.BaseClassJobId;
+        }
         if (!gearsetId.HasValue)
         {
             return SoftFail(
@@ -162,6 +176,66 @@ public sealed class DadRequestedJobPreparationGate
         proof.FailureReason = string.Empty;
         proof.Summary = $"Gearset {gearsetId.Value} was accepted; waiting to observe class/job {requiredJobId}.";
         return proof.Clone();
+    }
+
+    private static DadRequestedJobPreparationProof AdvancePromotion(
+        DadRequestedJobPreparationProof proof,
+        DadRequestedJobPreparationObservation observation,
+        DateTime nowUtc,
+        Func<int, DadClassJobEquipAttemptResult>? tryEquipSoulCrystal,
+        Func<int, DadClassJobEquipAttemptResult>? tryUpdateGearset)
+    {
+        var requiredJobId = proof.Key.RequiredJobId!.Value;
+        var gearsetId = proof.SelectedGearsetId!.Value;
+        if (!observation.IsSafeToEquip)
+        {
+            proof.UpdatedAtUtc = nowUtc;
+            proof.Summary = "Class/job promotion is waiting for safe equipment state.";
+            return proof.Clone();
+        }
+
+        // Saving is allowed only after a fresh observation proves the requested job.
+        if (observation.CurrentJobId == requiredJobId)
+        {
+            var updated = InvokePromotionAction(tryUpdateGearset, gearsetId, "Updating the promoted gearset");
+            if (!updated.Accepted)
+                return SoftFail(proof, nowUtc, updated.FailureReason);
+            proof.Status = DadRequestedJobPreparationStatus.Switched;
+            proof.UpdatedAtUtc = nowUtc;
+            proof.FailureReason = string.Empty;
+            proof.Summary = $"Equipped the soul crystal for class/job {requiredJobId} and updated gearset {gearsetId}.";
+            return proof.Clone();
+        }
+
+        if (!proof.SoulCrystalEquipSubmitted && observation.CurrentJobId == proof.PromotionBaseClassJobId)
+        {
+            // One submission only: an exception or uncertain result must not replay the inventory move.
+            proof.SoulCrystalEquipSubmitted = true;
+            var equipped = InvokePromotionAction(tryEquipSoulCrystal, gearsetId, "Equipping the requested soul crystal");
+            if (!equipped.Accepted)
+                return SoftFail(proof, nowUtc, equipped.FailureReason);
+            proof.EquipAcceptedAtUtc = nowUtc;
+            proof.UpdatedAtUtc = nowUtc;
+            proof.Summary = $"Soul crystal equip was accepted; waiting to observe class/job {requiredJobId}.";
+            return proof.Clone();
+        }
+
+        if (proof.EquipAcceptedAtUtc.HasValue && nowUtc - proof.EquipAcceptedAtUtc.Value >= VerificationTimeout)
+            return SoftFail(proof, nowUtc, $"Class/job promotion did not reach {(proof.SoulCrystalEquipSubmitted ? requiredJobId : proof.PromotionBaseClassJobId)} within five seconds; the gearset was not updated.");
+        return proof.Clone();
+    }
+
+    private static DadClassJobEquipAttemptResult InvokePromotionAction(
+        Func<int, DadClassJobEquipAttemptResult>? action, int gearsetId, string description)
+    {
+        try
+        {
+            return action?.Invoke(gearsetId) ?? DadClassJobEquipAttemptResult.Rejected($"{description}: the equipment gateway is unavailable.");
+        }
+        catch (Exception ex)
+        {
+            return DadClassJobEquipAttemptResult.Rejected($"{description} threw {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     public DadRequestedJobPreparationProof Cancel(

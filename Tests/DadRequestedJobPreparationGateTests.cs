@@ -7,6 +7,158 @@ public sealed class DadRequestedJobPreparationGateTests
 {
     private static readonly DateTime Start = new(2026, 7, 13, 12, 0, 0, DateTimeKind.Utc);
 
+    [Theory]
+    [InlineData(1u, 19u)]
+    [InlineData(2u, 20u)]
+    [InlineData(3u, 21u)]
+    [InlineData(4u, 22u)]
+    [InlineData(5u, 23u)]
+    [InlineData(6u, 24u)]
+    [InlineData(7u, 25u)]
+    [InlineData(26u, 27u)]
+    [InlineData(26u, 28u)]
+    [InlineData(29u, 30u)]
+    public void MissingJobGearsetPromotesItsBaseClassThenSavesOnlyAfterJobProof(uint baseClass, uint job)
+    {
+        var gate = new DadRequestedJobPreparationGate();
+        var key = Key(job);
+        var catalog = PromotionCatalog(baseClass, job);
+        var actions = new List<string>();
+        DadClassJobEquipAttemptResult Act(string action, int gearset)
+        {
+            Assert.Equal(7, gearset);
+            actions.Add(action);
+            return DadClassJobEquipAttemptResult.Success();
+        }
+        DadRequestedJobPreparationProof Tick(uint currentJob, int milliseconds)
+            => gate.Advance(key, Observation(key, currentJob, catalog: catalog), Start.AddMilliseconds(milliseconds),
+                id => Act("class gearset", id), id => Act("soul crystal", id), id => Act("save gearset", id));
+
+        var preparingClass = Tick(99, 0);
+        Assert.Equal(DadRequestedJobPreparationStatus.AwaitingVerification, preparingClass.Status);
+        Assert.Equal(baseClass, preparingClass.PromotionBaseClassJobId);
+        Assert.Equal(["class gearset"], actions);
+        Tick(99, 100);
+        Assert.Single(actions);
+
+        var preparingJob = Tick(baseClass, 200);
+        Assert.True(preparingJob.SoulCrystalEquipSubmitted);
+        Assert.Equal(["class gearset", "soul crystal"], actions);
+        Assert.False(DadRequestedJobPreparationProofRules.PermitsReadiness(preparingJob, key, baseClass));
+        Tick(baseClass, 300);
+        Assert.Equal(2, actions.Count);
+
+        var completed = Tick(job, 400);
+        Tick(job, 500);
+        Assert.Equal(["class gearset", "soul crystal", "save gearset"], actions);
+        Assert.Equal(DadRequestedJobPreparationStatus.Switched, completed.Status);
+        Assert.True(DadRequestedJobPreparationProofRules.PermitsReadiness(completed, key, job));
+    }
+
+    [Fact]
+    public void ExactJobGearsetTakesPriorityOverBaseClassPromotion()
+    {
+        var gate = new DadRequestedJobPreparationGate();
+        var key = Key();
+        var catalog = PromotionCatalog(3, 21);
+        catalog.Gearsets.Add(new(9, 21, true, true));
+        var proof = gate.Advance(key, Observation(key, catalog: catalog), Start, id =>
+        {
+            Assert.Equal(9, id);
+            return DadClassJobEquipAttemptResult.Success();
+        });
+        Assert.Null(proof.PromotionBaseClassJobId);
+        var switched = gate.Advance(key, Observation(key, 21), Start.AddSeconds(1), null,
+            _ => throw new Exception("No crystal mutation"), _ => throw new Exception("No gearset save"));
+        Assert.Equal(DadRequestedJobPreparationStatus.Switched, switched.Status);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PromotionRejectsWrongIdentityAndUnsafeStateBeforeEveryMutation(bool crystalSubmitted)
+    {
+        var gate = new DadRequestedJobPreparationGate();
+        var key = Key();
+        var catalog = PromotionCatalog(3, 21);
+        var calls = 0;
+        DadClassJobEquipAttemptResult Act(int _) { calls++; return DadClassJobEquipAttemptResult.Success(); }
+        gate.Advance(key, Observation(key, catalog: catalog), Start, Act, Act, Act);
+        if (crystalSubmitted)
+            gate.Advance(key, Observation(key, 3), Start.AddSeconds(1), Act, Act, Act);
+        var before = calls;
+        var currentJob = crystalSubmitted ? 21u : 3u;
+        gate.Advance(key, Observation(key with { ContentId = 9999 }, currentJob), Start.AddSeconds(2), Act, Act, Act);
+        var waiting = gate.Advance(key, Observation(key, currentJob, isSafeToEquip: false), Start.AddSeconds(3), Act, Act, Act);
+        Assert.Equal(before, calls);
+        Assert.Equal(DadRequestedJobPreparationStatus.AwaitingVerification, waiting.Status);
+        gate.Cancel(key, Start.AddSeconds(4), "cancelled");
+        gate.Advance(key, Observation(key, currentJob), Start.AddSeconds(5), Act, Act, Act);
+        Assert.Equal(before, calls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MissingOrUncertainSoulCrystalNeverSavesOrReplays(bool throws)
+    {
+        var gate = new DadRequestedJobPreparationGate();
+        var key = Key();
+        gate.Advance(key, Observation(key, catalog: PromotionCatalog(3, 21)), Start,
+            _ => DadClassJobEquipAttemptResult.Success());
+        var crystalCalls = 0;
+        var saves = 0;
+        DadClassJobEquipAttemptResult Crystal(int _)
+        {
+            crystalCalls++;
+            if (throws) throw new InvalidOperationException("unknown equip outcome");
+            return DadClassJobEquipAttemptResult.Rejected("stone absent or job locked");
+        }
+        DadClassJobEquipAttemptResult Save(int _) { saves++; return DadClassJobEquipAttemptResult.Success(); }
+        var failed = gate.Advance(key, Observation(key, 3), Start.AddSeconds(1), null, Crystal, Save);
+        gate.Advance(key, Observation(key, 21), Start.AddSeconds(2), null, Crystal, Save);
+        Assert.Equal(DadRequestedJobPreparationStatus.SoftFailed, failed.Status);
+        Assert.Equal(1, crystalCalls);
+        Assert.Equal(0, saves);
+    }
+
+    [Fact]
+    public void UnverifiedJobDoesNotUpdateOrRetryPromotion()
+    {
+        var gate = new DadRequestedJobPreparationGate();
+        var key = Key();
+        gate.Advance(key, Observation(key, catalog: PromotionCatalog(3, 21)), Start,
+            _ => DadClassJobEquipAttemptResult.Success());
+        gate.Advance(key, Observation(key, 3), Start.AddSeconds(1), null,
+            _ => DadClassJobEquipAttemptResult.Success());
+        var failed = gate.Advance(key, Observation(key, 3), Start.AddSeconds(6),
+            _ => throw new Exception("No second gearset equip"), _ => throw new Exception("No second crystal equip"),
+            _ => throw new Exception("No unverified gearset save"));
+        Assert.Equal(DadRequestedJobPreparationStatus.SoftFailed, failed.Status);
+        Assert.Contains("not updated", failed.FailureReason);
+    }
+
+    [Fact]
+    public void RejectedGearsetSaveIsTerminalAndDoesNotReplay()
+    {
+        var gate = new DadRequestedJobPreparationGate();
+        var key = Key();
+        gate.Advance(key, Observation(key, catalog: PromotionCatalog(3, 21)), Start,
+            _ => DadClassJobEquipAttemptResult.Success());
+        gate.Advance(key, Observation(key, 3), Start.AddSeconds(1), null,
+            _ => DadClassJobEquipAttemptResult.Success());
+        var calls = 0;
+        DadClassJobEquipAttemptResult Save(int _) { calls++; return DadClassJobEquipAttemptResult.Rejected("gearset changed"); }
+        var failed = gate.Advance(key, Observation(key, 21), Start.AddSeconds(2), null, null, Save);
+        gate.Advance(key, Observation(key, 21), Start.AddSeconds(3), null, null, Save);
+        Assert.Equal(DadRequestedJobPreparationStatus.SoftFailed, failed.Status);
+        Assert.Equal(1, calls);
+    }
+
+    private static DadClassJobGearsetCatalogSnapshot PromotionCatalog(uint baseClass, uint job)
+        => DadClassJobGearsetCatalogSnapshot.Success([new(7, baseClass, true, true)],
+            [new DadClassJobPromotionSnapshot(job, baseClass, 10000 + job)]);
+
     [Fact]
     public void GearsetSelectionUsesLowestExistingValidExactJob()
     {
