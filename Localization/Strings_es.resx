@@ -1272,7 +1272,7 @@ Cliente</value>
     <value>Transferencia de compatibilidad: VERMAXION inactivo / AR inactivo</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>Modo de compatibilidad. Dad conserva el flujo actual Dad+ADS: /ads outside antes de la inscripción, comandos de rotación fijos después de entrar y /ads leave después de DutyCompleted. Los fallos de los comandos de rotación solo generan avisos.</value>
+    <value>Modo de compatibilidad. Dad conserva el flujo actual de Dad+ADS: /ads outside antes de entrar en cola, el comando de activación de IA del host nativo cargado tras entrar y /ads leave después de DutyCompleted. Los fallos de los comandos de rotación solo generan avisos. Si hay varios hosts BossMod cargados, no se envía ningún comando de entrada.</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>CompatibilidadTransferencia</value>
@@ -2470,7 +2470,7 @@ Error</value>
     <value>Corrija las entradas faltantes o vacías.</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>Comandos fijos después de la entrada</value>
+    <value>Comando tras entrar, según el host cargado</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>CorregidoEmoteRun</value>
@@ -3638,7 +3638,7 @@ Botín</value>
     <value>Ninguno registrado</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>El final normal de una ejecución Dad y todas las rutas de cancelación, parada o fallo dejan intacta la automatización de combate. La finalización correcta del IPC final dad.Duty.Run siempre envía /rotation cancel, /vbmai off, /bmrai off y /wrath auto off. Solo envía /fr off cuando Questionable está inactivo y DAD no ocupa sus espacios de comandos AutoDuty.</value>
+    <value>El final normal de una ejecución Dad y todas las rutas de cancelación, parada o fallo dejan intacta la automatización de combate. La finalización correcta del IPC final dad.Duty.Run envía /rotation cancel, /wrath auto off y el comando de desactivación de IA del host nativo cargado: /gmai off, /bmrai off o /vbmai off. Si hay varios hosts BossMod cargados, quedan intactos y se muestra un aviso de limpieza. Solo envía /fr off cuando Questionable está inactivo y DAD no ocupa sus espacios de comandos AutoDuty.</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>Tiempo de reutilización de actualización normal: quedan {0:0}.</value>

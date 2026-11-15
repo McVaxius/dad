@@ -975,14 +975,16 @@ public sealed class ConfigWindow : Window, IDisposable
             color,
             statusText);
         UiGui.TextWrapped("Status color uses Dalamud installed-plugin state only: green means installed and loaded, yellow means installed but not loaded, red means not installed/found.");
-        UiGui.TextWrapped("Normal Dad run completion and every cancel/stop/failure path leave combat automation unchanged. Successful final dad.Duty.Run IPC completion always sends /rotation cancel, /vbmai off, /bmrai off, and /wrath auto off; it sends /fr off only while Questionable is idle and DAD does not own its AutoDuty command slots.");
+        UiGui.TextWrapped("Normal Dad run completion and every cancel/stop/failure path leave combat automation unchanged. Successful final dad.Duty.Run IPC completion sends /rotation cancel, /wrath auto off, and the loaded native host's AI off command: /gmai off, /bmrai off or /vbmai off. Multiple loaded BossMod hosts are left unchanged with a cleanup warning. It sends /fr off only while Questionable is idle and DAD does not own its AutoDuty command slots.");
     }
 
     private static void DrawForceCommandsModeStatus()
     {
-        UiGui.TextWrapped("Compatibility mode. Dad preserves the current Dad+ADS flow: /ads outside before queue, fixed rotation commands after entry, and /ads leave after DutyCompleted. Rotation command failures are warning-only.");
-        UiGui.TextUnformatted("Fixed commands after entry");
-        UiGui.BulletText(DadCombatRotationService.BossModRotationCommand);
+        UiGui.TextWrapped("Compatibility mode. Dad preserves the current Dad+ADS flow: /ads outside before queue, the loaded native host's AI on command after entry, and /ads leave after DutyCompleted. Rotation command failures are warning-only. Multiple loaded BossMod hosts receive no entry command.");
+        UiGui.TextUnformatted("Command after entry, according to the loaded host");
+        UiGui.BulletText("GodMod: " + DadCombatRotationService.GodModRotationCommand);
+        UiGui.BulletText("BossModReborn: " + DadCombatRotationService.BossModRotationCommand);
+        UiGui.BulletText("BossMod: /vbmai on");
     }
 
     private void DrawAboutTab()

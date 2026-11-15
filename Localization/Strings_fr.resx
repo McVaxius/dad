@@ -1271,7 +1271,7 @@
 Mode de compatibilité</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>Mode de compatibilité. Dad conserve le fonctionnement Dad+ADS actuel : /ads outside avant l’inscription, commandes de rotation fixes après l’entrée et /ads leave après DutyCompleted. Les échecs des commandes de rotation produisent seulement des avertissements.</value>
+    <value>Mode de compatibilité. Dad conserve le fonctionnement Dad+ADS actuel : /ads outside avant l’inscription, la commande d’activation de l’IA de l’hôte natif chargé après l’entrée, puis /ads leave après DutyCompleted. Les échecs des commandes de rotation produisent seulement des avertissements. Si plusieurs hôtes BossMod sont chargés, aucune commande d’entrée n’est envoyée.</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>CompatibilityHandoff</value>
@@ -2469,7 +2469,7 @@ Erreur</value>
     <value>Correction des entrées manquantes ou vides.</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>Commandes fixes après la saisie</value>
+    <value>Commande après l’entrée, selon l’hôte chargé</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>FixeEmoteRun</value>
@@ -3641,7 +3641,7 @@ Les ID correspondants</value>
     <value>Aucun enregistré</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>La fin normale d’une exécution Dad et tous les chemins d’annulation, d’arrêt ou d’échec laissent l’automatisation du combat inchangée. La réussite de l’IPC final dad.Duty.Run envoie toujours /rotation cancel, /vbmai off, /bmrai off et /wrath auto off. /fr off est envoyé seulement si Questionable est inactif et si DAD ne détient pas ses emplacements de commandes AutoDuty.</value>
+    <value>La fin normale d’une exécution Dad et tous les chemins d’annulation, d’arrêt ou d’échec laissent l’automatisation du combat inchangée. La réussite de l’IPC final dad.Duty.Run envoie /rotation cancel, /wrath auto off et la commande d’arrêt de l’IA de l’hôte natif chargé : /gmai off, /bmrai off ou /vbmai off. Plusieurs hôtes BossMod chargés restent inchangés, avec un avertissement de nettoyage. /fr off est envoyé seulement si Questionable est inactif et si DAD ne détient pas ses emplacements de commandes AutoDuty.</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>Temps de recharge normal du rafraîchissement : {0:0} restants.</value>

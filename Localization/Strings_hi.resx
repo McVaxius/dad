@@ -1270,7 +1270,7 @@
     <value>संगतता हस्तांतरण: VERMAXION निष्क्रिय / AR निष्क्रिय</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>संगतता मोड। Dad वर्तमान Dad+ADS प्रक्रिया रखता है: कतार से पहले /ads outside, प्रवेश के बाद निश्चित रोटेशन कमांड, और DutyCompleted के बाद /ads leave। रोटेशन कमांड की विफलता केवल चेतावनी है।</value>
+    <value>संगतता मोड। Dad मौजूदा Dad+ADS प्रक्रिया बनाए रखता है: कतार से पहले /ads outside, प्रवेश के बाद लोड किए गए मूल होस्ट का AI चालू करने वाला कमांड और DutyCompleted के बाद /ads leave। रोटेशन कमांड की विफलता पर केवल चेतावनी दी जाती है। कई BossMod होस्ट लोड होने पर प्रवेश कमांड नहीं भेजा जाता।</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>संगतता हस्तांतरण</value>
@@ -2461,7 +2461,7 @@
     <value>अनुपस्थित या रिक्त प्रविष्टियाँ सुधारें।</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>प्रवेश के बाद निश्चित कमांड</value>
+    <value>लोड किए गए होस्ट के अनुसार प्रवेश के बाद का कमांड</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>निश्चित इमोट रन</value>
@@ -3625,7 +3625,7 @@
     <value>कुछ दर्ज नहीं</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>सामान्य Dad रन समाप्ति और हर रद्द/रोक/विफलता मार्ग लड़ाई स्वचालन अपरिवर्तित रखते हैं। सफल अंतिम dad.Duty.Run IPC समाप्ति हमेशा /rotation cancel, /vbmai off, /bmrai off और /wrath auto off भेजती है; /fr off केवल Questionable निष्क्रिय होने और उसके AutoDuty कमांड स्लॉट DAD के नियंत्रण में न होने पर भेजती है।</value>
+    <value>सामान्य Dad रन समाप्ति और हर रद्द/रोक/विफलता मार्ग लड़ाई स्वचालन अपरिवर्तित रखते हैं। सफल अंतिम dad.Duty.Run IPC समाप्ति पर /rotation cancel, /wrath auto off और लोड किए गए मूल होस्ट का AI बंद करने वाला कमांड भेजा जाता है: /gmai off, /bmrai off या /vbmai off। कई BossMod होस्ट लोड होने पर उन्हें अपरिवर्तित रखा जाता है और सफाई चेतावनी दिखाई जाती है। /fr off केवल Questionable निष्क्रिय होने और उसके AutoDuty कमांड स्लॉट DAD के नियंत्रण में न होने पर भेजा जाता है।</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>सामान्य रिफ़्रेश कूलडाउन: {0:0}s शेष।</value>

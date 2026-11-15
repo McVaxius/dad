@@ -1270,7 +1270,7 @@
     <value>Compatibility handoff: VERMAXION idle / AR idle</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>Compatibility mode. Dad preserves the current Dad+ADS flow: /ads outside before queue, fixed rotation commands after entry, and /ads leave after DutyCompleted. Rotation command failures are warning-only.</value>
+    <value>Compatibility mode. Dad preserves the current Dad+ADS flow: /ads outside before queue, the loaded native host&apos;s AI on command after entry, and /ads leave after DutyCompleted. Rotation command failures are warning-only. Multiple loaded BossMod hosts receive no entry command.</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>CompatibilityHandoff</value>
@@ -2461,7 +2461,7 @@
     <value>Fix missing or empty entries.</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>Fixed commands after entry</value>
+    <value>Command after entry, according to the loaded host</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>FixedEmoteRun</value>
@@ -3625,7 +3625,7 @@
     <value>None recorded</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>Normal Dad run completion and every cancel/stop/failure path leave combat automation unchanged. Successful final dad.Duty.Run IPC completion always sends /rotation cancel, /vbmai off, /bmrai off, and /wrath auto off; it sends /fr off only while Questionable is idle and DAD does not own its AutoDuty command slots.</value>
+    <value>Normal Dad run completion and every cancel/stop/failure path leave combat automation unchanged. Successful final dad.Duty.Run IPC completion sends /rotation cancel, /wrath auto off, and the loaded native host&apos;s AI off command: /gmai off, /bmrai off or /vbmai off. Multiple loaded BossMod hosts are left unchanged with a cleanup warning. It sends /fr off only while Questionable is idle and DAD does not own its AutoDuty command slots.</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>Normal refresh cooldown: {0:0}s remaining.</value>

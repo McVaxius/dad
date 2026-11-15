@@ -91,7 +91,7 @@ internal sealed class VirtualAutomationIpc(Action<string> observe)
         if (command is not ("/ays d" or "/ays reset" or "/ays m d" or "/fr on" or "/fr off" or
             "/shopping-fixture" or "/round-early" or "/round-last" or "/round-final" or "/round-uncertain" or "/member-a" or "/member-b" or "/member-c" or
             "/ads outside" or "/ads stop" or "/ads leave" or "/rotation cancel" or
-            "/vbmai off" or "/bmrai off" or "/wrath auto off" or "/bmrai on" or "/rotation auto") &&
+            "/vbmai off" or "/bmrai off" or "/gmai off" or "/wrath auto off" or "/bmrai on" or "/gmai on" or "/vbmai on" or "/rotation auto") &&
             !(command.StartsWith("/ays relog Lab ", StringComparison.Ordinal) && command.EndsWith("@Synthetic", StringComparison.Ordinal)))
             throw new InvalidOperationException($"Unknown automation command: {command}");
         if (command == "/ays m d") MultiMode = false;

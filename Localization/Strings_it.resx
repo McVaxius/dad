@@ -1271,7 +1271,7 @@ Conti</value>
     <value>Trasferimento compatibilità: VERMAXION inattivo/AR inattivo</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>Modalità compatibilità. Dad mantiene il flusso Dad+ADS attuale: /ads outside prima dell’iscrizione, comandi di rotazione fissi dopo l’ingresso e /ads leave dopo DutyCompleted. Gli errori dei comandi di rotazione producono solo avvisi.</value>
+    <value>Modalità compatibilità. Dad mantiene il flusso Dad+ADS attuale: /ads outside prima della coda, il comando di attivazione IA dell’host nativo caricato dopo l’ingresso e /ads leave dopo DutyCompleted. Gli errori dei comandi di rotazione generano solo avvisi. Se sono caricati più host BossMod, non viene inviato alcun comando d’ingresso.</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>Handoff</value>
@@ -2467,7 +2467,7 @@ FINITURA</value>
     <value>Correggere le voci mancanti o vuote.</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>Corretti i comandi dopo l'immissione</value>
+    <value>Comando dopo l’ingresso, in base all’host caricato</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>RisoltoEmoteRun</value>
@@ -3637,7 +3637,7 @@ Gli ID corrispondenti</value>
     <value>Nessuno registrato</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>Il normale completamento di un’esecuzione Dad e tutti i percorsi di annullamento, arresto o errore lasciano invariata l’automazione del combattimento. Il completamento riuscito dell’IPC finale dad.Duty.Run invia sempre /rotation cancel, /vbmai off, /bmrai off e /wrath auto off. Invia /fr off solo quando Questionable è inattivo e DAD non occupa i suoi slot dei comandi AutoDuty.</value>
+    <value>Il normale completamento di un’esecuzione Dad e tutti i percorsi di annullamento, arresto o errore lasciano invariata l’automazione del combattimento. Il completamento riuscito dell’IPC finale dad.Duty.Run invia /rotation cancel, /wrath auto off e il comando di disattivazione IA dell’host nativo caricato: /gmai off, /bmrai off o /vbmai off. Più host BossMod caricati restano invariati, con un avviso di pulizia. /fr off viene inviato solo quando Questionable è inattivo e DAD non occupa i suoi slot dei comandi AutoDuty.</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>Tempo di recupero aggiornamento normale: {0:0} rimanenti.</value>

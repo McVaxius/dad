@@ -1270,7 +1270,7 @@
     <value>兼容性切换：VERMAXION 空闲/AR 空闲</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>兼容模式。Dad 保留现有 Dad+ADS 流程：排队前执行 /ads outside，进入后执行固定战斗循环命令，DutyCompleted 后执行 /ads leave。战斗循环命令失败仅产生警告。</value>
+    <value>兼容模式。Dad 保留现有 Dad+ADS 流程：排队前发送 /ads outside，进入后发送已加载原生宿主的 AI 开启命令，DutyCompleted 后发送 /ads leave。循环命令失败时仅显示警告。如果加载了多个 BossMod 宿主，则不发送入场命令。</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>兼容性切换</value>
@@ -2465,7 +2465,7 @@
     <value>修复丢失或空的条目。</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>输入后固定命令</value>
+    <value>根据已加载宿主选择入场后的命令</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>固定EmoteRun</value>
@@ -3629,7 +3629,7 @@
     <value>无记录</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>普通 Dad 运行完成以及所有取消、停止和失败路径均不会更改战斗自动化。最终 dad.Duty.Run IPC 成功完成后始终发送 /rotation cancel、/vbmai off、/bmrai off 和 /wrath auto off。仅当 Questionable 空闲且 DAD 未占用其 AutoDuty 命令槽时，才发送 /fr off。</value>
+    <value>普通 Dad 运行完成以及所有取消、停止和失败路径均不会更改战斗自动化。最终 dad.Duty.Run IPC 成功完成后发送 /rotation cancel、/wrath auto off，以及已加载原生宿主的 AI 关闭命令：/gmai off、/bmrai off 或 /vbmai off。如果加载了多个 BossMod 宿主，则保持原状并显示清理警告。仅当 Questionable 空闲且 DAD 未占用其 AutoDuty 命令槽时，才发送 /fr off。</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>正常刷新冷却时间：剩余 {0:0}s。</value>

@@ -1270,7 +1270,7 @@
     <value>Serah terima kompatibilitas: VERMAXION siaga / AR siaga</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>Mode kompatibilitas. Dad mempertahankan alur Dad+ADS saat ini: /ads outside sebelum antre, perintah rotasi tetap setelah masuk, dan /ads leave setelah DutyCompleted. Kegagalan perintah rotasi hanya menjadi peringatan.</value>
+    <value>Mode kompatibilitas. Dad mempertahankan alur Dad+ADS saat ini: /ads outside sebelum antre, perintah untuk mengaktifkan AI host asli yang dimuat setelah masuk, dan /ads leave setelah DutyCompleted. Kegagalan perintah rotasi hanya menghasilkan peringatan. Jika beberapa host BossMod dimuat, tidak ada perintah masuk yang dikirim.</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>Serah terima kompatibilitas</value>
@@ -2461,7 +2461,7 @@
     <value>Perbaiki entri yang tidak ada atau kosong.</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>Perintah tetap setelah masuk</value>
+    <value>Perintah setelah masuk, sesuai host yang dimuat</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>Eksekusi Emote Tetap</value>
@@ -3625,7 +3625,7 @@
     <value>Tidak ada yang dicatat</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>Penyelesaian normal proses Dad dan setiap jalur pembatalan/penghentian/kegagalan mempertahankan otomatisasi pertempuran. Penyelesaian IPC dad.Duty.Run terakhir yang berhasil selalu mengirim /rotation cancel, /vbmai off, /bmrai off, dan /wrath auto off; /fr off hanya dikirim saat Questionable tidak aktif dan DAD tidak memiliki slot perintah AutoDuty-nya.</value>
+    <value>Penyelesaian normal proses Dad dan setiap jalur pembatalan/penghentian/kegagalan mempertahankan otomatisasi pertempuran. Penyelesaian IPC dad.Duty.Run terakhir yang berhasil mengirim /rotation cancel, /wrath auto off, dan perintah untuk menonaktifkan AI host asli yang dimuat: /gmai off, /bmrai off, atau /vbmai off. Jika beberapa host BossMod dimuat, semuanya dibiarkan tidak berubah dengan peringatan pembersihan. /fr off hanya dikirim saat Questionable tidak aktif dan DAD tidak memiliki slot perintah AutoDuty-nya.</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>Jeda penyegaran normal: tersisa {0:0}s.</value>

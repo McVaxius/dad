@@ -94,8 +94,6 @@ public sealed class DadDutyIpcService : IDisposable
     [
         "/fr off",
         "/rotation cancel",
-        "/vbmai off",
-        "/bmrai off",
         "/wrath auto off",
     ];
 
@@ -686,8 +684,15 @@ public sealed class DadDutyIpcService : IDisposable
 
     private void RunSuccessfulSessionCleanup()
     {
-        var cleanupCommands = SuccessfulSessionCleanupCommands;
+        var cleanupCommands = SuccessfulSessionCleanupCommands.ToList();
         var failedCommands = new List<string>();
+        if (combatRotationService.TryResolveBossModAiCommand(enabled: false, out var bossModCommand, out var bossModFailure))
+            cleanupCommands.Insert(2, bossModCommand);
+        else
+        {
+            failedCommands.Add("BossMod AI off");
+            log.Warning("[dad][DutyIpc] Successful-session BossMod cleanup was retained: {Reason}", bossModFailure);
+        }
         foreach (var command in cleanupCommands)
         {
             try

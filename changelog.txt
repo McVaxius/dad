@@ -1,3 +1,9 @@
+2026-11-14 - 2.1.0.10 - GodMod compatibility
+
+- Added GodMod compatibility: Accept GodMod alongside BossModReborn and existing BossMod installations. Conflicting loaded hosts block new work.
+- Updated Force Commands: Start the single loaded native host using its own AI command after Duty Support entry.
+- Updated duty completion: Successful final duty IPC cleanup stops only the single loaded native host; normal completion and cancellation remain unchanged.
+
 2026-11-14 - 2.1.0.9 - Class gearset promotion
 
 - When a requested job has no saved gearset, equip a valid gearset for its base class, equip the owned soul crystal, and update that gearset after confirming the requested job.
