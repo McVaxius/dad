@@ -8,11 +8,13 @@ public enum DadConnectionRecoverySurface
 {
     None, World, Dialogue, LobbyError, Title, DataCenter, ServiceAccount,
     CharacterSelect, WorldSelect, LoginConfirmation, Connecting, OtherDialog,
+    EmptyCharacterSelect,
 }
 
 public enum DadConnectionRecoveryAction
 {
     None, DismissError, OpenDataCenter, SelectDataCenter, SelectCharacter, SelectWorld, ConfirmLogin,
+    ReturnEmptyCharacterSelectToTitle,
 }
 
 public readonly record struct DadConnectionRecoveryObservation(
@@ -24,6 +26,7 @@ public sealed class DadConnectionRecovery
     private DadConnectionRecoveryIdentity? lastSession;
     private DateTime nextActionUtc;
     private int pendingError;
+    private DadEmptyCharacterSelectRecoveryGate emptySelectRecovery = new();
     public DadConnectionRecoveryIdentity? Target { get; private set; }
     public bool IsActive => Target != null;
     public bool RequiresLoginOwnershipCheck => IsActive || System.Threading.Volatile.Read(ref pendingError) > 0;
@@ -46,6 +49,7 @@ public sealed class DadConnectionRecovery
         Target = null;
         pendingError = 0;
         nextActionUtc = default;
+        emptySelectRecovery = new();
         Status = reason;
         if (forgetSession) lastSession = null;
     }
@@ -99,6 +103,15 @@ public sealed class DadConnectionRecovery
         }
         if (Target != null && observation.Surface == DadConnectionRecoverySurface.LobbyError)
             Status = "Close the visible lobby error to continue connection recovery.";
+        var emptySelect = Target != null && observation.Ready &&
+                          observation.Surface == DadConnectionRecoverySurface.EmptyCharacterSelect;
+        var returnEmptySelect = emptySelectRecovery.Observe(emptySelect, nowUtc);
+        if (emptySelect)
+        {
+            Status = emptySelectRecovery.AttemptCount >= DadEmptyCharacterSelectRecoveryGate.MaximumAttempts
+                ? "Empty Character Select recovery exhausted five return attempts; manual intervention is required."
+                : "Waiting for thirty continuously safe idle seconds at empty Character Select before returning to Title.";
+        }
         if (Target == null || nowUtc < nextActionUtc || !observation.Ready)
             return DadConnectionRecoveryAction.None;
 
@@ -110,10 +123,16 @@ public sealed class DadConnectionRecovery
             DadConnectionRecoverySurface.CharacterSelect => DadConnectionRecoveryAction.SelectCharacter,
             DadConnectionRecoverySurface.WorldSelect => DadConnectionRecoveryAction.SelectWorld,
             DadConnectionRecoverySurface.LoginConfirmation => DadConnectionRecoveryAction.ConfirmLogin,
+            DadConnectionRecoverySurface.EmptyCharacterSelect when returnEmptySelect
+                => DadConnectionRecoveryAction.ReturnEmptyCharacterSelectToTitle,
             _ => DadConnectionRecoveryAction.None,
         };
         if (action != DadConnectionRecoveryAction.None)
+        {
             nextActionUtc = nowUtc.AddMilliseconds(action == DadConnectionRecoveryAction.DismissError ? 500 : 150);
+            if (action == DadConnectionRecoveryAction.ReturnEmptyCharacterSelectToTitle)
+                emptySelectRecovery.RecordAttempt();
+        }
         else if (observation.Surface == DadConnectionRecoverySurface.ServiceAccount)
             Status = "Connection recovery is waiting for your service-account selection.";
         return action;

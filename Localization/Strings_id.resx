@@ -8992,4 +8992,7 @@
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>ADS mengelola perbaikan dan rute kembali ke penginapan. DAD juga menunggu utilitas ADS selesai sebelum masuk antrean, dalam batas waktu persiapan 180 detik yang sudah berlaku. Semua klien pelaksana memerlukan versi ADS yang mendukung rute ini.</value></data>
   <data name="Highlight contrast" xml:space="preserve"><value>Kontras sorotan</value></data>
   <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>Membuat kontrol dan status pilihan lebih mudah dibedakan.</value></data>
+  <data name="Restart Schedule on Partial Failure" xml:space="preserve"><value>Mulai ulang jadwal saat PartialFailure</value></data>
+  <data name="Maximum partial-failure restarts" xml:space="preserve"><value>Maksimum mulai ulang akibat kegagalan parsial</value></data>
+  <data name="Debug only: restart the whole schedule after an incomplete duty and safe cleanup. Existing daily and level checks are preserved. Manual stops are never retried." xml:space="preserve"><value>Khusus debug: mulai ulang seluruh jadwal setelah tugas yang belum selesai dan pembersihan aman. Pemeriksaan hadiah harian dan level tetap dipertahankan. Penghentian manual tidak pernah dicoba ulang.</value></data>
 </root>

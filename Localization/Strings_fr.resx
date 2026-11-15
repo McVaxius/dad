@@ -9034,4 +9034,7 @@ Les lignes</value>
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>ADS gère la réparation et le retour à l'auberge. Avant l'inscription, DAD attend également la fin de l'utilitaire ADS, dans la limite de préparation existante de 180 secondes. Tous les clients exécutants doivent disposer d'une version d'ADS prenant en charge cet itinéraire.</value></data>
   <data name="Highlight contrast" xml:space="preserve"><value>Contraste des surbrillances</value></data>
   <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>Rend les commandes et les états de sélection plus distincts.</value></data>
+  <data name="Restart Schedule on Partial Failure" xml:space="preserve"><value>Redémarrer le planning après PartialFailure</value></data>
+  <data name="Maximum partial-failure restarts" xml:space="preserve"><value>Nombre maximal de redémarrages après échec partiel</value></data>
+  <data name="Debug only: restart the whole schedule after an incomplete duty and safe cleanup. Existing daily and level checks are preserved. Manual stops are never retried." xml:space="preserve"><value>Débogage uniquement : redémarrer tout le planning après une mission inachevée et un nettoyage sûr. Les vérifications quotidiennes et de niveau sont conservées. Un arrêt manuel n'est jamais relancé.</value></data>
 </root>

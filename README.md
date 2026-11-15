@@ -1060,6 +1060,21 @@ ID to distinguish the running DLL from an older build. Review reports for person
   protection. Unavailable native protection is reported in the status. After unload/reload, a new observed local session is required;
   stale recovery and abandoned duties/commands are never replayed. Another login owner retains control. If a named
   lobby-error layout has no proven acknowledgement, the status asks you to close that dialog before recovery continues.
+- An already-owned DC/login recovery may return a proven empty Character Select to Title after 30 safe
+  idle seconds, using the exact ready return button rather than guessed addon callback values. A populated
+  or unreadable cached list, queue, loading/connection, locked lobby or dialog never authorizes this return.
+  DAD retains the frozen account/character and existing automation ownership; a normal relog stranded at
+  safe idle Title can retry exact Lifestream login after five seconds. These two new gates are capped at
+  five attempts and never replay uncertain dispatches or bypass Stop/cancellation. Existing title-login
+  and in-world source-character retry behavior remains intact. Native/live acceptance is still required.
+- With `/dad debug`, **Schedules > Cadence & Actions > Restart Schedule on Partial Failure** adds an
+  off-by-default, local per-schedule recovery policy for incomplete ordinary duty/roulette failures.
+  It preserves the failed run, waits 30 seconds and for exact cleanup/admission (15-minute budget), then
+  starts the whole schedule with fresh identities and unchanged level/daily checks. Earlier proven Daily
+  completions may skip normally. Automatic rounds share a configurable 1–20 restart budget (default 3).
+  Cancellation, manual Stop, dry-run, completed duties, unrelated/uncertain work and unresolved teardown
+  are not permission to restart. Shared imports cannot enable this local debug policy. Game acceptance
+  of the new debug controls and four-client recovery remains pending.
 - When a Client Dad loses its Coordinator route, a separate `DAD Client` window opens automatically with the
   target, current attempt, next retry, and last disconnect. Reconnect uses capped backoff while DAD remains
   enabled in Client, non-local mode; it stops when the route returns or the role, mode, or enabled state changes.
@@ -1100,6 +1115,12 @@ ID to distinguish the running DLL from an older build. Review reports for person
   hard contradictions override readiness waits; wrong identity/CID, ambiguous routes and missing/noncombat live jobs
   remain rejected. An accepted start, ordinary rejection or uncertain callback never reopens the start claim. Cancel
   and strict frozen-contract validation remain authoritative; no preset class needs to be hard-coded as a workaround.
+- World metadata uses the lobby's logical DC membership, validated against the world's region, for local and
+  imported roster rows, login recovery and physical travel. The regional parent group is not a logical DC fallback;
+  missing or contradictory sheet data cannot confirm a live location. The world-location cache is cleared on plugin
+  initialization. Regional duty-party invitations retain their region requirement, while physical rendezvous still
+  apply their existing DC or world requirement. In particular, EU/NA membership corrections do not require an extra
+  DC journey for regional duty parties; OCE access retains its existing region/capacity checks.
 - Guarded Client Dad data-center travel distinguishes accepted requests from confirmed arrival. Accepted travel that
   ends back on the wrong DC retries after five seconds of continuously fresh exact world-ready/automation-idle proof;
   explicit-false calls also retry every five seconds with fresh safety checks. There is no travel-specific attempt cap

@@ -2372,6 +2372,30 @@ public sealed partial class MainWindow : Window, IDisposable
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                 UiGui.SetTooltip("Keep the same character on the visited world/DC between presets. Changing characters still requires returning home. Restore AutoRetainer when the schedule ends, fails or is cancelled.");
 
+            if (plugin.Configuration.DebugUiEnabled)
+            {
+                ImGui.BeginDisabled(activeScheduleLocked);
+                var restartPartial = schedule.RestartOnPartialFailure;
+                if (UiGui.Checkbox("Restart Schedule on Partial Failure", ref restartPartial))
+                {
+                    schedule.RestartOnPartialFailure = restartPartial;
+                    plugin.SchedulerService.UpdateSchedule(schedule);
+                }
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    UiGui.SetTooltip("Debug only: restart the whole schedule after an incomplete duty and safe cleanup. Existing daily and level checks are preserved. Manual stops are never retried.");
+                if (schedule.RestartOnPartialFailure)
+                {
+                    var restartLimit = schedule.PartialFailureRestartLimit;
+                    ImGui.SetNextItemWidth(MathF.Ceiling(MaterialText.Measure("0000").X + ImGui.GetStyle().FramePadding.X * 2));
+                    if (UiGui.InputInt("Maximum partial-failure restarts", ref restartLimit))
+                    {
+                        schedule.PartialFailureRestartLimit = Math.Clamp(restartLimit, 1, 20);
+                        plugin.SchedulerService.UpdateSchedule(schedule);
+                    }
+                }
+                ImGui.EndDisabled();
+            }
+
             if (UiGui.CollapsingHeader("Cadence"))
             {
                 var dailyMode = schedule.Cadence == DadScheduleCadence.DailyReset;

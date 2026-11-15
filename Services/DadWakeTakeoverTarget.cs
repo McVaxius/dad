@@ -7,6 +7,7 @@ namespace dad.Services;
 public sealed class DadWakeTakeoverTarget :
     IDadWakeTakeoverTarget,
     IDadTitleMovieDismissalTarget,
+    IDadEmptyCharacterSelectRecoveryTarget,
     IDadAuthenticatedAutoPartyWakeTarget
 {
     private readonly Configuration configuration;
@@ -113,6 +114,7 @@ public sealed class DadWakeTakeoverTarget :
             TitleClientLoggedOut = title.ClientLoggedOut,
             TitleNoActiveConditionFlags = title.NoActiveConditionFlags,
             TitleMovieExactReady = title.MovieStaffListReady,
+            EmptyCharacterSelectReady = title.EmptyCharacterSelectReady,
             TitleMenuEvidenceFresh = title.IsFresh(nowUtc),
             TitleMenuReady = title.TitleMenuReady,
             TitleNavigationOverlayVisible = title.NavigationOverlayVisible,
@@ -226,6 +228,9 @@ public sealed class DadWakeTakeoverTarget :
 
     DadWakeTakeoverActionResult IDadTitleMovieDismissalTarget.DismissExactTitleMovie()
         => titleMenuReadiness.QueueExactMovieStaffListEscape();
+
+    DadWakeTakeoverActionResult IDadEmptyCharacterSelectRecoveryTarget.ReturnEmptyCharacterSelectToTitle()
+        => titleMenuReadiness.ReturnExactEmptyCharacterSelectToTitle();
 
     public DadLifestreamChangeWorldResult ChangeWorld(string worldName)
         => lifestream.ChangeWorld(worldName);

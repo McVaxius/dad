@@ -8992,4 +8992,7 @@
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route.</value></data>
   <data name="Highlight contrast" xml:space="preserve"><value>Highlight contrast</value></data>
   <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>Makes controls and selection states more distinct.</value></data>
+  <data name="Restart Schedule on Partial Failure" xml:space="preserve"><value>Restart Schedule on Partial Failure</value></data>
+  <data name="Maximum partial-failure restarts" xml:space="preserve"><value>Maximum partial-failure restarts</value></data>
+  <data name="Debug only: restart the whole schedule after an incomplete duty and safe cleanup. Existing daily and level checks are preserved. Manual stops are never retried." xml:space="preserve"><value>Debug only: restart the whole schedule after an incomplete duty and safe cleanup. Existing daily and level checks are preserved. Manual stops are never retried.</value></data>
 </root>

@@ -232,6 +232,9 @@ public sealed class DadCharacterIntelligenceService
             UpsertCharacter(characters, character);
         }
 
+        foreach (var character in characters)
+            PopulateDataCenter(character);
+
         pool.Characters = characters
             .OrderByDescending(static character => character.Source == DadCharacterSource.LocalRuntime)
             .ThenBy(static character => character.Source)
@@ -332,15 +335,11 @@ public sealed class DadCharacterIntelligenceService
     {
         try
         {
-            var worldSheet = Plugin.DataManager.GetExcelSheet<World>();
-            if (worldSheet == null || !worldSheet.TryGetRow(character.WorldId, out var world))
+            if (!DadWorldLocationRuntime.TryResolveWorld(character.WorldId, DadClock.UtcNow, out var location))
                 return;
 
-            if (world.DataCenter.RowId == 0)
-                return;
-
-            character.DataCenterId = world.DataCenter.RowId;
-            character.DataCenterName = world.DataCenter.Value.Name.ToString().Trim();
+            character.DataCenterId = location.DataCenterId;
+            character.DataCenterName = location.DataCenterName;
         }
         catch (Exception ex)
         {

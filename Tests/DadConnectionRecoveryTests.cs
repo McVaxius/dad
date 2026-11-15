@@ -338,6 +338,36 @@ public sealed class DadConnectionRecoveryTests
         return result;
     }
 
+    [Fact]
+    public void OwnedDcRecoveryReturnsOnlyAfterStableEmptyCharacterSelectAndKeepsItsExactTarget()
+    {
+        var recovery = Ready();
+        recovery.ObserveLogout(90002);
+        for (var second = 0; second < 30; second += 5)
+            Assert.Equal(DadConnectionRecoveryAction.None,
+                Step(recovery, DadConnectionRecoverySurface.EmptyCharacterSelect, second * 1000));
+        Assert.Equal(DadConnectionRecoveryAction.ReturnEmptyCharacterSelectToTitle,
+            Step(recovery, DadConnectionRecoverySurface.EmptyCharacterSelect, 30000));
+        Assert.Equal(Session, recovery.Target);
+        Assert.Equal(DadConnectionRecoveryAction.OpenDataCenter,
+            Step(recovery, DadConnectionRecoverySurface.Title, 31000));
+    }
+
+    [Theory]
+    [InlineData(DadConnectionRecoverySurface.Connecting)]
+    [InlineData(DadConnectionRecoverySurface.OtherDialog)]
+    [InlineData(DadConnectionRecoverySurface.CharacterSelect)]
+    public void QueueLoadingOrPopulatedListInterruptsEmptyScreenRecovery(DadConnectionRecoverySurface interrupted)
+    {
+        var recovery = Ready();
+        recovery.ObserveLogout(90002);
+        for (var second = 0; second <= 20; second += 5)
+            Step(recovery, DadConnectionRecoverySurface.EmptyCharacterSelect, second * 1000);
+        Step(recovery, interrupted, 25000, ready: false);
+        Assert.Equal(DadConnectionRecoveryAction.None,
+            Step(recovery, DadConnectionRecoverySurface.EmptyCharacterSelect, 30000));
+    }
+
     private sealed class RecoveryOwnerFixture : IDisposable
     {
         private delegate bool ProtectNativeError(Span<byte> value);

@@ -8995,4 +8995,7 @@
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>수리와 여관 복귀 경로는 ADS가 관리합니다. DAD는 참가 신청 전에 ADS 유틸리티가 끝날 때까지 기다리며, 기존 준비 제한 시간인 180초가 그대로 적용됩니다. 모든 실행 클라이언트에는 이 경로를 지원하는 ADS 버전이 필요합니다.</value></data>
   <data name="Highlight contrast" xml:space="preserve"><value>강조 대비</value></data>
   <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>컨트롤과 선택 상태를 더 뚜렷하게 표시합니다.</value></data>
+  <data name="Restart Schedule on Partial Failure" xml:space="preserve"><value>PartialFailure 후 스케줄 다시 시작</value></data>
+  <data name="Maximum partial-failure restarts" xml:space="preserve"><value>부분 실패 후 최대 재시작 횟수</value></data>
+  <data name="Debug only: restart the whole schedule after an incomplete duty and safe cleanup. Existing daily and level checks are preserved. Manual stops are never retried." xml:space="preserve"><value>디버그 전용: 콘텐츠가 미완료된 경우 안전한 정리 후 전체 스케줄을 처음부터 다시 시작합니다. 기존 일일 보상 및 레벨 확인은 유지됩니다. 수동으로 중지한 작업은 재시도하지 않습니다.</value></data>
 </root>

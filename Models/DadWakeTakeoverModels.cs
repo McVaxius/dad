@@ -174,6 +174,7 @@ public sealed class DadWakeTakeoverTargetSnapshot
     internal bool TitleClientLoggedOut { get; set; }
     internal bool TitleNoActiveConditionFlags { get; set; }
     internal bool TitleMovieExactReady { get; set; }
+    internal bool EmptyCharacterSelectReady { get; set; }
     public bool TitleMenuEvidenceFresh { get; set; }
     public bool TitleMenuReady { get; set; }
     public bool TitleNavigationOverlayVisible { get; set; }

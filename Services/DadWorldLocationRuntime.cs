@@ -10,6 +10,12 @@ internal static class DadWorldLocationRuntime
     internal static Func<DateTime, DadWorldLocationObservation?>? CurrentObservation { get; set; }
     internal static Func<uint, DateTime, DadWorldLocationObservation?>? WorldObservation { get; set; }
 
+    internal static void ClearCache()
+    {
+        lock (CacheGate)
+            WorldCache.Clear();
+    }
+
     public static DadWorldLocationObservation? CaptureCurrent(DateTime observedAtUtc)
     {
         if (CurrentObservation != null) return CurrentObservation(observedAtUtc)?.Clone();
@@ -60,18 +66,29 @@ internal static class DadWorldLocationRuntime
 
             if (world.DataCenter.RowId == 0 || !world.DataCenter.IsValid)
                 return false;
-            var dataCenter = world.DataCenter.Value;
-            if (dataCenter.Region.RowId == 0 || !dataCenter.Region.IsValid)
+            var parent = world.DataCenter.Value;
+            if (parent.Region.RowId == 0 || !parent.Region.IsValid)
                 return false;
-            var region = dataCenter.Region.Value;
+            var dataCenters = Plugin.DataManager.GetExcelSheet<WorldDCGroupType>();
+            if (dataCenters == null || !DadWorldLocationRules.TryResolveDataCenter(
+                    // World.DataCenter can represent the shared regional group. Unknown0 is
+                    // the logical DC used by the lobby and current Lifestream login selection.
+                    world.Unknown0,
+                    parent.Region.RowId,
+                    id => dataCenters.TryGetRow(id, out var row) && row.Region.IsValid
+                        ? new DadDataCenterLocation(id, row.Name.ToString(), row.Region.RowId,
+                            row.Region.Value.Name.ToString())
+                        : null,
+                    out var dataCenter))
+                return false;
             location = new DadWorldLocationObservation
             {
                 WorldId = worldId,
                 WorldName = world.Name.ToString().Trim(),
-                DataCenterId = dataCenter.RowId,
-                DataCenterName = dataCenter.Name.ToString().Trim(),
-                RegionId = region.RowId,
-                RegionName = region.Name.ToString().Trim(),
+                DataCenterId = dataCenter.DataCenterId,
+                DataCenterName = dataCenter.DataCenterName,
+                RegionId = dataCenter.RegionId,
+                RegionName = dataCenter.RegionName,
                 ObservedAtUtc = NormalizeUtc(observedAtUtc),
             };
             if (!location.IsComplete)

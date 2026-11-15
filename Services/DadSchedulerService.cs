@@ -3,7 +3,7 @@ using dad.Models;
 
 namespace dad.Services;
 
-public sealed class DadSchedulerService
+public sealed partial class DadSchedulerService
 {
     private string ClientBootDirectory => configuration.ClientBootDirectory;
     private const int DefaultScheduleCadenceHours = 18;
@@ -5706,6 +5706,12 @@ public sealed class DadSchedulerService
         if (state.Phase != DadScheduleRunPhase.WaitingForDadRun)
             return false;
 
+        if (state.PartialFailureRestartPendingSinceUtc.HasValue)
+        {
+            ProcessPartialFailureRestart(schedule, state, visibleRun, now);
+            return true;
+        }
+
         if (state.DutyExitRetryPendingSinceUtc.HasValue && state.DutyExitRetrySource is { } retrySource &&
             string.Equals(state.ActivePlannerRequestId, retrySource.RequestId, StringComparison.Ordinal))
         {
@@ -5733,6 +5739,8 @@ public sealed class DadSchedulerService
 
         if (run.Status != DadRunStatus.Completed)
         {
+            if (TryReservePartialFailureRestart(schedule, state, run, now))
+                return true;
             if (DadScheduleDutyExitRetryRules.CanReserve(state, run))
             {
                 configuration.ActiveScheduleRun = DadScheduleDutyExitRetryRules.Reserve(state, run, now);
@@ -6309,6 +6317,8 @@ public sealed class DadSchedulerService
         configuration.ActiveScheduleRun.ScheduleRevisionAtStart = Math.Max(0, configuration.ActiveScheduleRun.ScheduleRevisionAtStart);
         configuration.ActiveScheduleRun.DutyExitRetryCount = Math.Clamp(
             configuration.ActiveScheduleRun.DutyExitRetryCount, 0, DadScheduleDutyExitRetryRules.MaximumRetries);
+        configuration.ActiveScheduleRun.PartialFailureRestartCount = Math.Clamp(
+            configuration.ActiveScheduleRun.PartialFailureRestartCount, 0, 20);
         configuration.ActiveScheduleRun.RepeatIteration = Math.Max(1, configuration.ActiveScheduleRun.RepeatIteration);
         configuration.ActiveScheduleRun.TotalEntryExecutions = Math.Max(0, configuration.ActiveScheduleRun.TotalEntryExecutions);
         configuration.ActiveScheduleRun.CompletedEntryExecutions = Math.Clamp(

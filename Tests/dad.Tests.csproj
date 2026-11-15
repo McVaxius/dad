@@ -90,6 +90,7 @@
     <Compile Include="..\Services\DadCharacterFilterRules.cs" Link="DadCharacterFilterRules.cs" />
     <Compile Include="..\Services\DadRoulettePresetConflictRules.cs" Link="DadRoulettePresetConflictRules.cs" />
     <Compile Include="..\Services\DadCoordinatorTravelRules.cs" Link="DadCoordinatorTravelRules.cs" />
+    <Compile Include="..\Services\DadWorldLocationRules.cs" Link="DadWorldLocationRules.cs" />
     <Compile Include="..\Services\DadHomeWorldReturnRules.cs" Link="DadHomeWorldReturnRules.cs" />
     <Compile Include="..\Services\DadSafeIdleRetryGate.cs" Link="DadSafeIdleRetryGate.cs" />
     <Compile Include="..\Services\DadDutyFinderLiveEntryMapping.cs" Link="DadDutyFinderLiveEntryMapping.cs" />

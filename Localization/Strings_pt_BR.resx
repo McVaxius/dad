@@ -8992,4 +8992,7 @@
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>O ADS gerencia o reparo e a rota de volta à estalagem. O DAD também espera a ferramenta do ADS terminar antes de entrar na fila, dentro do limite de preparação existente de 180 segundos. Todos os clientes executores precisam de uma versão do ADS compatível com essa rota.</value></data>
   <data name="Highlight contrast" xml:space="preserve"><value>Contraste de destaque</value></data>
   <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>Torna os controles e os estados de seleção mais distintos.</value></data>
+  <data name="Restart Schedule on Partial Failure" xml:space="preserve"><value>Reiniciar agenda após PartialFailure</value></data>
+  <data name="Maximum partial-failure restarts" xml:space="preserve"><value>Máximo de reinícios por falha parcial</value></data>
+  <data name="Debug only: restart the whole schedule after an incomplete duty and safe cleanup. Existing daily and level checks are preserved. Manual stops are never retried." xml:space="preserve"><value>Somente depuração: reinicia toda a agenda após uma missão incompleta e uma limpeza segura. As verificações diárias e de nível são preservadas. Paradas manuais nunca são repetidas.</value></data>
 </root>

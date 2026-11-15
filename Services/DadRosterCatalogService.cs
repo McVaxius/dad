@@ -524,6 +524,7 @@ public sealed class DadRosterCatalogService
                 BuildLocalAccountDirectory(catalog.Characters, pool.PeerTransport.KnownParticipants),
                 localAccountKey)
             .ToList();
+        PopulateDataCenters(catalog.Characters);
         catalog.Summary = BuildCatalogSummary(catalog);
         return catalog;
     }
@@ -1250,8 +1251,22 @@ public sealed class DadRosterCatalogService
             .ThenBy(static character => character.AccountKey.Value, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static character => character.CharacterKey.Value, StringComparer.OrdinalIgnoreCase)
             .ToList();
+        PopulateDataCenters(merged.Characters);
         merged.Summary = BuildCatalogSummary(merged);
         return merged;
+    }
+
+    private static void PopulateDataCenters(IEnumerable<DadRosterCharacter> characters)
+    {
+        var now = DadClock.UtcNow;
+        foreach (var character in characters)
+        {
+            if (character.WorldId is not { } worldId ||
+                !DadWorldLocationRuntime.TryResolveWorld(worldId, now, out var location))
+                continue;
+            character.DataCenterId = location.DataCenterId;
+            character.DataCenterName = location.DataCenterName;
+        }
     }
 
     private void ApplyVisibility(DadAccountRosterCatalog catalog, DadRosterRefreshPlan plan)

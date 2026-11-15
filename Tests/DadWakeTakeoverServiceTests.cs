@@ -2915,7 +2915,160 @@ public sealed class DadWakeTakeoverServiceTests
         Assert.Equal(["SetMultiMode:False"], target.Actions);
     }
 
-    private sealed class FakeTarget : IDadWakeTakeoverTarget, IDadTitleMovieDismissalTarget
+    [Fact]
+    public void OwnedRelogRecoversEmptyCharacterSelectAndRetriesOnlyItsFrozenLogin()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        using var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        ConfigureEmptyCharacterSelect(target);
+        service.Update();
+        for (var second = 5; second < 30; second += 5)
+        {
+            clock.Advance(TimeSpan.FromSeconds(5));
+            service.Update();
+            Assert.DoesNotContain("ReturnEmptyCharacterSelectToTitle", target.Actions);
+        }
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+        Assert.Single(target.Actions, action => action == "ReturnEmptyCharacterSelectToTitle");
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+        Assert.Single(target.Actions, action => action == "ConnectAndLogin:Target Character@World");
+        Assert.Single(target.Actions, action => action == "RelogCharacter");
+        ActivateTargetCharacter(target);
+        service.Update();
+        Assert.Equal(DadWakeTakeoverPhase.Ready, service.GetActiveStatus()!.Phase);
+    }
+
+    [Theory]
+    [InlineData("busy")]
+    [InlineData("queue")]
+    [InlineData("loading")]
+    [InlineData("populated")]
+    [InlineData("route")]
+    [InlineData("account")]
+    [InlineData("stale")]
+    [InlineData("external-owner")]
+    [InlineData("stop")]
+    [InlineData("disconnect")]
+    public void EmptyCharacterSelectNeverClosesWithoutContinuousSafeOriginalOwnership(string change)
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        using var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        ConfigureEmptyCharacterSelect(target);
+        service.Update();
+        switch (change)
+        {
+            case "busy": target.Snapshot.LifestreamBusy = true; break;
+            case "queue": target.Snapshot.TitleErrorOverlayVisible = true; break;
+            case "loading": target.Snapshot.TitleConnectionOverlayVisible = true; break;
+            case "populated": target.Snapshot.EmptyCharacterSelectReady = false; break;
+            case "route": target.Snapshot.ClientRouteConnected = false; break;
+            case "account": target.Snapshot.AccountMatches = false; break;
+            case "stale": target.Snapshot.TitleSurfaceEvidenceFresh = false; break;
+            case "external-owner": target.Snapshot.DadOwnsSuppression = false; break;
+            case "stop": service.StopAll("Synthetic manual stop"); break;
+            case "disconnect": service.OnCoordinatorDisconnected(); break;
+        }
+        for (var second = 5; second <= 60; second += 5)
+        {
+            clock.Advance(TimeSpan.FromSeconds(5));
+            service.Update();
+        }
+        Assert.DoesNotContain("ReturnEmptyCharacterSelectToTitle", target.Actions);
+        Assert.Empty(target.TitleLoginCaptureCounts);
+    }
+
+    [Fact]
+    public void OwnedTitleRetryDoesNotReplayUncertainIpc()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        using var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        ConfigureEmptyCharacterSelect(target);
+        target.Snapshot.EmptyCharacterSelectReady = false;
+        target.Snapshot.TitleSurface = DadTitleSurface.TitleMenu;
+        target.Snapshot.TitleMenuReady = true;
+        target.Snapshot.LifestreamCanAutoLogin = true;
+        target.ThrowOnTitleLogin = true;
+        service.Update();
+        clock.Advance(TimeSpan.FromSeconds(5));
+        service.Update();
+        for (var second = 0; second < 60; second += 5)
+        {
+            clock.Advance(TimeSpan.FromSeconds(5));
+            service.Update();
+        }
+        Assert.Single(target.TitleLoginCaptureCounts);
+        Assert.Contains("uncertain", service.GetActiveStatus()!.BlockedReason);
+    }
+
+    private static void ConfigureEmptyCharacterSelect(FakeTarget target)
+    {
+        target.Snapshot.Participant.IsAvailable = false;
+        target.Snapshot.Participant.WorldReadyStable = false;
+        target.Snapshot.TitleSurface = DadTitleSurface.CharacterSelect;
+        target.Snapshot.TitleSurfaceEvidenceFresh = true;
+        target.Snapshot.TitleClientLoggedOut = true;
+        target.Snapshot.TitleNoActiveConditionFlags = true;
+        target.Snapshot.EmptyCharacterSelectReady = true;
+        target.Snapshot.TitleMenuReady = false;
+        target.Snapshot.LifestreamCanAutoLogin = false;
+        target.Snapshot.VermaxionStatusEvidenceFresh = true;
+    }
+
+    [Fact]
+    public void FinalFreshReadCannotCloseACharacterScreenThatJustBecameBusy()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        using var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        ConfigureEmptyCharacterSelect(target);
+        for (var second = 0; second < 30; second += 5)
+        {
+            service.Update();
+            clock.Advance(TimeSpan.FromSeconds(5));
+        }
+        var reads = 0;
+        target.OnCapture = forced =>
+        {
+            if (forced && ++reads == 2) target.Snapshot.LifestreamBusy = true;
+        };
+        service.Update();
+        Assert.DoesNotContain("ReturnEmptyCharacterSelectToTitle", target.Actions);
+    }
+
+    [Fact]
+    public void ReturningSourceCharacterUsesExistingSafeRelogRetryWithoutClosingCharacterUi()
+    {
+        var clock = new TestClock();
+        var target = FakeTarget.Valid(wrongCharacter: true);
+        using var service = new DadWakeTakeoverService(target, clock.UtcNow);
+        StartRelog(service, target, clock);
+        ConfigureEmptyCharacterSelect(target);
+        service.Update();
+        target.Snapshot.Participant.IsAvailable = true;
+        target.Snapshot.Participant.WorldReadyStable = true;
+        target.Snapshot.TitleSurface = DadTitleSurface.None;
+        target.Snapshot.EmptyCharacterSelectReady = false;
+        for (var i = 0; i < 8; i++)
+        {
+            clock.Advance(TimeSpan.FromSeconds(5));
+            service.Update();
+        }
+        Assert.True(target.Actions.Count(action => action == "RelogCharacter") > 1);
+        Assert.DoesNotContain("ReturnEmptyCharacterSelectToTitle", target.Actions);
+        Assert.Empty(target.TitleLoginCaptureCounts);
+    }
+
+    private sealed class FakeTarget : IDadWakeTakeoverTarget, IDadTitleMovieDismissalTarget, IDadEmptyCharacterSelectRecoveryTarget
     {
         public DadWakeTakeoverTargetSnapshot Snapshot { get; set; } = new();
         public DadVermaxionReservationStatus Reservation { get; } = new()
@@ -3144,6 +3297,16 @@ public sealed class DadWakeTakeoverServiceTests
             return DismissTitleMovieAccepted
                 ? DadWakeTakeoverActionResult.Accepted()
                 : DadWakeTakeoverActionResult.Rejected("Movie dismissal was rejected.");
+        }
+
+        public DadWakeTakeoverActionResult ReturnEmptyCharacterSelectToTitle()
+        {
+            Actions.Add("ReturnEmptyCharacterSelectToTitle");
+            Snapshot.EmptyCharacterSelectReady = false;
+            Snapshot.TitleSurface = DadTitleSurface.TitleMenu;
+            Snapshot.TitleMenuReady = true;
+            Snapshot.LifestreamCanAutoLogin = true;
+            return DadWakeTakeoverActionResult.Accepted();
         }
 
         public DadWakeTakeoverActionResult ExecuteCommand(DadWakeTakeoverCommand command, DadWakeTakeoverRequestDto request)

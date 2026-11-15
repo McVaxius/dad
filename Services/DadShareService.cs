@@ -1015,6 +1015,9 @@ public sealed class DadShareService
             Cadence = source.Cadence,
             StayOnVisitedWorldBetweenPresets = source.StayOnVisitedWorldBetweenPresets,
             ShoppingAssociation = MaterializeShoppingAssociation(source.ShoppingAssociation),
+            // Debug auto-restart is local operator policy, never enabled by a shared import.
+            RestartOnPartialFailure = existing?.RestartOnPartialFailure ?? false,
+            PartialFailureRestartLimit = existing?.PartialFailureRestartLimit ?? 3,
             ShoppingAssociations = (source.ShoppingAssociations ?? []).Select(value => MaterializeShoppingAssociation(value)!).ToList(),
             Entries = source.Entries.Select(entry => new DadScheduleEntry
             {

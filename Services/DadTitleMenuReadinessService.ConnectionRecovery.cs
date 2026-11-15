@@ -184,9 +184,14 @@ public sealed unsafe partial class DadTitleMenuReadinessService
         if (select != null) return Surface(DadConnectionRecoverySurface.ServiceAccount, select);
         if (Ready("SelectOk") != null) return new(DadConnectionRecoverySurface.OtherDialog, false);
         var connecting = Ready("TitleConnect");
-        if (connecting != null) return Surface(DadConnectionRecoverySurface.Connecting, connecting, false);
+        if (connecting != null || IsVisible(manager->GetAddonByName("NowLoading")) ||
+            IsVisible(manager->GetAddonByName("FadeBack")))
+            return Surface(DadConnectionRecoverySurface.Connecting, connecting, false);
         var worlds = Ready("_CharaSelectWorldServer");
         if (worlds != null) return Surface(DadConnectionRecoverySurface.WorldSelect, worlds);
+        var emptyReturn = FindExactEmptyCharacterSelectReturn();
+        if (emptyReturn != null)
+            return Surface(DadConnectionRecoverySurface.EmptyCharacterSelect, emptyReturn);
         var characters = Ready("_CharaSelectListMenu");
         if (characters != null) return Surface(DadConnectionRecoverySurface.CharacterSelect, characters);
         var dc = Ready("TitleDCWorldMap");
@@ -284,11 +289,51 @@ public sealed unsafe partial class DadTitleMenuReadinessService
                     recoveryLoginPromptExpected = false;
                 }
                 break;
+            case DadConnectionRecoveryAction.ReturnEmptyCharacterSelectToTitle:
+                recoveryLoginPromptExpected = false;
+                ReturnExactEmptyCharacterSelectToTitle();
+                break;
         }
     }
 
+    // This is the same native button used by Lifestream's CloseCharaSelect, not a
+    // guessed callback from addon lifecycle values. Never close a populated list,
+    // an active queue/dialog/transition, or a locked lobby.
+    private AtkUnitBase* FindExactEmptyCharacterSelectReturn()
+    {
+        if (clientState.IsLoggedIn || HasAnyActiveCondition()) return null;
+        var manager = RaptureAtkUnitManager.Instance();
+        var lobby = AgentLobby.Instance();
+        if (manager == null || lobby == null || lobby->TemporaryLocked || lobby->QueuePosition > 0 ||
+            lobby->LobbyData.CharaSelectEntries.Count != 0) return null;
+        foreach (var name in new[]
+                 {
+                     "NowLoading", "FadeBack", "TitleConnect", "Dialogue", "SelectOk", "SelectYesno",
+                     "SelectString", "TitleDCWorldMap", "_TitleMenu", "_TitleError", "TitleError",
+                     "TitleServerError", "TitleNetworkError",
+                     "_CharaSelectWorldServer", "_CharaSelectCharacterList", "_CharaSelectNamePlate",
+                 })
+        {
+            if (IsVisible(manager->GetAddonByName(name))) return null;
+        }
+        var back = manager->GetAddonByName("_CharaSelectReturn");
+        return back != null && back->IsReady && back->IsVisible &&
+               IsRecoveryButtonUsable(back->GetComponentButtonById(4)) ? back : null;
+    }
+
+    internal DadWakeTakeoverActionResult ReturnExactEmptyCharacterSelectToTitle()
+    {
+        if (disposed || !framework.IsInFrameworkUpdateThread || keyState[0x10])
+            return DadWakeTakeoverActionResult.Rejected("Empty Character Select return requires the live framework thread and no Shift cancellation.");
+        var addon = FindExactEmptyCharacterSelectReturn();
+        if (addon == null)
+            return DadWakeTakeoverActionResult.Rejected("The exact safe empty Character Select surface changed before return.");
+        addon->GetComponentButtonById(4)->ClickAddonButton(addon);
+        return DadWakeTakeoverActionResult.Accepted();
+    }
+
     private static bool IsRecoveryButtonUsable(AtkComponentButton* button)
-        => button != null && button->IsEnabled && button->AtkComponentBase.OwnerNode != null &&
+        => button != null && button->AtkComponentBase.OwnerNode != null && button->IsEnabled &&
            button->AtkComponentBase.OwnerNode->AtkResNode.AtkEventManager.Event != null;
 
     private bool IsRecoveryCharacterSelected()
