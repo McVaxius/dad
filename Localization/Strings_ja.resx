@@ -8993,4 +8993,7 @@
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>修理と宿屋へ戻る経路はADSが管理します。DADは申請前にADSユーティリティの完了も待ちます。準備の制限時間は従来どおり180秒です。すべての実行クライアントに、この経路に対応したADSが必要です。</value></data>
   <data name="Highlight contrast" xml:space="preserve"><value>ハイライトのコントラスト</value></data>
   <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>コントロールと選択状態を見分けやすくします。</value></data>
+  <data name="Restart Schedule on Partial Failure" xml:space="preserve"><value>PartialFailure 後にスケジュールを再開</value></data>
+  <data name="Maximum partial-failure restarts" xml:space="preserve"><value>部分失敗後の最大再起動回数</value></data>
+  <data name="Debug only: restart the whole schedule after an incomplete duty and safe cleanup. Existing daily and level checks are preserved. Manual stops are never retried." xml:space="preserve"><value>デバッグ専用：コンテンツが未完了の場合、安全な後処理の後にスケジュール全体を最初から再実行します。既存のデイリー報酬とレベルの確認は維持されます。手動停止後は再実行しません。</value></data>
 </root>

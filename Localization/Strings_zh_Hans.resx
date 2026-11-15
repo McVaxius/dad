@@ -9000,4 +9000,7 @@
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>修理和返回旅馆的路线由 ADS 管理。DAD 还会在排队前等待 ADS 工具完成，仍受现有的 180 秒准备时限约束。所有执行客户端都需要支持此路线的 ADS 版本。</value></data>
   <data name="Highlight contrast" xml:space="preserve"><value>高亮对比度</value></data>
   <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>让控件与选中状态更容易区分。</value></data>
+  <data name="Restart Schedule on Partial Failure" xml:space="preserve"><value>PartialFailure 后重新开始计划</value></data>
+  <data name="Maximum partial-failure restarts" xml:space="preserve"><value>部分失败后的最大重启次数</value></data>
+  <data name="Debug only: restart the whole schedule after an incomplete duty and safe cleanup. Existing daily and level checks are preserved. Manual stops are never retried." xml:space="preserve"><value>仅限调试：任务未完成时，在安全清理后从头重新执行整个计划。保留现有的每日奖励及等级检查。手动停止后绝不重试。</value></data>
 </root>

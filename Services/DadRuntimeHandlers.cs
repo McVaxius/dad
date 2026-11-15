@@ -66,7 +66,7 @@ internal static class DadRuntimeHandlers
     internal static bool CanUpdateScheduler(Configuration configuration, DadSchedulerService scheduler,
         DadCoordinatorService coordinator, bool disbandActive, DadRunResult visibleRun)
         => (configuration.RunAsServerDad || scheduler.HasLocalDutySupportSchedulerWork) && !disbandActive &&
-           (scheduler.IsCrewFormationActive || scheduler.CurrentState.IsActive || scheduler.HasPendingDutyExitRetry ||
+           (scheduler.IsCrewFormationActive || scheduler.CurrentState.IsActive || scheduler.HasPendingDutyExitRetry || scheduler.HasPendingPartialFailureRestart ||
             string.IsNullOrWhiteSpace(SchedulerAdmissionBlocker(configuration, scheduler, coordinator, disbandActive,
                 visibleRun, scheduler.HasLocalDutySupportSchedulerWork)));
 

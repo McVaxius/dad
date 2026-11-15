@@ -248,6 +248,7 @@ public sealed partial class Plugin : IDalamudPlugin
                 "Update Dalamud/XIVLauncher and restart FFXIV.");
         }
 
+        DadWorldLocationRuntime.ClearCache();
         prepareFontStatusDecorations = fontStatusDecorations.Prepare;
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         var autoPartyIdentityStore = new DadAutoPartyDpapiEndpointIdentityStore(

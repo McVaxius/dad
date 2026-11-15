@@ -23,12 +23,21 @@ public sealed class DadAlliancePartyFinderApi15LayoutTests
     // https://github.com/goatcorp/Dalamud/tree/30509c3b4fd00edd9a3d65b7bbf16433d84be03b/lib/FFXIVClientStructs
     // Reviewed 15.0.3.9 against 15.0.3.8: no Party Finder/AtkUnitBase/list-renderer or
     // ConditionFlag changes. NumberArrayData only adds methods; existing fields and SetValue stay unchanged.
-    private static readonly (Version DalamudVersion, string ClientStructsCommit)[] ReviewedApi15Builds =
+    // Reviewed 15.0.4.0 (12e318c) and the 15.0.3.9 dev snapshot (43b3411):
+    // both ship ClientStructs 80cb4a7. Compared dd57986..80cb4a7: no changes to
+    // Party Finder, AtkUnitBase, list renderers or consumed condition values.
+    // AgentLobby adds ShowLobbyStatusDialog only; no lobby/character-list offsets move.
+    // AtkComponentButton changes SetText(null) only; AtkResNode changes its unused
+    // constructor signature only. DAD's return button and visibility reads are unchanged.
+    // Dalamud 30509c3..12e318c1 does not change DAD's framework/client/condition/key interfaces.
+    // https://github.com/aers/FFXIVClientStructs/compare/dd57986b8287e7c6ed9c27198f8c76cb04a81dfe...80cb4a7b7e11a6702e2eb8839afd301a918c638e
+    private static readonly (Version DalamudVersion, string[] ClientStructsCommits)[] ReviewedApi15Builds =
     [
-        (new Version(15, 0, 3, 0), "cc474ca90dce0824334544ad7ec7d769f3cb6ee5"),
-        (new Version(15, 0, 3, 2), "50e46a849ce2b2ada83e8fe4209c50b6a34d7695"),
-        (new Version(15, 0, 3, 8), "d6397a76b3a63c2b247025dc296653182b718ca6"),
-        (new Version(15, 0, 3, 9), "dd57986b8287e7c6ed9c27198f8c76cb04a81dfe"),
+        (new Version(15, 0, 3, 0), ["cc474ca90dce0824334544ad7ec7d769f3cb6ee5"]),
+        (new Version(15, 0, 3, 2), ["50e46a849ce2b2ada83e8fe4209c50b6a34d7695"]),
+        (new Version(15, 0, 3, 8), ["d6397a76b3a63c2b247025dc296653182b718ca6"]),
+        (new Version(15, 0, 3, 9), ["dd57986b8287e7c6ed9c27198f8c76cb04a81dfe", "80cb4a7b7e11a6702e2eb8839afd301a918c638e"]),
+        (new Version(15, 0, 4, 0), ["80cb4a7b7e11a6702e2eb8839afd301a918c638e"]),
     ];
 
     [Fact]
@@ -49,10 +58,8 @@ public sealed class DadAlliancePartyFinderApi15LayoutTests
             assembly.Location).ProductVersion;
 
         Assert.NotNull(productVersion);
-        Assert.Contains(
-            baseline.ClientStructsCommit,
-            productVersion,
-            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(baseline.ClientStructsCommits,
+            commit => productVersion.Contains(commit, StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

@@ -15,7 +15,8 @@ internal readonly record struct DadTitleMenuReadinessSnapshot(
     bool MovieStaffListReady,
     bool NavigationOverlayVisible,
     bool ConnectionOverlayVisible,
-    bool DialogOverlayVisible)
+    bool DialogOverlayVisible,
+    bool EmptyCharacterSelectReady = false)
 {
     public bool IsFresh(DateTime nowUtc)
         => CapturedAtUtc != DateTime.MinValue &&
@@ -197,7 +198,8 @@ public sealed unsafe partial class DadTitleMenuReadinessService : IDisposable
                 movieReady,
                 navigation,
                 connecting,
-                dialog);
+                dialog,
+                FindExactEmptyCharacterSelectReturn() != null);
         }
         catch
         {

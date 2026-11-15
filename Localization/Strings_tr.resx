@@ -8992,4 +8992,7 @@
   <data name="ADS owns the repair and return-to-inn route. DAD also waits for the ADS utility to finish before queueing, within the existing 180-second preparation timeout. All workers need an ADS version supporting this route." xml:space="preserve"><value>Onarımı ve hana dönüş yolunu ADS yönetir. DAD, kuyruğa girmeden önce ADS yardımcı işleminin bitmesini de bekler; mevcut 180 saniyelik hazırlık sınırı geçerlidir. Tüm yürütücü istemcilerde bu yolu destekleyen bir ADS sürümü gerekir.</value></data>
   <data name="Highlight contrast" xml:space="preserve"><value>Vurgu karşıtlığı</value></data>
   <data name="Makes controls and selection states more distinct." xml:space="preserve"><value>Denetimleri ve seçim durumlarını daha belirgin hâle getirir.</value></data>
+  <data name="Restart Schedule on Partial Failure" xml:space="preserve"><value>PartialFailure sonrası programı yeniden başlat</value></data>
+  <data name="Maximum partial-failure restarts" xml:space="preserve"><value>Kısmi hata sonrası en fazla yeniden başlatma</value></data>
+  <data name="Debug only: restart the whole schedule after an incomplete duty and safe cleanup. Existing daily and level checks are preserved. Manual stops are never retried." xml:space="preserve"><value>Yalnızca hata ayıklama: tamamlanmamış görev ve güvenli temizliğin ardından programın tamamını baştan başlatır. Mevcut günlük ödül ve seviye kontrolleri korunur. Elle durdurulan işler asla yeniden denenmez.</value></data>
 </root>

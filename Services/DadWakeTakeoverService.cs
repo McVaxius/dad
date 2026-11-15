@@ -22,6 +22,11 @@ internal interface IDadTitleMovieDismissalTarget
     DadWakeTakeoverActionResult DismissExactTitleMovie();
 }
 
+internal interface IDadEmptyCharacterSelectRecoveryTarget
+{
+    DadWakeTakeoverActionResult ReturnEmptyCharacterSelectToTitle();
+}
+
 internal interface IDadAuthenticatedAutoPartyWakeTarget
 {
     void ObserveAuthenticatedAutoPartyWake(DadWakeTakeoverRequestDto request);
@@ -327,6 +332,8 @@ public sealed class DadWakeTakeoverService : IDisposable
             operation.CoordinatorAvailable = false;
             ResetTitleLoginRetryProof(operation);
             operation.RelogRetryGate.Reset();
+            operation.EmptyCharacterSelectRetryGate.ResetProof();
+            operation.OwnedTitleLoginRetryGate.ResetProof();
             operation.HomeWorldReturnGate.ResetIdleProof();
 
             if (operation.Phase >= DadWakeTakeoverPhase.ResetCommitted)
@@ -1268,6 +1275,10 @@ public sealed class DadWakeTakeoverService : IDisposable
             return;
         }
         var participant = snapshot.Participant;
+        if (operation.RelogCommandAttempted && !HasCompleteLiveIdentity(participant))
+            operation.RelogIdentityTransitionObserved = true;
+        if (TryRecoverFailedLogin(operation, snapshot))
+            return;
         if (operation.TitleIdleRelogCommandAttempted)
         {
             if (!HasCompleteLiveIdentity(participant))
@@ -1402,6 +1413,115 @@ public sealed class DadWakeTakeoverService : IDisposable
             string.Equals(activeOperationKey, DadWakePolicyRules.BuildOperationKey(operation.Request), StringComparison.OrdinalIgnoreCase))
             activeOperationKey = string.Empty;
     }
+
+    private bool TryRecoverFailedLogin(OperationState operation, DadWakeTakeoverTargetSnapshot snapshot)
+    {
+        var safe = operation.CoordinatorAvailable && operation.RelogCommandAttempted &&
+                   !operation.RestorationRequested && !operation.CleanupPending &&
+                   snapshot.DadEnabled && snapshot.RemoteMutationAllowed &&
+                   DadTitleIdleLoginRules.HasExactStableRoute(snapshot) &&
+                   !snapshot.Participant.IsAvailable && snapshot.TitleSurfaceEvidenceFresh &&
+                   snapshot.TitleClientLoggedOut && snapshot.TitleNoActiveConditionFlags &&
+                   snapshot.AutoRetainerAvailable && !snapshot.AutoRetainerBusy &&
+                   snapshot.SuppressionReadable && !snapshot.MultiModeEnabled &&
+                   (!snapshot.AutoRetainerSuppressed || snapshot.DadOwnsSuppression) &&
+                   snapshot.LifestreamAvailable && !snapshot.LifestreamBusy &&
+                   snapshot.VermaxionStatusEvidenceFresh && !IsExternalAutomationBlocking(snapshot) &&
+                   !snapshot.TitleNavigationOverlayVisible && !snapshot.TitleConnectionOverlayVisible &&
+                   !snapshot.TitleErrorOverlayVisible &&
+                   (operation.TitleIdleRelogCommandAttempted ||
+                    snapshot.DadOwnsSuppression && snapshot.AutoRetainerSuppressed);
+        var empty = snapshot.TitleSurface == DadTitleSurface.CharacterSelect && snapshot.EmptyCharacterSelectReady;
+        var idleOwnedTitle = !operation.TitleIdleRelogCommandAttempted &&
+                             snapshot.TitleSurface == DadTitleSurface.TitleMenu &&
+                             snapshot.TitleMenuReady && snapshot.LifestreamCanAutoLogin;
+        var emptyReady = operation.EmptyCharacterSelectRetryGate.Observe(safe && empty, utcNow());
+        var titleReady = operation.OwnedTitleLoginRetryGate.Observe(safe && idleOwnedTitle, utcNow());
+        if (!operation.RelogCommandAttempted || (!empty && !idleOwnedTitle))
+            return false;
+        operation.UpdatedAtUtc = utcNow();
+        if (!safe)
+        {
+            operation.Summary = "Failed-login recovery is waiting for the original connected route, idle automation, and exact safe logged-out UI proof.";
+            return true;
+        }
+        var retryGate = empty ? operation.EmptyCharacterSelectRetryGate : operation.OwnedTitleLoginRetryGate;
+        if (retryGate.AttemptCount >= DadEmptyCharacterSelectRecoveryGate.MaximumAttempts)
+        {
+            Block(operation, "Failed-login recovery exhausted five attempts; no further login action will be replayed.", cleanup: true);
+            return true;
+        }
+        if ((empty && !emptyReady) || (idleOwnedTitle && !titleReady))
+        {
+            operation.Summary = empty
+                ? "DAD-owned login is idle at empty Character Select; waiting for thirty continuously safe seconds before returning to Title."
+                : "DAD-owned relog returned to idle Title; waiting for five continuously safe seconds before exact login retry.";
+            return true;
+        }
+
+        // Runtime wake requests execute on the framework thread. Recapture ownership
+        // and the native surface before the one native return or IPC invocation.
+        var fresh = Capture(operation, forceExternalRefresh: true);
+        if (!SameFailedLoginRecoveryBoundary(snapshot, fresh, empty))
+        {
+            operation.EmptyCharacterSelectRetryGate.ResetProof();
+            operation.OwnedTitleLoginRetryGate.ResetProof();
+            operation.Summary = "Failed-login recovery discarded stale UI/ownership proof before dispatch.";
+            return true;
+        }
+        retryGate.RecordAttempt();
+        diagnostic?.Invoke($"request={operation.Request.SchedulerRunId} slot={operation.Request.SlotId} " +
+                           $"action={(empty ? "return-empty-character-select" : "retry-owned-title-login")} " +
+                           $"attempt={retryGate.AttemptCount}/{DadEmptyCharacterSelectRecoveryGate.MaximumAttempts}");
+        if (empty)
+        {
+            var result = Invoke(
+                () => target is IDadEmptyCharacterSelectRecoveryTarget recoveryTarget
+                    ? recoveryTarget.ReturnEmptyCharacterSelectToTitle()
+                    : DadWakeTakeoverActionResult.Rejected("The target does not support exact empty Character Select return."),
+                "return empty Character Select to Title");
+            if (!result.Success)
+                Block(operation, result.Error + " No uncertain native action will be replayed.", cleanup: true);
+            else
+                operation.Summary = "Returned the exact empty Character Select to Title; retaining the frozen login target and DAD ownership.";
+        }
+        else
+        {
+            DadLifestreamLoginResult login;
+            operation.RelogAttemptCount++;
+            try { login = target.ConnectAndLogin(operation.ActiveRequest); }
+            catch (Exception exception)
+            {
+                Block(operation, $"Failed-login IPC dispatch was uncertain: {exception.Message}. No replay is permitted.", cleanup: true);
+                return true;
+            }
+            if (login.Outcome == DadLifestreamLoginOutcome.Uncertain)
+                Block(operation, login.Summary + " No uncertain login will be replayed.", cleanup: true);
+            else
+            {
+                operation.RelogIssuedUtc = utcNow();
+                operation.Summary = login.Summary + " Waiting for the same frozen character or another fresh safe idle retry window.";
+            }
+        }
+        operation.UpdatedAtUtc = utcNow();
+        return true;
+    }
+
+    private static bool SameFailedLoginRecoveryBoundary(
+        DadWakeTakeoverTargetSnapshot before, DadWakeTakeoverTargetSnapshot after, bool empty)
+        => after.DadEnabled && after.RemoteMutationAllowed &&
+           DadTitleIdleLoginRules.HasExactStableRoute(after) &&
+           !after.Participant.IsAvailable && after.TitleSurfaceEvidenceFresh &&
+           after.TitleClientLoggedOut && after.TitleNoActiveConditionFlags &&
+           after.TitleSurface == before.TitleSurface &&
+           after.AutoRetainerAvailable && !after.AutoRetainerBusy && after.SuppressionReadable &&
+           !after.MultiModeEnabled && after.DadOwnsSuppression == before.DadOwnsSuppression &&
+           after.AutoRetainerSuppressed == before.AutoRetainerSuppressed &&
+           after.DadOwnsCharacterPostprocess == before.DadOwnsCharacterPostprocess &&
+           after.LifestreamAvailable && !after.LifestreamBusy && after.VermaxionStatusEvidenceFresh &&
+           !IsExternalAutomationBlocking(after) &&
+           !after.TitleNavigationOverlayVisible && !after.TitleConnectionOverlayVisible && !after.TitleErrorOverlayVisible &&
+           (empty ? after.EmptyCharacterSelectReady : after.TitleMenuReady && after.LifestreamCanAutoLogin);
 
     private static string BuildLiveDestinationWaitSummary(
         OperationState operation,
@@ -2281,6 +2401,8 @@ public sealed class DadWakeTakeoverService : IDisposable
         public DadCharacterKey RelogSourceCharacterKey { get; set; } = new(string.Empty);
         public string RelogSourceIdentity { get; set; } = string.Empty;
         public DadSafeIdleRetryGate RelogRetryGate { get; } = new();
+        public DadEmptyCharacterSelectRecoveryGate EmptyCharacterSelectRetryGate { get; } = new();
+        public DadEmptyCharacterSelectRecoveryGate OwnedTitleLoginRetryGate { get; } = new(TimeSpan.FromSeconds(5));
         public int RelogAttemptCount { get; set; }
         public bool RelogIdentityTransitionObserved { get; set; }
         public int Epoch { get; set; } = 1;

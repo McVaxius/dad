@@ -114,6 +114,8 @@ public sealed class DadScheduleDefinition
     public string DisplayName { get; set; } = "Dad Schedule";
     public DadScheduleCadence Cadence { get; set; } = DadScheduleCadence.Manual;
     public bool StayOnVisitedWorldBetweenPresets { get; set; }
+    public bool RestartOnPartialFailure { get; set; }
+    public int PartialFailureRestartLimit { get; set; } = 3;
     public DadShoppingAssociation? ShoppingAssociation { get; set; }
     public List<DadShoppingAssociation> ShoppingAssociations { get; set; } = [];
     public List<DadScheduleEntry> Entries { get; set; } = [];
@@ -129,6 +131,7 @@ public sealed class DadScheduleDefinition
     {
         SchemaVersion = Math.Max(1, SchemaVersion);
         Revision = Math.Max(1, Revision);
+        PartialFailureRestartLimit = Math.Clamp(PartialFailureRestartLimit, 1, 20);
         ScheduleId = string.IsNullOrWhiteSpace(ScheduleId) ? Guid.NewGuid().ToString("N") : ScheduleId.Trim();
         DisplayName = string.IsNullOrWhiteSpace(DisplayName) ? "Dad Schedule" : DisplayName.Trim();
         ShoppingAssociation?.Normalize();
@@ -153,6 +156,8 @@ public sealed class DadScheduleDefinition
             DisplayName = DisplayName,
             Cadence = Cadence,
             StayOnVisitedWorldBetweenPresets = StayOnVisitedWorldBetweenPresets,
+            RestartOnPartialFailure = RestartOnPartialFailure,
+            PartialFailureRestartLimit = PartialFailureRestartLimit,
             ShoppingAssociation = ShoppingAssociation?.Clone(),
             ShoppingAssociations = ShoppingAssociations.Select(static value => value.Clone()).ToList(),
             Entries = Entries?.Select(static entry => entry.Clone()).ToList() ?? [],
@@ -200,6 +205,9 @@ public sealed class DadScheduleRunState
     public int DutyExitRetryCount { get; set; }
     public DateTime? DutyExitRetryPendingSinceUtc { get; set; }
     public DadRunResult? DutyExitRetrySource { get; set; }
+    public int PartialFailureRestartCount { get; set; }
+    public DateTime? PartialFailureRestartPendingSinceUtc { get; set; }
+    public DadRunResult? PartialFailureRestartSource { get; set; }
     public bool HasFrozenMemberSettings { get; set; }
     public List<DadShoppingRunAssociation> FrozenMemberAssignments { get; set; } = [];
     public Dictionary<string, DadCompletionActions> FrozenCompletionActions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -243,6 +251,9 @@ public sealed class DadScheduleRunState
             DutyExitRetryCount = DutyExitRetryCount,
             DutyExitRetryPendingSinceUtc = DutyExitRetryPendingSinceUtc,
             DutyExitRetrySource = DutyExitRetrySource?.Clone(),
+            PartialFailureRestartCount = PartialFailureRestartCount,
+            PartialFailureRestartPendingSinceUtc = PartialFailureRestartPendingSinceUtc,
+            PartialFailureRestartSource = PartialFailureRestartSource?.Clone(),
             HasFrozenMemberSettings = HasFrozenMemberSettings,
             FrozenMemberAssignments = FrozenMemberAssignments.Select(static value => value.Clone()).ToList(),
             FrozenCompletionActions = FrozenCompletionActions.ToDictionary(pair => pair.Key, pair => pair.Value.Clone(), StringComparer.OrdinalIgnoreCase),
@@ -270,6 +281,7 @@ public sealed class DadScheduleRunState
             ScheduleRevisionAtStart = ScheduleRevisionAtStart,
             RetriedFromRunId = RetriedFromRunId,
             DutyExitRetryCount = DutyExitRetryCount,
+            PartialFailureRestartCount = PartialFailureRestartCount,
             CurrentEntryId = CurrentEntryId,
             CurrentGroupId = CurrentGroupId,
             CurrentPresetName = CurrentPresetName,
@@ -299,6 +311,7 @@ public sealed class DadScheduleRunResult
     public long ScheduleRevisionAtStart { get; set; }
     public string RetriedFromRunId { get; set; } = string.Empty;
     public int DutyExitRetryCount { get; set; }
+    public int PartialFailureRestartCount { get; set; }
     public string CurrentEntryId { get; set; } = string.Empty;
     public string CurrentGroupId { get; set; } = string.Empty;
     public string CurrentPresetName { get; set; } = string.Empty;
@@ -327,6 +340,7 @@ public sealed class DadScheduleRunResult
             ScheduleRevisionAtStart = ScheduleRevisionAtStart,
             RetriedFromRunId = RetriedFromRunId,
             DutyExitRetryCount = DutyExitRetryCount,
+            PartialFailureRestartCount = PartialFailureRestartCount,
             CurrentEntryId = CurrentEntryId,
             CurrentGroupId = CurrentGroupId,
             CurrentPresetName = CurrentPresetName,
