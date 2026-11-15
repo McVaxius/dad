@@ -23,6 +23,9 @@ public sealed class DadAlliancePartyFinderApi15LayoutTests
     // https://github.com/goatcorp/Dalamud/tree/30509c3b4fd00edd9a3d65b7bbf16433d84be03b/lib/FFXIVClientStructs
     // Reviewed 15.0.3.9 against 15.0.3.8: no Party Finder/AtkUnitBase/list-renderer or
     // ConditionFlag changes. NumberArrayData only adds methods; existing fields and SetValue stay unchanged.
+    // https://github.com/goatcorp/Dalamud/tree/12e318c1936e449e5883faa61214eb2ced478349/lib/FFXIVClientStructs
+    // Reviewed 15.0.4.0 against 15.0.3.9: consumed Party Finder/recruitment/addon fields,
+    // list renderers, AgentInterface, AtkValue, AtkUnitBase callbacks and ConditionFlag are unchanged.
     // Reviewed 15.0.4.0 (12e318c) and the 15.0.3.9 dev snapshot (43b3411):
     // both ship ClientStructs 80cb4a7. Compared dd57986..80cb4a7: no changes to
     // Party Finder, AtkUnitBase, list renderers or consumed condition values.

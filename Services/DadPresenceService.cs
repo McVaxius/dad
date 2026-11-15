@@ -1834,6 +1834,12 @@ public sealed class DadPresenceService
             nowUtc,
             expected.RequiredJobId.HasValue
                 ? gearsetId => classJobGearsetGateway.TryEquip(gearsetId, expected.RequiredJobId.Value)
+                : null,
+            expected.RequiredJobId.HasValue
+                ? gearsetId => classJobGearsetGateway.TryEquipSoulCrystal(gearsetId, expected.RequiredJobId.Value)
+                : null,
+            expected.RequiredJobId.HasValue
+                ? gearsetId => classJobGearsetGateway.TryUpdatePromotedGearset(gearsetId, expected.RequiredJobId.Value)
                 : null);
         CurrentParticipant.RequestedJobPreparation = proof;
 

@@ -1270,7 +1270,7 @@
     <value>Uyumluluk devri: VERMAXION boşta / AR boşta</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>Uyumluluk modu. Dad mevcut Dad+ADS akışını korur: kuyruğa girmeden önce /ads outside, girişten sonra sabit rotasyon komutları ve DutyCompleted sonrasında /ads leave. Rotasyon komutu hataları yalnızca uyarıdır.</value>
+    <value>Uyumluluk modu. Dad mevcut Dad+ADS akışını korur: kuyruğa girmeden önce /ads outside, girişten sonra yüklü yerel sunucunun AI açma komutu ve DutyCompleted sonrasında /ads leave. Rotasyon komutu hataları yalnızca uyarı verir. Birden fazla BossMod sunucusu yüklüyse giriş komutu gönderilmez.</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>Uyumluluk devri</value>
@@ -2461,7 +2461,7 @@
     <value>Eksik veya boş girdileri düzeltin.</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>Girişten sonraki sabit komutlar</value>
+    <value>Yüklü sunucuya göre giriş sonrası komut</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>Sabit İfade Çalıştırması</value>
@@ -3625,7 +3625,7 @@
     <value>Kayıt yok</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>Normal Dad çalışmasının tamamlanması ve tüm iptal/durdurma/hata yolları savaş otomasyonunu değiştirmez. Son dad.Duty.Run IPC işlemi başarıyla tamamlandığında her zaman /rotation cancel, /vbmai off, /bmrai off ve /wrath auto off gönderilir; /fr off yalnızca Questionable boştayken ve DAD onun AutoDuty komut yuvalarını yönetmiyorken gönderilir.</value>
+    <value>Normal Dad çalışmasının tamamlanması ve tüm iptal/durdurma/hata yolları savaş otomasyonunu değiştirmez. Son dad.Duty.Run IPC işlemi başarıyla tamamlandığında /rotation cancel, /wrath auto off ve yüklü yerel sunucunun AI kapatma komutu gönderilir: /gmai off, /bmrai off veya /vbmai off. Birden fazla BossMod sunucusu yüklüyse değiştirilmez ve temizleme uyarısı gösterilir. /fr off yalnızca Questionable boştayken ve DAD onun AutoDuty komut yuvalarını yönetmiyorken gönderilir.</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>Normal yenileme bekleme süresi: {0:0}s kaldı.</value>

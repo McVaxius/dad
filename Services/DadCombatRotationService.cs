@@ -30,12 +30,8 @@ public sealed class DadCombatRotationService(
     internal const string AcquireDungeonRsrAggroChannel = "FrenRider.Dad.AcquireDungeonRsrAggro";
     internal const string ReleaseDungeonRsrAggroChannel = "FrenRider.Dad.ReleaseDungeonRsrAggro";
     public const string BossModRotationCommand = "/bmrai on";
+    public const string GodModRotationCommand = "/gmai on";
     public const string AutoRotationCommand = "/rotation auto";
-
-    private static readonly string[] BootstrapCommands =
-    [
-        BossModRotationCommand,
-    ];
 
     private readonly DadFrenRiderEntryEnableGate frenRiderEntryEnableGate = new();
     private readonly ICallGateSubscriber<string, bool> frenRiderConfigureAndEnable =
@@ -275,25 +271,54 @@ public sealed class DadCombatRotationService(
 
     private bool TryBootstrapForceCommands(out string summary)
     {
-        var failedCommands = new List<string>();
-        foreach (var command in BootstrapCommands)
+        if (!TryResolveBossModAiCommand(enabled: true, out var command, out summary))
         {
-            if (!TrySendCommand(command))
-                failedCommands.Add(command);
+            log.Warning("[dad][CombatRotation] {Summary}", summary);
+            return false;
         }
 
-        if (failedCommands.Count == 0)
+        if (TrySendCommand(command))
         {
-            summary = "Force Commands mode sent /bmrai on after Duty Support entry.";
+            summary = $"Force Commands mode sent {command} after Duty Support entry.";
             log.Information(
                 "[dad][CombatRotation] Sent Duty Support rotation bootstrap commands: {Commands}.",
-                string.Join(", ", BootstrapCommands));
+                command);
             return true;
         }
 
-        summary = $"Force Commands mode attempted rotation bootstrap; failed command(s): {string.Join(", ", failedCommands)}.";
+        summary = $"Force Commands mode attempted rotation bootstrap; failed command: {command}.";
         log.Warning("[dad][CombatRotation] {Summary}", summary);
         return false;
+    }
+
+    internal bool TryResolveBossModAiCommand(bool enabled, out string command, out string failure)
+    {
+        command = string.Empty;
+        try
+        {
+            var hosts = pluginInterface.InstalledPlugins.Where(plugin => plugin.IsLoaded &&
+                (string.Equals(plugin.InternalName, "GodMod", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(plugin.InternalName, "BossModReborn", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(plugin.InternalName, "BossMod", StringComparison.OrdinalIgnoreCase))).ToArray();
+            if (hosts.Length != 1)
+            {
+                failure = hosts.Length == 0
+                    ? "No compatible BossMod host is loaded; DAD sent no AI command."
+                    : "Multiple BossMod hosts are loaded; DAD sent no AI command. Load only one native host.";
+                return false;
+            }
+            var prefix = string.Equals(hosts[0].InternalName, "GodMod", StringComparison.OrdinalIgnoreCase) ? "/gmai"
+                : string.Equals(hosts[0].InternalName, "BossMod", StringComparison.OrdinalIgnoreCase) ? "/vbmai" : "/bmrai";
+            command = $"{prefix} {(enabled ? "on" : "off")}";
+            failure = string.Empty;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            failure = "BossMod host availability could not be inspected; DAD sent no AI command.";
+            log.Warning(ex, "[dad][CombatRotation] {Failure}", failure);
+            return false;
+        }
     }
 
     private bool TrySendCommand(string command)

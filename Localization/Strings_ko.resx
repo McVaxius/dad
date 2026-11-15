@@ -1271,7 +1271,7 @@
     <value>호환성 핸드오프: VERMAXION 유휴/AR 유휴</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>호환 모드입니다. 기존 Dad+ADS 흐름을 유지합니다. 신청 전에 /ads outside, 입장 후 고정 전투 명령, DutyCompleted 후 /ads leave를 실행합니다. 전투 명령 실패는 경고만 표시합니다.</value>
+    <value>호환 모드입니다. Dad는 기존 Dad+ADS 흐름을 유지합니다. 대기열 등록 전에 /ads outside, 입장 후 로드된 네이티브 호스트의 AI 켜기 명령, DutyCompleted 후 /ads leave를 보냅니다. 로테이션 명령 실패는 경고만 표시합니다. 여러 BossMod 호스트가 로드되면 입장 명령을 보내지 않습니다.</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>호환성핸드오프</value>
@@ -2464,7 +2464,7 @@
     <value>누락되거나 빈 항목을 수정합니다.</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>입력 후 명령 수정</value>
+    <value>로드된 호스트에 따른 입장 후 명령</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>고정EmoteRun</value>
@@ -3628,7 +3628,7 @@
     <value>기록되지 않음</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>일반 Dad 실행 완료와 모든 취소·중지·실패 경로는 전투 자동화를 변경하지 않습니다. 최종 dad.Duty.Run IPC 완료가 성공하면 항상 /rotation cancel, /vbmai off, /bmrai off, /wrath auto off를 보냅니다. /fr off는 Questionable이 유휴 상태이고 DAD가 해당 AutoDuty 명령 슬롯을 점유하지 않을 때만 보냅니다.</value>
+    <value>일반 Dad 실행 완료와 모든 취소·중지·실패 경로는 전투 자동화를 변경하지 않습니다. 최종 dad.Duty.Run IPC 완료가 성공하면 /rotation cancel, /wrath auto off와 로드된 네이티브 호스트의 AI 끄기 명령인 /gmai off, /bmrai off 또는 /vbmai off를 보냅니다. 여러 BossMod 호스트가 로드되면 변경하지 않고 정리 경고를 표시합니다. /fr off는 Questionable이 유휴 상태이고 DAD가 해당 AutoDuty 명령 슬롯을 점유하지 않을 때만 보냅니다.</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>일반 새로고침 쿨다운: {0:0}s 남음.</value>

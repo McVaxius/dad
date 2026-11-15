@@ -1270,7 +1270,7 @@
     <value>Chuyển giao tương thích: VERMAXION rảnh / AR rảnh</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>Chế độ tương thích. Dad giữ luồng Dad+ADS hiện tại: /ads outside trước khi xếp hàng, lệnh xoay vòng cố định sau khi vào và /ads leave sau DutyCompleted. Lỗi lệnh xoay vòng chỉ tạo cảnh báo.</value>
+    <value>Chế độ tương thích. Dad giữ quy trình Dad+ADS hiện tại: /ads outside trước khi xếp hàng, lệnh bật AI của host gốc đã tải sau khi vào và /ads leave sau DutyCompleted. Lỗi lệnh xoay vòng kỹ năng chỉ đưa ra cảnh báo. Nếu tải nhiều host BossMod, sẽ không gửi lệnh khi vào.</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>Chuyển giao tương thích</value>
@@ -2461,7 +2461,7 @@
     <value>Sửa mục thiếu hoặc trống.</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>Lệnh cố định sau khi vào</value>
+    <value>Lệnh sau khi vào, tùy theo host đã tải</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>Lượt chạy Biểu cảm cố định</value>
@@ -3625,7 +3625,7 @@
     <value>Không ghi nhận</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>Hoàn tất lượt chạy Dad bình thường và mọi trường hợp hủy/dừng/thất bại đều giữ nguyên tự động hóa chiến đấu. Khi IPC dad.Duty.Run cuối cùng hoàn tất thành công, luôn gửi /rotation cancel, /vbmai off, /bmrai off và /wrath auto off; chỉ gửi /fr off khi Questionable đang rảnh và DAD không sở hữu các vị trí lệnh AutoDuty của nó.</value>
+    <value>Hoàn tất lượt chạy Dad bình thường và mọi trường hợp hủy/dừng/thất bại đều giữ nguyên tự động hóa chiến đấu. Khi IPC dad.Duty.Run cuối cùng hoàn tất thành công, gửi /rotation cancel, /wrath auto off và lệnh tắt AI của host gốc đã tải: /gmai off, /bmrai off hoặc /vbmai off. Nếu tải nhiều host BossMod, giữ nguyên chúng và đưa ra cảnh báo dọn dẹp. Chỉ gửi /fr off khi Questionable đang rảnh và DAD không sở hữu các vị trí lệnh AutoDuty của nó.</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>Thời gian chờ làm mới thông thường: còn {0:0}s.</value>

@@ -101,23 +101,71 @@ public sealed class DadQuestionableRuntimeTests
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void ForceCommandsUsesOnlyBossModRotationAndReportsRejectedCommand(bool commandAccepted)
+    [InlineData("BossModReborn", "/bmrai on", true)]
+    [InlineData("BossModReborn", "/bmrai on", false)]
+    [InlineData("GodMod", "/gmai on", true)]
+    [InlineData("GodMod", "/gmai on", false)]
+    [InlineData("BossMod", "/vbmai on", true)]
+    [InlineData("BossMod", "/vbmai on", false)]
+    public void ForceCommandsUsesOnlyTheLoadedNativeHostAndReportsRejectedCommand(string host, string command, bool commandAccepted)
     {
-        using var fixture = new DungeonTargetingFixture { CommandAccepted = commandAccepted };
+        using var fixture = new DungeonTargetingFixture { CommandAccepted = commandAccepted, LoadedHosts = [host] };
 
         Assert.Equal(commandAccepted, fixture.Combat.TryApplyDutySupportEntryMode(
             DadRuntime::dad.DadCombatRotationMode.ForceCommands, "force-bmr-run", out var summary, out var shouldFailRun));
 
-        Assert.Equal(new[] { "/bmrai on" }, fixture.Events);
-        Assert.Contains("/bmrai on", summary, StringComparison.Ordinal);
+        Assert.Equal(new[] { command }, fixture.Events);
+        Assert.Contains(command, summary, StringComparison.Ordinal);
         Assert.DoesNotContain("/rotation", summary, StringComparison.Ordinal);
         Assert.False(shouldFailRun);
         Assert.True(fixture.Release("force-bmr-run"));
-        Assert.Equal(new[] { "/bmrai on" }, fixture.Events);
+        Assert.Equal(new[] { command }, fixture.Events);
         if (!commandAccepted)
             Assert.True(fixture.WarningCount > 0);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("ambiguous")]
+    [InlineData("unknown")]
+    public void ForceCommandsNeverGuessesAMissingOrAmbiguousNativeHost(string state)
+    {
+        using var fixture = new DungeonTargetingFixture
+        {
+            LoadedHosts = state == "missing" ? [] : state == "ambiguous" ? ["GodMod", "BossModReborn"] : ["SyntheticUnknownHost"],
+        };
+        var saved = JsonSerializer.Serialize(fixture.Configuration);
+        Assert.False(fixture.Combat.TryApplyDutySupportEntryMode(DadRuntime::dad.DadCombatRotationMode.ForceCommands,
+            "blocked-native-host", out var summary, out var shouldFailRun));
+        Assert.Contains("no AI command", summary, StringComparison.Ordinal);
+        Assert.False(shouldFailRun); // Existing Force Commands failures remain warning-only.
+        Assert.Empty(fixture.Events);
+        Assert.Equal(saved, JsonSerializer.Serialize(fixture.Configuration));
+    }
+
+    [Theory]
+    [InlineData("GodMod", "/gmai off")]
+    [InlineData("BossModReborn", "/bmrai off")]
+    [InlineData("BossMod", "/vbmai off")]
+    public void SuccessfulDutyIpcCleanupUsesOnlyTheLoadedNativeHost(string host, string command)
+    {
+        using var fixture = new DungeonTargetingFixture { LoadedHosts = [host] };
+        var result = fixture.SuccessfulCleanup();
+        Assert.Equal(new[] { "/fr off", "/rotation cancel", command, "/wrath auto off" }, fixture.Events);
+        Assert.Empty(result.FailedCommands);
+        Assert.Equal("Succeeded.", result.Result);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SuccessfulDutyIpcCleanupReportsUnavailableHostsWithoutStoppingAny(bool ambiguous)
+    {
+        using var fixture = new DungeonTargetingFixture { LoadedHosts = ambiguous ? ["GodMod", "BossModReborn"] : [] };
+        var result = fixture.SuccessfulCleanup();
+        Assert.Equal(new[] { "/fr off", "/rotation cancel", "/wrath auto off" }, fixture.Events);
+        Assert.Equal(new[] { "BossMod AI off" }, result.FailedCommands);
+        Assert.Contains("warnings", result.Result, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -154,6 +202,8 @@ public sealed class DadQuestionableRuntimeTests
     {
         private readonly PropertyInfo commandProperty = typeof(DutyIpc).Assembly.GetType("dad.Plugin")!.GetProperty("CommandManager")!;
         private readonly object? previousCommands;
+        private readonly IDalamudPluginInterface pluginInterface;
+        private readonly IPluginLog log;
         public readonly List<string> Events = [];
         public readonly DadRuntime::dad.Configuration Configuration = new()
             { CombatRotationMode = DadRuntime::dad.DadCombatRotationMode.UseFrenRider };
@@ -163,6 +213,7 @@ public sealed class DadQuestionableRuntimeTests
         public bool ThrowAcquisition;
         public bool ReleaseAccepted = true;
         public bool CommandAccepted = true;
+        public string[] LoadedHosts = ["BossModReborn"];
         public int WarningCount;
 
         public DungeonTargetingFixture()
@@ -174,8 +225,25 @@ public sealed class DadQuestionableRuntimeTests
                 Events.Add((string)args![0]!);
                 return CommandAccepted;
             }));
-            var pi = Proxy<IDalamudPluginInterface>((method, args) =>
+            pluginInterface = Proxy<IDalamudPluginInterface>((method, args) =>
             {
+                if (method.Name == "get_InstalledPlugins")
+                {
+                    var contract = method.ReturnType.GetGenericArguments()[0];
+                    var plugins = Array.CreateInstance(contract, LoadedHosts.Length);
+                    for (var index = 0; index < LoadedHosts.Length; index++)
+                    {
+                        var host = LoadedHosts[index];
+                        plugins.SetValue(Proxy(contract, (property, _) => property.Name switch
+                        {
+                            "get_InternalName" or "get_Name" => host,
+                            "get_IsLoaded" => true,
+                            _ => throw new InvalidOperationException($"Unexpected native plugin metadata: {property.Name}"),
+                        }), index);
+                    }
+                    return plugins;
+                }
+                if (method.Name == "GetIpcProvider") return Proxy(method.ReturnType, (_, _) => null);
                 Assert.Equal("GetIpcSubscriber", method.Name);
                 var endpoint = (string)args![0]!;
                 return Proxy(method.ReturnType, (call, values) =>
@@ -198,8 +266,8 @@ public sealed class DadQuestionableRuntimeTests
                     return true;
                 });
             });
-            Combat = new(Configuration, pi, Proxy<IPluginLog>((method, _) =>
-                { if (method.Name == "Warning") WarningCount++; return null; }),
+            log = Proxy<IPluginLog>((method, _) => { if (method.Name == "Warning") WarningCount++; return null; });
+            Combat = new(Configuration, pluginInterface, log,
                 expected => ScopeAvailable && (expected == 0 || expected == 4) ? 4u : 0u);
         }
 
@@ -209,6 +277,14 @@ public sealed class DadQuestionableRuntimeTests
             => Invoke("TryEnableFrenRiderAfterDutyEntry", runId, DadRuntime::dad.Models.DadModuleId.Duty,
                 DateTime.UtcNow, null, 4u, !completed)!.ToString()!;
         public bool Release(string runId) => (bool)Invoke("ReleaseDungeonRsrAggro", runId)!;
+        public (List<string> FailedCommands, string Result) SuccessfulCleanup()
+        {
+            var ads = new DadRuntime::dad.Services.DadDutySupportAdsService(pluginInterface, log);
+            using var duty = new DutyIpc(pluginInterface, null!, null!, null!, ads, Combat, log);
+            typeof(DutyIpc).GetMethod("RunSuccessfulSessionCleanup", PrivateInstance)!.Invoke(duty, null);
+            var status = duty.GetStatus();
+            return (status.LastCleanupFailedCommands, status.LastCleanupResult);
+        }
         public void Dispose() => commandProperty.SetValue(null, previousCommands);
     }
 

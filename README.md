@@ -138,6 +138,13 @@ integrations, and everyday commands.
 - Runs presets immediately or in ordered manual and daily-reset schedules.
 - Keeps future planner lanes visibly separate from activities that have guarded live execution today.
 
+Requested jobs use an existing matching job gearset first. If none exists, DAD can equip a valid base-class
+gearset, equip the requested job's owned soul crystal from the Armoury Chest or inventory, then update that
+gearset after observing the requested job. This covers every class-to-job promotion, including Arcanist to
+Summoner or Scholar. The character must meet the game's job unlock and level requirements. Unsafe state waits;
+missing stones or failed preparation retain the existing warning and best-effort behavior without saving an
+unverified promotion.
+
 Schedules offer **Stay on visited world/DC between presets**, off by default. When enabled, successive
 presets using the exact same character keep the existing Wake/relog takeover and AutoRetainer pause
 between entries. A character change still releases that takeover and returns home as required. The

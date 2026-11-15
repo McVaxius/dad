@@ -1270,7 +1270,7 @@
     <value>Transferência de compatibilidade: VERMAXION ocioso / AR ocioso</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>Modo de compatibilidade. Dad preserva o fluxo atual Dad+ADS: /ads outside antes da fila, comandos fixos de rotação após a entrada e /ads leave após DutyCompleted. Falhas nos comandos de rotação geram apenas avisos.</value>
+    <value>Modo de compatibilidade. Dad mantém o fluxo Dad+ADS atual: /ads outside antes da fila, o comando para ativar a IA do host nativo carregado após entrar e /ads leave após DutyCompleted. Falhas nos comandos de rotação geram apenas avisos. Se houver vários hosts BossMod carregados, nenhum comando de entrada será enviado.</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>Transferência de compatibilidade</value>
@@ -2461,7 +2461,7 @@
     <value>Corrija entradas ausentes ou vazias.</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>Comandos fixos após entrada</value>
+    <value>Comando após entrar, conforme o host carregado</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>Execução de Emote Fixo</value>
@@ -3625,7 +3625,7 @@
     <value>Nenhum registrado</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>A conclusão normal de uma execução do Dad e todos os caminhos de cancelamento/parada/falha mantêm a automação de combate inalterada. A conclusão bem-sucedida do IPC dad.Duty.Run final sempre envia /rotation cancel, /vbmai off, /bmrai off e /wrath auto off; envia /fr off apenas enquanto o Questionable está ocioso e o DAD não controla seus espaços de comando do AutoDuty.</value>
+    <value>A conclusão normal de uma execução do Dad e todos os caminhos de cancelamento/parada/falha mantêm a automação de combate inalterada. A conclusão bem-sucedida do IPC dad.Duty.Run final envia /rotation cancel, /wrath auto off e o comando para desativar a IA do host nativo carregado: /gmai off, /bmrai off ou /vbmai off. Vários hosts BossMod carregados permanecem inalterados, com um aviso de limpeza. /fr off é enviado apenas enquanto o Questionable está ocioso e o DAD não controla seus espaços de comando do AutoDuty.</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>Intervalo normal de atualização: restam {0:0}s.</value>

@@ -128,7 +128,7 @@ public static class DadDependencyRules
         new("vnavmesh", "vnavmesh", ["vnavmesh"]),
         new("XADatabase", "XA Database", ["XADatabase"], "0.0.0.39"),
         new("XASlave", "XA Slave", ["XASlave"]),
-        new("BossMod", "BossMod", ["BossModReborn", "BossMod"]),
+        new("BossMod", "BossMod", ["BossModReborn", "GodMod", "BossMod"]),
     ];
 
     public static DadDependencySnapshot Evaluate(
@@ -173,9 +173,15 @@ public static class DadDependencyRules
         DadDependencyRequirement requirement,
         IEnumerable<DadInstalledPluginMetadata> installedPlugins)
     {
-        var candidates = installedPlugins
+        var matchingPlugins = installedPlugins
             .Where(plugin => requirement.AcceptedInternalNames.Any(name =>
                 string.Equals(name, plugin.InternalName, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        if (requirement.RequirementId == "BossMod" && matchingPlugins.Count(plugin => plugin.IsLoaded) > 1)
+            return CreateEntry(requirement, DadDependencyState.Checking,
+                summary: "Multiple BossMod hosts are loaded. Load only one of GodMod, BossModReborn or BossMod before starting DAD work.");
+
+        var candidates = matchingPlugins
             .Select(plugin => EvaluateCandidate(requirement, plugin))
             .ToList();
 
@@ -437,6 +443,7 @@ public static class DadDependencyInstallerRules
             return
             [
                 new("Find BMR (BossModReborn)", "BossModReborn", updatesOnly, installedOnly),
+                new("Find GodMod", "GodMod", updatesOnly, installedOnly),
                 new("Find VBM (BossMod)", "BossMod", updatesOnly, installedOnly),
             ];
         }

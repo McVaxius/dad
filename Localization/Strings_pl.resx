@@ -1270,7 +1270,7 @@
     <value>Przekazanie zgodności: VERMAXION bezczynny / AR bezczynny</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>Tryb zgodności. Dad zachowuje bieżący przepływ Dad+ADS: /ads outside przed kolejką, stałe polecenia rotacji po wejściu i /ads leave po DutyCompleted. Błędy poleceń rotacji są tylko ostrzeżeniami.</value>
+    <value>Tryb zgodności. Dad zachowuje bieżący przebieg Dad+ADS: /ads outside przed kolejką, polecenie włączenia AI załadowanego natywnego hosta po wejściu oraz /ads leave po DutyCompleted. Błędy poleceń rotacji powodują tylko ostrzeżenia. Gdy załadowano kilka hostów BossMod, polecenie wejścia nie jest wysyłane.</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>Przekazanie zgodności</value>
@@ -2461,7 +2461,7 @@
     <value>Popraw brakujące lub puste wpisy.</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>Stałe polecenia po wejściu</value>
+    <value>Polecenie po wejściu zależne od załadowanego hosta</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>Przebieg Stałej Emotki</value>
@@ -3625,7 +3625,7 @@
     <value>Brak zapisanych</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>Normalne ukończenie przebiegu Dad oraz każda ścieżka anulowania/zatrzymania/błędu pozostawiają automatyzację walki bez zmian. Pomyślne ukończenie końcowego IPC dad.Duty.Run zawsze wysyła /rotation cancel, /vbmai off, /bmrai off i /wrath auto off; /fr off wysyła tylko wtedy, gdy Questionable jest bezczynny, a DAD nie zajmuje jego miejsc na polecenia AutoDuty.</value>
+    <value>Normalne ukończenie przebiegu Dad oraz każda ścieżka anulowania/zatrzymania/błędu pozostawiają automatyzację walki bez zmian. Pomyślne ukończenie końcowego IPC dad.Duty.Run wysyła /rotation cancel, /wrath auto off oraz polecenie wyłączenia AI załadowanego natywnego hosta: /gmai off, /bmrai off lub /vbmai off. Kilka załadowanych hostów BossMod pozostaje bez zmian, a sprzątanie zgłasza ostrzeżenie. /fr off jest wysyłane tylko wtedy, gdy Questionable jest bezczynny, a DAD nie zajmuje jego miejsc na polecenia AutoDuty.</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>Zwykły odstęp odświeżania: pozostało {0:0}s.</value>

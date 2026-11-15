@@ -96,9 +96,11 @@ public sealed class DadDependencyRulesTests
 
     [Theory]
     [InlineData("BossModReborn")]
+    [InlineData("GodMod")]
     [InlineData("BossMod")]
     [InlineData("bossmodreborn")]
-    public void EitherBossModAlternativeSatisfiesRequirement(string internalName)
+    [InlineData("godmod")]
+    public void CompatibleBossModAlternativeSatisfiesRequirement(string internalName)
     {
         var metadata = ReadyMetadata();
         metadata.RemoveAll(plugin => plugin.InternalName.Equals("BossModReborn", StringComparison.OrdinalIgnoreCase));
@@ -107,6 +109,34 @@ public sealed class DadDependencyRulesTests
         Assert.Equal(
             DadDependencyState.Ready,
             Evaluate(metadata).Entries.Single(item => item.RequirementId == "BossMod").State);
+    }
+
+    [Theory]
+    [InlineData("GodMod", true, DadDependencyState.Ready)]
+    [InlineData("GodMod", false, DadDependencyState.InstalledNotLoaded)]
+    [InlineData("UnknownSyntheticHost", true, DadDependencyState.Missing)]
+    public void GodModRequiresItsKnownInternalNameAndLoadedState(string name, bool loaded, DadDependencyState expected)
+    {
+        var metadata = ReadyMetadata();
+        metadata.RemoveAll(plugin => plugin.InternalName == "BossModReborn");
+        metadata.Add(new(name, "GodMod", "1.0.0.0", loaded, false));
+        Assert.Equal(expected, Evaluate(metadata).Entries.Single(item => item.RequirementId == "BossMod").State);
+    }
+
+    [Theory]
+    [InlineData("BossModReborn")]
+    [InlineData("BossMod")]
+    public void MultipleLoadedNativeHostsBlockNewWorkWithoutSelectingOne(string otherHost)
+    {
+        var metadata = ReadyMetadata();
+        metadata.RemoveAll(plugin => plugin.InternalName == "BossModReborn");
+        metadata.Add(new("GodMod", "GodMod", "1.0.0.0", true, false));
+        metadata.Add(new(otherHost, otherHost, "1.0.0.0", true, false));
+        var snapshot = Evaluate(metadata);
+        Assert.False(snapshot.IsReady);
+        var entry = snapshot.Entries.Single(item => item.RequirementId == "BossMod");
+        Assert.Equal(DadDependencyState.Checking, entry.State);
+        Assert.Contains("Multiple BossMod hosts", entry.OperatorSummary, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -246,7 +276,7 @@ public sealed class DadDependencyRulesTests
         var bossOptions = DadDependencyInstallerRules.ResolveOptions(boss);
         var xadbOptions = DadDependencyInstallerRules.ResolveOptions(xadb);
 
-        Assert.Equal(["BossModReborn", "BossMod"], bossOptions.Select(option => option.SearchText));
+        Assert.Equal(["BossModReborn", "GodMod", "BossMod"], bossOptions.Select(option => option.SearchText));
         Assert.Single(xadbOptions);
         Assert.Equal("XADatabase", xadbOptions[0].SearchText);
         Assert.DoesNotContain(bossOptions.Concat(xadbOptions), option => option.SearchText.Contains("http", StringComparison.OrdinalIgnoreCase));

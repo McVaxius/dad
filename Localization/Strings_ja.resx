@@ -1270,7 +1270,7 @@
     <value>互換性ハンドオフ: VERMAXION アイドル / AR アイドル</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>互換モード。現在の Dad+ADS の流れを維持します。申請前に /ads outside、入場後に固定の戦闘コマンド、DutyCompleted 後に /ads leave を実行します。戦闘コマンドの失敗は警告のみです。</value>
+    <value>互換モード。Dad は従来の Dad+ADS の流れを維持します。申請前に /ads outside、入場後に読み込み済みネイティブホストの AI 有効化コマンド、DutyCompleted 後に /ads leave を送信します。ローテーションコマンドの失敗は警告のみです。複数の BossMod ホストが読み込まれている場合、入場時のコマンドは送信しません。</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>互換性ハンドオフ</value>
@@ -2462,7 +2462,7 @@
     <value>欠落しているエントリまたは空のエントリを修正します。</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>入力後のコマンドを修正しました</value>
+    <value>読み込み済みホストに応じた入場後のコマンド</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>修正済みEmoteRun</value>
@@ -3626,7 +3626,7 @@
     <value>何も記録されていません</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>通常の Dad 実行完了と、キャンセル・停止・失敗の経路は戦闘自動化を変更しません。最終 dad.Duty.Run IPC が成功すると、必ず /rotation cancel、/vbmai off、/bmrai off、/wrath auto off を送信します。/fr off は Questionable が待機中で、DAD がその AutoDuty コマンド枠を占有していない場合だけ送信します。</value>
+    <value>通常の Dad 実行完了と、キャンセル・停止・失敗の経路は戦闘自動化を変更しません。最終 dad.Duty.Run IPC が成功すると、/rotation cancel、/wrath auto off と、読み込み済みネイティブホストの AI 無効化コマンド（/gmai off、/bmrai off、/vbmai off のいずれか）を送信します。複数の BossMod ホストが読み込まれている場合、それらを変更せず、後処理の警告を表示します。/fr off は Questionable が待機中で、DAD がその AutoDuty コマンド枠を占有していない場合だけ送信します。</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>通常のリフレッシュ クールダウン: 残り {0:0} です。</value>

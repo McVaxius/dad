@@ -1271,7 +1271,7 @@
     <value>Передача совместимости: VERMAXION простое / AR-ожидание</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>Режим совместимости. Dad сохраняет текущий порядок Dad+ADS: /ads outside перед постановкой в очередь, фиксированные команды ротации после входа и /ads leave после DutyCompleted. Ошибки команд ротации вызывают только предупреждения.</value>
+    <value>Режим совместимости. Dad сохраняет текущий порядок Dad+ADS: /ads outside перед очередью, команду включения ИИ загруженного нативного хоста после входа и /ads leave после DutyCompleted. Ошибки команд ротации вызывают только предупреждения. Если загружено несколько хостов BossMod, команда при входе не отправляется.</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>Совместимость</value>
@@ -2465,7 +2465,7 @@
     <value>Исправьте отсутствующие или пустые записи.</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>Исправлены команды после ввода</value>
+    <value>Команда после входа в зависимости от загруженного хоста</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>ФиксированныйEmoteRun</value>
@@ -3633,7 +3633,7 @@
     <value>Не записано</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>Обычное завершение запуска Dad и все пути отмены, остановки и ошибки не меняют автоматизацию боя. Успешное завершение итогового IPC dad.Duty.Run всегда отправляет /rotation cancel, /vbmai off, /bmrai off и /wrath auto off. /fr off отправляется только когда Questionable бездействует и DAD не занимает его слоты команд AutoDuty.</value>
+    <value>Обычное завершение запуска Dad и все пути отмены, остановки и ошибки не меняют автоматизацию боя. Успешное завершение итогового IPC dad.Duty.Run отправляет /rotation cancel, /wrath auto off и команду выключения ИИ загруженного нативного хоста: /gmai off, /bmrai off или /vbmai off. Если загружено несколько хостов BossMod, они не изменяются, а очистка выдаёт предупреждение. /fr off отправляется только когда Questionable бездействует и DAD не занимает его слоты команд AutoDuty.</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>Время восстановления обычного обновления: осталось {0:0}.</value>

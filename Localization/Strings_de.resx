@@ -1270,7 +1270,7 @@
     <value>Kompatibilitätsübergabe: VERMAXION im Leerlauf / AR im Leerlauf</value>
   </data>
   <data name="text_0419" xml:space="preserve">
-    <value>Kompatibilitätsmodus. Dad behält den bisherigen Dad+ADS-Ablauf bei: /ads outside vor der Anmeldung, feste Rotationsbefehle nach dem Eintritt und /ads leave nach DutyCompleted. Fehler bei Rotationsbefehlen erzeugen nur Warnungen.</value>
+    <value>Kompatibilitätsmodus. Dad behält den bisherigen Dad+ADS-Ablauf bei: /ads outside vor der Anmeldung, den KI-Einschaltbefehl des geladenen nativen Hosts nach dem Eintritt und /ads leave nach DutyCompleted. Fehler bei Rotationsbefehlen erzeugen nur Warnungen. Sind mehrere BossMod-Hosts geladen, wird kein Eintrittsbefehl gesendet.</value>
   </data>
   <data name="text_0420" xml:space="preserve">
     <value>Kompatibilitätsübergabe</value>
@@ -2461,7 +2461,7 @@
     <value>Fehlende oder leere Einträge beheben.</value>
   </data>
   <data name="text_0816" xml:space="preserve">
-    <value>Befehle nach der Eingabe korrigiert</value>
+    <value>Befehl nach dem Eintritt, je nach geladenem Host</value>
   </data>
   <data name="text_0817" xml:space="preserve">
     <value>FixedEmoteRun</value>
@@ -3627,7 +3627,7 @@ Nur</value>
     <value>Keine aufgezeichnet</value>
   </data>
   <data name="text_1204" xml:space="preserve">
-    <value>Normale Dad-Laufabschlüsse sowie Abbruch-, Stopp- und Fehlerpfade lassen die Kampfautomation unverändert. Der erfolgreiche abschließende dad.Duty.Run-IPC-Aufruf sendet immer /rotation cancel, /vbmai off, /bmrai off und /wrath auto off. /fr off wird nur gesendet, wenn Questionable untätig ist und DAD dessen AutoDuty-Befehlsslots nicht belegt.</value>
+    <value>Normale Dad-Laufabschlüsse sowie Abbruch-, Stopp- und Fehlerpfade lassen die Kampfautomation unverändert. Der erfolgreiche abschließende dad.Duty.Run-IPC-Aufruf sendet /rotation cancel, /wrath auto off und den KI-Ausschaltbefehl des geladenen nativen Hosts: /gmai off, /bmrai off oder /vbmai off. Mehrere geladene BossMod-Hosts bleiben unverändert; die Bereinigung meldet eine Warnung. /fr off wird nur gesendet, wenn Questionable untätig ist und DAD dessen AutoDuty-Befehlsslots nicht belegt.</value>
   </data>
   <data name="text_1205" xml:space="preserve">
     <value>Normale Aktualisierungsabklingzeit: Verbleibende {0:0}s.</value>
