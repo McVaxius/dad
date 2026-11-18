@@ -1300,7 +1300,7 @@ public sealed partial class MainWindow : Window, IDisposable
         DrawStatusRow("Running now", DadScheduleCursorFormatter.Format(activeRun, snapshot.Schedules));
         DrawStatusRow("State", $"{activeRun.Status} / {activeRun.Phase}");
         DrawStatusRow("Progress", $"{activeRun.CompletedEntryExecutions}/{activeRun.TotalEntryExecutions} preset run(s)");
-        DrawScheduleTiming(activeRun, plugin.SchedulerService.GetQueueSnapshot().RecentResults, snapshot.GeneratedAtUtc);
+        DrawScheduleTiming(activeRun, plugin.SchedulerService.GetRecentSchedulerResults(), snapshot.GeneratedAtUtc);
         if (!string.IsNullOrWhiteSpace(activeRun.BlockedReason))
             DrawStatusRow("Blocker", activeRun.BlockedReason);
         if (DadUi.Button("Cancel active schedule", DadUiTone.Danger))
@@ -2302,12 +2302,12 @@ public sealed partial class MainWindow : Window, IDisposable
                     RequestedBy = "schedule-ui-retry",
                 },
                 Plugin.IsBusy(runState.VisibleRun));
-        var queue = plugin.SchedulerService.GetQueueSnapshot();
+        var schedulerHistory = plugin.SchedulerService.GetRecentSchedulerResults();
         var skipBadges = DadScheduleSkipBadgeProjection.Build(
             schedule,
             activeRun,
             snapshot.RecentResults,
-            queue.RecentResults);
+            schedulerHistory);
         var openRetryFailedEntryPopup = false;
         if (!ImGui.BeginTable(
                 "dad-schedule-workspace",
@@ -2358,7 +2358,7 @@ public sealed partial class MainWindow : Window, IDisposable
             if (activeRun.IsActive)
             {
                 DrawStatusRow("Running now", DadScheduleCursorFormatter.Format(activeRun, snapshot.Schedules));
-                DrawScheduleTiming(activeRun, queue.RecentResults, snapshot.GeneratedAtUtc);
+                DrawScheduleTiming(activeRun, schedulerHistory, snapshot.GeneratedAtUtc);
             }
 
             var stayVisited = schedule.StayOnVisitedWorldBetweenPresets;
@@ -2429,7 +2429,7 @@ public sealed partial class MainWindow : Window, IDisposable
                 groups,
                 activeRun,
                 activeScheduleLocked,
-                plugin.GetPlannerUiSnapshot(runState),
+                activeScheduleLocked ? null : plugin.GetPlannerUiSnapshot(runState),
                 skipBadges);
             DadUi.EndCard(flat: true);
         }
@@ -2738,7 +2738,7 @@ public sealed partial class MainWindow : Window, IDisposable
         IReadOnlyList<DadPlannerGroup> groups,
         DadScheduleRunState activeRun,
         bool activeScheduleLocked,
-        DadPlannerUiSnapshot plannerSnapshot,
+        DadPlannerUiSnapshot? plannerSnapshot,
         DadScheduleSkipBadgeProjectionResult skipBadges)
     {
         if (groups.Count == 0)
@@ -2801,7 +2801,9 @@ public sealed partial class MainWindow : Window, IDisposable
             var entry = schedule.Entries[index];
             var group = groups.FirstOrDefault(candidate =>
                 string.Equals(candidate.GroupId, entry.GroupId, StringComparison.OrdinalIgnoreCase));
-            var levelSeekDisplay = plugin.BuildScheduleLevelSeekDisplay(group, plannerSnapshot);
+            var levelSeekDisplay = plannerSnapshot == null
+                ? DadLevelSeekDisplayState.None
+                : plugin.BuildScheduleLevelSeekDisplay(group, plannerSnapshot);
             var executing = DadScheduleRules.IsExecutingEntry(schedule, entry, activeRun);
             ImGui.TableNextRow();
             if (levelSeekDisplay.IsSkipIndicated)

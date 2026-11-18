@@ -188,6 +188,29 @@ public sealed class DadP1191PerformanceAndCrewUxTests
     }
 
     [Fact]
+    public void ActiveScheduleDrawSkipsPlanPreviewsAndKeepsRecordedSkips()
+    {
+        var source = ReadRepositorySource("Windows", "MainWindow.cs");
+        var builder = source[
+            source.IndexOf("private void DrawScheduleBuilderTab(", StringComparison.Ordinal)..
+            source.IndexOf("private void DrawRetryFailedEntryPopup(", StringComparison.Ordinal)];
+        var editor = source[
+            source.IndexOf("private void DrawScheduleEntryEditor(", StringComparison.Ordinal)..
+            source.IndexOf("private bool DrawSchedulePresetCombo(", StringComparison.Ordinal)];
+        var status = source[
+            source.IndexOf("private void DrawActiveScheduleStatus(", StringComparison.Ordinal)..
+            source.IndexOf("private static void DrawScheduleTiming(", StringComparison.Ordinal)];
+
+        Assert.Contains("activeScheduleLocked ? null : plugin.GetPlannerUiSnapshot(runState)", builder, StringComparison.Ordinal);
+        Assert.Matches(@"plannerSnapshot == null\s+\? DadLevelSeekDisplayState\.None\s+: plugin\.BuildScheduleLevelSeekDisplay", editor);
+        Assert.Contains("skipBadges.Badges.TryGetValue(entry.EntryId", editor, StringComparison.Ordinal);
+        Assert.Contains("GetRecentSchedulerResults()", builder, StringComparison.Ordinal);
+        Assert.Contains("GetRecentSchedulerResults()", status, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetQueueSnapshot()", builder, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetQueueSnapshot()", status, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AutoPartyProjectionAndSetupWizardReuseTheirPerFrameWork()
     {
         var autoPartySource = ReadRepositorySource("Services", "DadAutoPartyService.cs");

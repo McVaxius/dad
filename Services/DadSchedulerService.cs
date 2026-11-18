@@ -560,7 +560,7 @@ public sealed partial class DadSchedulerService
     public DadSchedulerQueueSnapshot GetQueueSnapshot()
     {
         NormalizeQueue();
-        NormalizeHistory();
+        var recentResults = GetRecentSchedulerResults();
         var visibleState = BuildVisibleState();
         var activeJobClone = levelingOperation?.OuterJob.Clone()
                              ?? (currentState.IsActive ? activeJob?.Clone() : null);
@@ -576,12 +576,7 @@ public sealed partial class DadSchedulerService
                 .ThenBy(static job => job.CreatedAtUtc)
                 .Select(static job => job.Clone())
                 .ToList(),
-            RecentResults = configuration.SchedulerHistory
-                .OrderByDescending(static result => result.CompletedAtUtc)
-                .ThenByDescending(static result => result.StartedAtUtc)
-                .Take(MaxSchedulerHistory)
-                .Select(static result => result.Clone())
-                .ToList(),
+            RecentResults = recentResults,
             Summary = IsSchedulerActive || IsCrewFormationActive
                 ? $"Active {visibleState.JobType}: {visibleState.Summary}"
                 : HasPendingCleanup
@@ -590,6 +585,17 @@ public sealed partial class DadSchedulerService
                     ? "Scheduler queue idle."
                     : $"{configuration.SchedulerQueue.Count} queued scheduler job(s).",
         };
+    }
+
+    internal List<DadScheduledCrewJobResult> GetRecentSchedulerResults()
+    {
+        NormalizeHistory();
+        return configuration.SchedulerHistory
+            .OrderByDescending(static result => result.CompletedAtUtc)
+            .ThenByDescending(static result => result.StartedAtUtc)
+            .Take(MaxSchedulerHistory)
+            .Select(static result => result.Clone())
+            .ToList();
     }
 
     public DadScheduleSnapshot GetScheduleSnapshot()
