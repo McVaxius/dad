@@ -2272,12 +2272,13 @@ public sealed partial class MainWindow : Window, IDisposable
         var knownGroupIds = groups.Select(static group => group.GroupId).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var missingPresetCount = schedule.Entries.Count(entry =>
             string.IsNullOrWhiteSpace(entry.GroupId) || !knownGroupIds.Contains(entry.GroupId));
+        const string activeScheduleBlocker = "A schedule is already running.";
         var firstBlocker = schedule.Entries.Count == 0
             ? "Add at least one saved preset entry."
             : missingPresetCount > 0
                 ? $"{missingPresetCount} entry/entries reference a missing preset."
                 : activeScheduleLocked
-                    ? "A schedule is already running."
+                    ? activeScheduleBlocker
                     : Plugin.IsBusy(runState.VisibleRun)
                         ? "A DAD run is active."
                         : !plugin.SchedulerService.CanRunScheduleHere(schedule)
@@ -2293,15 +2294,17 @@ public sealed partial class MainWindow : Window, IDisposable
         var latestFailedRun = snapshot.RecentResults.FirstOrDefault(result =>
             string.Equals(result.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase) &&
             result.Status == DadScheduleRunStatus.Blocked);
-        var retryEligibility = latestFailedRun == null
-            ? new DadScheduleRetryResult { Summary = "No failed schedule entry is available to resume." }
-            : plugin.SchedulerService.EvaluateFailedEntryRetry(
-                new DadScheduleRetryRequest
-                {
-                    FailedRunId = latestFailedRun.RunId,
-                    RequestedBy = "schedule-ui-retry",
-                },
-                Plugin.IsBusy(runState.VisibleRun));
+        var retryEligibility = activeScheduleLocked
+            ? new DadScheduleRetryResult { Summary = activeScheduleBlocker }
+            : latestFailedRun == null
+                ? new DadScheduleRetryResult { Summary = "No failed schedule entry is available to resume." }
+                : plugin.SchedulerService.EvaluateFailedEntryRetry(
+                    new DadScheduleRetryRequest
+                    {
+                        FailedRunId = latestFailedRun.RunId,
+                        RequestedBy = "schedule-ui-retry",
+                    },
+                    Plugin.IsBusy(runState.VisibleRun));
         var schedulerHistory = plugin.SchedulerService.GetRecentSchedulerResults();
         var skipBadges = DadScheduleSkipBadgeProjection.Build(
             schedule,

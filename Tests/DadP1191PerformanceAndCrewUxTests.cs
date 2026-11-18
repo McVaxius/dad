@@ -208,6 +208,11 @@ public sealed class DadP1191PerformanceAndCrewUxTests
         Assert.Contains("GetRecentSchedulerResults()", status, StringComparison.Ordinal);
         Assert.DoesNotContain("GetQueueSnapshot()", builder, StringComparison.Ordinal);
         Assert.DoesNotContain("GetQueueSnapshot()", status, StringComparison.Ordinal);
+        Assert.Matches(
+            @"var retryEligibility = activeScheduleLocked\s+\? new DadScheduleRetryResult \{ Summary = activeScheduleBlocker \}" +
+            @"\s+: latestFailedRun == null\s+\? [^\r\n]+\s+: plugin\.SchedulerService\.EvaluateFailedEntryRetry\(",
+            builder);
+        Assert.Contains("UiGui.SetTooltip(retryEligibility.Summary)", builder, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -2,6 +2,7 @@
 
 - Suspend Plan preview work on Schedules during an active run. Show live progress, recorded skips, and cancellation from the running schedule.
 - Read recent scheduler results directly for skip badges and timing on Schedules and Status.
+- Skip checking failed-entry retry eligibility while a schedule is running.
 
 2026-11-14 - 2.1.0.10 - GodMod compatibility
 
