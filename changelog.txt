@@ -1,10 +1,10 @@
-## Unreleased - Schedules during active runs
+2026-11-18 - 2.1.0.11 - Schedule responsiveness and recovery
 
-- Suspend Plan preview work on Schedules during an active run. Show live progress, recorded skips, and cancellation from the running schedule.
-- Read recent scheduler results directly for skip badges and timing on Schedules and Status.
-- Skip checking failed-entry retry eligibility while a schedule is running, including when the confirmation dialog is already open.
-- Reuse the header's schedule data on the Schedules tab and refresh it after a start or cancellation.
-- Show whether a Coordinator connection attempt failed during hostname lookup, TCP connect, or authentication.
+- **Fixed Schedules responsiveness.** Reduce work while a schedule is running so progress, recorded skips, and Cancel remain accessible.
+- **Updated Coordinator connection status.** Shows whether a connection failed during hostname lookup, TCP connection, or authentication.
+- **Added guarded login recovery.** Recover DAD-owned logins stuck on an empty Character Select or idle title screen when the client is safe to retry.
+- **Added an optional schedule restart.** In debug mode, Schedules > Cadence & Actions can restart after an incomplete duty run once cleanup is confirmed. This option defaults to off.
+- **Fixed data center detection.** Use the character's logical data center for roster and travel decisions.
 
 2026-11-14 - 2.1.0.10 - GodMod compatibility
 
