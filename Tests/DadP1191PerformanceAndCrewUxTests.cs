@@ -191,6 +191,15 @@ public sealed class DadP1191PerformanceAndCrewUxTests
     public void ActiveScheduleDrawSkipsPlanPreviewsAndKeepsRecordedSkips()
     {
         var source = ReadRepositorySource("Windows", "MainWindow.cs");
+        var header = source[
+            source.IndexOf("private void DrawShellHeader(", StringComparison.Ordinal)..
+            source.IndexOf("private void DrawAutoPartySetupButton(", StringComparison.Ordinal)];
+        var banner = source[
+            source.IndexOf("private void DrawActiveRunBanner(", StringComparison.Ordinal)..
+            source.IndexOf("private void DrawConfigurationPersistenceWarning(", StringComparison.Ordinal)];
+        var schedulesTab = source[
+            source.IndexOf("private void DrawSchedulesTab(", StringComparison.Ordinal)..
+            source.IndexOf("private void DrawStatusTab(", StringComparison.Ordinal)];
         var builder = source[
             source.IndexOf("private void DrawScheduleBuilderTab(", StringComparison.Ordinal)..
             source.IndexOf("private void DrawRetryFailedEntryPopup(", StringComparison.Ordinal)];
@@ -204,6 +213,16 @@ public sealed class DadP1191PerformanceAndCrewUxTests
             source.IndexOf("private void DrawActiveScheduleStatus(", StringComparison.Ordinal)..
             source.IndexOf("private static void DrawScheduleTiming(", StringComparison.Ordinal)];
 
+        Assert.Contains("version, out var scheduleSnapshot)", source, StringComparison.Ordinal);
+        Assert.Contains("DrawActiveRunBanner(runState, activityDisplay.Run, ref scheduleSnapshot)", source, StringComparison.Ordinal);
+        Assert.Contains("DrawMainWorkspaceRail(runState, profile, characterPool, activityDisplay.Run, windowRootId, scheduleSnapshot)", source, StringComparison.Ordinal);
+        Assert.Contains("case 3: DrawSchedulesTab(runState, scheduleSnapshot)", source, StringComparison.Ordinal);
+        Assert.Contains("workspaceScheduleSnapshot = scheduleSnapshot;", header, StringComparison.Ordinal);
+        Assert.Matches(@"StartScheduleRunFromShell\([^\r\n]+\);\s+workspaceScheduleSnapshot = null;", header);
+        Assert.Matches(@"CancelScheduleRunFromShell\([^\r\n]+\);\s+workspaceScheduleSnapshot = null;", header);
+        Assert.Matches(@"CancelOwnedOperation\(\);\s+scheduleSnapshot = null;", banner);
+        Assert.Contains("scheduleSnapshot ?? plugin.SchedulerService.GetScheduleSnapshot()", schedulesTab, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetScheduleSnapshot()", builder, StringComparison.Ordinal);
         Assert.Contains("activeScheduleLocked ? null : plugin.GetPlannerUiSnapshot(runState)", builder, StringComparison.Ordinal);
         Assert.Matches(@"plannerSnapshot == null\s+\? DadLevelSeekDisplayState\.None\s+: plugin\.BuildScheduleLevelSeekDisplay", editor);
         Assert.Contains("skipBadges.Badges.TryGetValue(entry.EntryId", editor, StringComparison.Ordinal);

@@ -283,13 +283,13 @@ public sealed partial class MainWindow : Window, IDisposable
             deferredStatusTab = null;
         }
 
-        DrawShellHeader(configuration, profile, runState, characterPool, version);
+        DrawShellHeader(configuration, profile, runState, characterPool, version, out var scheduleSnapshot);
         DrawConfigurationPersistenceWarning();
         if (Plugin.IsBusy(runState.LocalRun) || Plugin.IsBusy(runState.AuthorityRun))
-            DrawActiveRunBanner(runState, activityDisplay.Run);
+            DrawActiveRunBanner(runState, activityDisplay.Run, ref scheduleSnapshot);
         ImGui.Spacing();
 
-        DrawMainWorkspaceRail(runState, profile, characterPool, activityDisplay.Run, windowRootId);
+        DrawMainWorkspaceRail(runState, profile, characterPool, activityDisplay.Run, windowRootId, scheduleSnapshot);
 
         DrawScheduleImportConfirmation();
         DrawPlannerImportConfirmation();
@@ -300,7 +300,7 @@ public sealed partial class MainWindow : Window, IDisposable
     }
 
     private void DrawMainWorkspaceRail(DadVisibleRunState runState, CharacterConfig profile,
-        DadCharacterPool characterPool, DadRunResult displayRun, uint windowRootId)
+        DadCharacterPool characterPool, DadRunResult displayRun, uint windowRootId, DadScheduleSnapshot? scheduleSnapshot)
     {
         var tabLabels = new[] { "Home", "Plan", "Trust", "Schedules", "Crew", "Clients", "Status" };
         var icons = new[] { MaterialIcon.Home, MaterialIcon.Document, MaterialIcon.Crown, MaterialIcon.Calendar,
@@ -354,7 +354,7 @@ public sealed partial class MainWindow : Window, IDisposable
                 case 0: DrawOverviewTab(runState, profile, windowRootId); break;
                 case 1: DrawPresetPlannerTab(characterPool, runState); break;
                 case 2: DrawTrustWorkspace(runState); break;
-                case 3: DrawSchedulesTab(runState); break;
+                case 3: DrawSchedulesTab(runState, scheduleSnapshot); break;
                 case 4: DrawCrewTab(characterPool, runState); break;
                 case 5: DrawMultiplayerTab(characterPool, runState); break;
                 case 6: DrawStatusTab(characterPool, runState, profile, displayRun); break;
@@ -370,7 +370,8 @@ public sealed partial class MainWindow : Window, IDisposable
         CharacterConfig profile,
         DadVisibleRunState runState,
         DadCharacterPool characterPool,
-        string version)
+        string version,
+        out DadScheduleSnapshot? workspaceScheduleSnapshot)
     {
         var scale=MaterialTheme.Metrics.Scale;
         using var headerFont=UiText.Font(UiFontRole.Body);
@@ -394,6 +395,7 @@ public sealed partial class MainWindow : Window, IDisposable
         DadUi.SameLineIfFits(DadUi.BadgeWidth(configuration.PluginEnabled?"Enabled":"Paused"));
         DadUi.Badge(configuration.PluginEnabled?"Enabled":"Paused",configuration.PluginEnabled?DadUiTone.Success:DadUiTone.Neutral);
         var scheduleSnapshot = plugin.SchedulerService.GetScheduleSnapshot();
+        workspaceScheduleSnapshot = scheduleSnapshot;
         EnsureScheduleSelection(scheduleSnapshot);
         var headerSchedule = scheduleSnapshot.Schedules.FirstOrDefault(candidate =>
             string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
@@ -427,12 +429,18 @@ public sealed partial class MainWindow : Window, IDisposable
         DadUi.SameLineIfFits(DadUi.ButtonWidth("Run now"));
         ImGui.BeginDisabled(!canRunSchedule);
         if (UiGui.SmallButton("Run now##dad-header-schedule-run") && headerSchedule != null)
+        {
             plugin.StartScheduleRunFromShell(headerSchedule.ScheduleId, dryRun: false, requestedBy: "schedule-ui");
+            workspaceScheduleSnapshot = null;
+        }
         ImGui.EndDisabled();
         DadUi.SameLineIfFits(DadUi.ButtonWidth("Cancel active schedule"));
         ImGui.BeginDisabled(!scheduleSnapshot.ActiveRun.IsActive);
         if (UiGui.SmallButton("Cancel active schedule##dad-header-schedule-cancel"))
+        {
             plugin.CancelScheduleRunFromShell("Schedule cancelled.");
+            workspaceScheduleSnapshot = null;
+        }
         ImGui.EndDisabled();
         DadUi.SameLineIfFits(DadUi.IconButtonWidth("Settings"));
         if (DadUi.IconButton("Settings",MaterialIcon.Settings,DadUiTone.Neutral,new Vector2(0,28*scale))) plugin.ToggleConfigUi();
@@ -473,7 +481,8 @@ public sealed partial class MainWindow : Window, IDisposable
 
     private void DrawActiveRunBanner(
         DadVisibleRunState runState,
-        DadRunResult displayRun)
+        DadRunResult displayRun,
+        ref DadScheduleSnapshot? scheduleSnapshot)
     {
         var activeRun = displayRun;
         var plannerLocked = IsPlannerLocked(runState);
@@ -492,7 +501,10 @@ public sealed partial class MainWindow : Window, IDisposable
             {
                 ImGui.SameLine();
                 if (DadUi.Button("Cancel active run##top-banner", DadUiTone.Danger))
+                {
                     CancelOwnedOperation();
+                    scheduleSnapshot = null;
+                }
             }
 
             UiGui.TextWrapped(keyStatus);
@@ -1219,14 +1231,14 @@ public sealed partial class MainWindow : Window, IDisposable
         DrawDutySupportRuntimeSection(activeRun);
     }
 
-    private void DrawSchedulesTab(DadVisibleRunState runState)
+    private void DrawSchedulesTab(DadVisibleRunState runState, DadScheduleSnapshot? scheduleSnapshot)
     {
         DadUi.Heading("SCHEDULES", "Build an ordered chain, choose its cadence, then dry-run or start it deliberately.");
         if (DadUi.Button("Schedule Wizard", DadUiTone.Accent))
             plugin.OpenSetupWizard(DadGuideFlow.Schedule);
         ImGui.SameLine();
         UiGui.TextDisabled("Create, order, set cadence, validate, and dry-run with guidance.");
-        DrawScheduleBuilderTab(runState);
+        DrawScheduleBuilderTab(runState, scheduleSnapshot ?? plugin.SchedulerService.GetScheduleSnapshot());
     }
 
     private void DrawStatusTab(
@@ -2166,9 +2178,8 @@ public sealed partial class MainWindow : Window, IDisposable
         DrawRosterBulkTools(filtered, selectedFiltered);
     }
 
-    private void DrawScheduleBuilderTab(DadVisibleRunState runState)
+    private void DrawScheduleBuilderTab(DadVisibleRunState runState, DadScheduleSnapshot snapshot)
     {
-        var snapshot = plugin.SchedulerService.GetScheduleSnapshot();
         var groups = plugin.Configuration.PlannerGroups
             .OrderBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static group => group.GroupId, StringComparer.OrdinalIgnoreCase)
