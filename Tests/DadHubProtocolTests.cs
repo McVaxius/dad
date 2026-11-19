@@ -53,14 +53,7 @@ public sealed class DadHubProtocolTests
             }
             return method.ReturnType == typeof(void) ? null : Activator.CreateInstance(method.ReturnType);
         };
-        var constructor = typeof(Runtime.DadPresenceService).GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic).Single();
-        var presence = (Runtime.DadPresenceService)constructor.Invoke(constructor.GetParameters().Select(parameter => parameter.Name switch
-        {
-            "configuration" => (object)configuration,
-            "log" => log,
-            _ => null,
-        }).ToArray());
-        using var transport = new Runtime.DadTransportService(configuration, presence, new Runtime.DadClaimService(), null!, null!, log);
+        using var transport = CreateTransport(configuration, log);
         configuration.PluginEnabled = true;
         var reconnect = (Task)typeof(Runtime.DadTransportService)
             .GetMethod("RunClientReconnectLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -91,6 +84,94 @@ public sealed class DadHubProtocolTests
             stop.Cancel();
             await reconnect;
         }
+    }
+
+    [Fact]
+    public async Task ReconnectAuthenticatesLoopbackHostnameAndIpAgainstSameCoordinator()
+    {
+        const string secret = "synthetic-loopback-secret";
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var coordinatorConfig = new DadRuntime::dad.Configuration
+            {
+                PluginEnabled = false,
+                RunAsServerDad = true,
+                ServerListenHost = IPAddress.Loopback.ToString(),
+                ServerListenPort = port,
+                TransportSharedSecret = secret,
+            };
+            var coordinatorLog = DispatchProxy.Create<IPluginLog, DadQuestionableTestProxy>();
+            ((DadQuestionableTestProxy)coordinatorLog).Handler = (_, _) => null;
+            using var coordinator = CreateTransport(coordinatorConfig, coordinatorLog);
+            coordinatorConfig.PluginEnabled = true;
+
+            const BindingFlags privateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
+            var serverHandler = typeof(Runtime.DadTransportService).GetMethod("HandleServerClientAsync", privateInstance)!;
+            var reconnectLoop = typeof(Runtime.DadTransportService).GetMethod("RunClientReconnectLoopAsync", privateInstance)!;
+
+            // localhost uses DAD's built-in loopback alias, so this does not test system DNS.
+            foreach (var host in new[] { "localhost", IPAddress.Loopback.ToString() })
+            {
+                var workerConfig = new DadRuntime::dad.Configuration
+                {
+                    PluginEnabled = false,
+                    RunAsServerDad = false,
+                    ServerDadHost = host,
+                    ServerDadPort = port,
+                    TransportSharedSecret = secret,
+                };
+                var connected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var workerLog = DispatchProxy.Create<IPluginLog, DadQuestionableTestProxy>();
+                ((DadQuestionableTestProxy)workerLog).Handler = (method, args) =>
+                {
+                    if (method.Name == "Information" && args is [string format, ..]
+                        && format.StartsWith("[dad] Connected to Dad Coordinator ", StringComparison.Ordinal))
+                        connected.TrySetResult();
+                    return null;
+                };
+                using var worker = CreateTransport(workerConfig, workerLog);
+                workerConfig.PluginEnabled = true;
+
+                using var stop = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+                var reconnect = (Task)reconnectLoop.Invoke(worker, [stop.Token])!;
+                var serverSession = Task.CompletedTask;
+                try
+                {
+                    using var peer = await listener.AcceptTcpClientAsync(stop.Token);
+                    serverSession = (Task)serverHandler.Invoke(coordinator, [peer, stop.Token])!;
+                    await connected.Task.WaitAsync(stop.Token);
+
+                    Assert.True(worker.IsReady);
+                    Assert.True(worker.CurrentTransport.AuthorityRoutable);
+                    Assert.Equal(coordinator.CurrentTransport.LocalWorkerSessionId, worker.CurrentTransport.AuthorityWorkerSessionId);
+                }
+                finally
+                {
+                    stop.Cancel();
+                    await Task.WhenAll(reconnect, serverSession);
+                }
+            }
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    private static Runtime.DadTransportService CreateTransport(DadRuntime::dad.Configuration configuration, IPluginLog log)
+    {
+        var constructor = typeof(Runtime.DadPresenceService).GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic).Single();
+        var presence = (Runtime.DadPresenceService)constructor.Invoke(constructor.GetParameters().Select(parameter => parameter.Name switch
+        {
+            "configuration" => (object)configuration,
+            "log" => log,
+            _ => null,
+        }).ToArray());
+        return new Runtime.DadTransportService(configuration, presence, new Runtime.DadClaimService(), null!, null!, log);
     }
 
     [Fact]
