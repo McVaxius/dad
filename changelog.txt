@@ -1,13 +1,9 @@
-## Unreleased - Schedules responsiveness
+2026-11-19 - 2.1.0.12 - Schedules controls and connection diagnostics
 
-- Resolve common shopping members only while the shopping and final commands editor is open, and normalize each preset once per refresh.
-- Reuse preset lookups across the ordered entries so large schedules take less work to display during a run.
-- Read saved schedule names in the header and copy only the selected schedule when drawing its editor.
-- Avoid reprocessing saved schedules and unrelated run history on each active schedule update.
-- Skip the run preview when hovering or clicking the main window’s Stop button.
-- Show the resolved IP endpoint when a TCP connection to a Coordinator hostname fails.
-- If ADS no longer reports the exact operation during shopping cancellation, record the cancellation as unverified and retain verified purchase credit.
-- Prevent renaming the running schedule and let same-name schedules be selected independently in the Schedules tab.
+- Reduce work in the Schedules tab and Stop control while a schedule is running.
+- Prevent renaming an active schedule and let schedules with the same name be selected independently.
+- Show the resolved IP address and port when a connection to a Coordinator hostname fails.
+- Preserve confirmed purchases when ADS stops reporting a shopping operation during cancellation, and report the cancellation as unverified.
 
 2026-11-18 - 2.1.0.11 - Schedule responsiveness and recovery
 
