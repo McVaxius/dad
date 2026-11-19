@@ -1296,15 +1296,19 @@ public sealed class DadTransportService : IDisposable
         while (!cancellationToken.IsCancellationRequested)
         {
             DadHubConnection? activeConnection = null;
+            string? failureContext = null;
             try
             {
                 var host = NormalizeHost(configuration.ServerDadHost);
                 var port = NormalizePort(configuration.ServerDadPort);
+                var endpoint = FormatEndpoint(host, port);
                 var displayAttempt = attempt + 1;
                 CurrentTransport.ReconnectAttempt = displayAttempt;
                 CurrentTransport.NextReconnectUtc = null;
-                CurrentTransport.ConnectionStatus = $"Connecting to Dad Coordinator at {FormatEndpoint(host, port)} (attempt {displayAttempt}).";
+                CurrentTransport.ConnectionStatus = $"Connecting to Dad Coordinator at {endpoint} (attempt {displayAttempt}).";
+                failureContext = $"Dad Coordinator hostname lookup for {endpoint}";
                 var address = await ResolveAddressAsync(host, cancellationToken).ConfigureAwait(false);
+                failureContext = $"Dad Coordinator shared secret check for {endpoint}";
                 try
                 {
                     DadHubProtocol.RequireSharedSecretForAddress(address, configuration.TransportSharedSecret);
@@ -1316,12 +1320,14 @@ public sealed class DadTransportService : IDisposable
                     throw;
                 }
 
+                failureContext = $"Dad Coordinator TCP connect to {endpoint}";
                 using var client = new TcpClient(address.AddressFamily) { NoDelay = true };
                 await client.ConnectAsync(address, port, cancellationToken)
                     .AsTask()
                     .WaitAsync(ConnectTimeout, cancellationToken)
                     .ConfigureAwait(false);
 
+                failureContext = $"Dad Coordinator authenticated hello at {endpoint}";
                 var connection = new DadHubConnection(client, cancellationToken, DadHubHandshakeRole.Client)
                 {
                     WorkerSessionId = presenceService.WorkerSessionId,
@@ -1388,12 +1394,13 @@ public sealed class DadTransportService : IDisposable
                 connection.ObserveRuntimeReadiness(connection.Participant, out _);
                 connection.LastHeartbeatUtc = DadClock.UtcNow;
                 connection.MarkHandshakeReady();
+                failureContext = null;
                 clientConnection = connection;
                 attempt = 0;
                 nextHeartbeatUtc = DateTime.MinValue;
                 IsReady = true;
                 CurrentTransport.Availability = "Ready";
-                CurrentTransport.ConnectionStatus = $"Connected to Dad Coordinator at {FormatEndpoint(host, port)}.";
+                CurrentTransport.ConnectionStatus = $"Connected to Dad Coordinator at {endpoint}.";
                 CurrentTransport.LastRequestStatus = CurrentTransport.ConnectionStatus;
                 CurrentTransport.AuthorityRoutable = true;
                 CurrentTransport.LastConnectedUtc = DadClock.UtcNow;
@@ -1404,23 +1411,29 @@ public sealed class DadTransportService : IDisposable
                 RefreshTransportSnapshot();
                 log.Information("[dad] Connected to Dad Coordinator {WorkerSessionId} at {Endpoint}.",
                     serverHello.WorkerSessionId,
-                    FormatEndpoint(host, port));
+                    endpoint);
 
                 await RunConnectionReaderAsync(connection, isServerSide: false).ConfigureAwait(false);
                 CurrentTransport.LastDisconnectReason = "Dad Coordinator closed the connection.";
             }
             catch (DadHubProtocolException ex)
             {
-                if (IsAuthOrProtocolException(ex))
-                    SetTransportAuthOrProtocolError(ex.Message);
+                var authOrProtocolError = IsAuthOrProtocolException(ex);
+                var reason = failureContext != null
+                    ? $"{failureContext} rejected ({ex.Code}): {ex.Message}"
+                    : authOrProtocolError ? ex.Message : $"{ex.Code}: {ex.Message}";
+                if (authOrProtocolError)
+                    SetTransportAuthOrProtocolError(reason);
                 else
-                    SetTransportError($"{ex.Code}: {ex.Message}");
+                    SetTransportError(reason);
                 CurrentTransport.LastDisconnectReason = CurrentTransport.ConnectionStatus;
                 log.Warning("[dad] Dad Coordinator connection rejected: {Code}: {Message}", ex.Code, ex.Message);
             }
             catch (TimeoutException)
             {
-                SetTransportError("Timed out connecting to Dad Coordinator.");
+                SetTransportError(failureContext != null
+                    ? $"Timed out during {failureContext}."
+                    : "Timed out connecting to Dad Coordinator.");
                 CurrentTransport.LastDisconnectReason = CurrentTransport.ConnectionStatus;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1429,19 +1442,22 @@ public sealed class DadTransportService : IDisposable
             }
             catch (OperationCanceledException)
             {
-                SetTransportError("Dad Coordinator connection was closed; reconnecting.");
+                SetTransportError(failureContext != null
+                    ? $"{failureContext} was canceled."
+                    : "Dad Coordinator connection was closed; reconnecting.");
                 CurrentTransport.LastDisconnectReason = CurrentTransport.ConnectionStatus;
             }
             catch (Exception ex) when (DadBackgroundTaskObserver.IsExpectedShutdownException(ex))
             {
                 if (cancellationToken.IsCancellationRequested)
                     return;
-                SetTransportError($"Dad Coordinator connection ended: {ex.Message}");
+                SetTransportError($"{failureContext ?? "Dad Coordinator connection"} ended: {ex.Message}");
                 CurrentTransport.LastDisconnectReason = CurrentTransport.ConnectionStatus;
             }
             catch (Exception ex)
             {
-                SetTransportError($"Dad Coordinator connection failed: {ex.Message}");
+                var socketError = failureContext != null && ex is SocketException socket ? $" ({socket.SocketErrorCode})" : string.Empty;
+                SetTransportError($"{failureContext ?? "Dad Coordinator connection"} failed{socketError}: {ex.Message}");
                 CurrentTransport.LastDisconnectReason = CurrentTransport.ConnectionStatus;
                 log.Debug(ex, "[dad] Dad Coordinator connection failed.");
             }
