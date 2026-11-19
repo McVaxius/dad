@@ -1,14 +1,96 @@
+extern alias DadRuntime;
+extern alias DalamudApi;
+
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
+using DalamudApi::Dalamud.Plugin.Services;
 using dad.Models;
 using dad.Services;
 using Xunit;
+using Runtime = DadRuntime::dad.Services;
 
 namespace dad.Tests;
 
 public sealed class DadHubProtocolTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReconnectStatusDistinguishesTcpRefusalAndHelloTimeout(bool acceptsConnection)
+    {
+        const string secret = "synthetic-reconnect-secret";
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+        {
+            ExclusiveAddressUse = true,
+        };
+        // A bound socket that never listens keeps the refused port reserved for this test.
+        socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        if (acceptsConnection)
+            socket.Listen(1);
+        var endpoint = (IPEndPoint)socket.LocalEndPoint!;
+        var configuration = new DadRuntime::dad.Configuration
+        {
+            PluginEnabled = false,
+            RunAsServerDad = false,
+            ServerDadHost = endpoint.Address.ToString(),
+            ServerDadPort = endpoint.Port,
+            TransportSharedSecret = secret,
+        };
+        var firstRetry = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var log = DispatchProxy.Create<IPluginLog, DadQuestionableTestProxy>();
+        ((DadQuestionableTestProxy)log).Handler = (method, args) =>
+        {
+            if (method.Name == "Information" && args is [string format, ..]
+                && format.StartsWith("[dad] Dad Coordinator reconnect attempt ", StringComparison.Ordinal))
+            {
+                firstRetry.TrySetResult();
+                stop.Cancel();
+            }
+            return method.ReturnType == typeof(void) ? null : Activator.CreateInstance(method.ReturnType);
+        };
+        var constructor = typeof(Runtime.DadPresenceService).GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic).Single();
+        var presence = (Runtime.DadPresenceService)constructor.Invoke(constructor.GetParameters().Select(parameter => parameter.Name switch
+        {
+            "configuration" => (object)configuration,
+            "log" => log,
+            _ => null,
+        }).ToArray());
+        using var transport = new Runtime.DadTransportService(configuration, presence, new Runtime.DadClaimService(), null!, null!, log);
+        configuration.PluginEnabled = true;
+        var reconnect = (Task)typeof(Runtime.DadTransportService)
+            .GetMethod("RunClientReconnectLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(transport, [stop.Token])!;
+        try
+        {
+            using var peer = acceptsConnection ? await socket.AcceptAsync(deadline.Token) : null;
+            using var stream = peer == null ? null : new NetworkStream(peer);
+            if (stream != null)
+            {
+                var hello = Assert.IsType<DadHubFrame>(await DadHubProtocol.ReadFrameAsync(stream, deadline.Token));
+                DadHubProtocol.ValidateFrame(hello, secret);
+                Assert.Equal(DadHubFrameKind.Hello, hello.Kind);
+            }
+
+            var firstCompleted = await Task.WhenAny(firstRetry.Task, reconnect).WaitAsync(deadline.Token);
+            await firstCompleted;
+            var reason = transport.CurrentTransport.LastDisconnectReason;
+            Assert.True(firstRetry.Task.IsCompletedSuccessfully, $"Connection loop ended before scheduling a retry. Last reason: {reason}");
+            Assert.DoesNotContain(secret, reason, StringComparison.Ordinal);
+            Assert.Contains(acceptsConnection
+                ? $"Timed out during Dad Coordinator authenticated hello at {endpoint}."
+                : $"Dad Coordinator TCP connect to {endpoint} failed (ConnectionRefused):", reason, StringComparison.Ordinal);
+        }
+        finally
+        {
+            stop.Cancel();
+            await reconnect;
+        }
+    }
+
     [Fact]
     public async Task RegistrationAndHeartbeatKeepOneWorkerSession()
     {
