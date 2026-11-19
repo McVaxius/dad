@@ -283,13 +283,13 @@ public sealed partial class MainWindow : Window, IDisposable
             deferredStatusTab = null;
         }
 
-        DrawShellHeader(configuration, profile, runState, characterPool, version, out var scheduleSnapshot);
+        DrawShellHeader(configuration, profile, runState, characterPool, version);
         DrawConfigurationPersistenceWarning();
         if (Plugin.IsBusy(runState.LocalRun) || Plugin.IsBusy(runState.AuthorityRun))
-            DrawActiveRunBanner(runState, activityDisplay.Run, ref scheduleSnapshot);
+            DrawActiveRunBanner(runState, activityDisplay.Run);
         ImGui.Spacing();
 
-        DrawMainWorkspaceRail(runState, profile, characterPool, activityDisplay.Run, windowRootId, scheduleSnapshot);
+        DrawMainWorkspaceRail(runState, profile, characterPool, activityDisplay.Run, windowRootId);
 
         DrawScheduleImportConfirmation();
         DrawPlannerImportConfirmation();
@@ -300,7 +300,7 @@ public sealed partial class MainWindow : Window, IDisposable
     }
 
     private void DrawMainWorkspaceRail(DadVisibleRunState runState, CharacterConfig profile,
-        DadCharacterPool characterPool, DadRunResult displayRun, uint windowRootId, DadScheduleSnapshot? scheduleSnapshot)
+        DadCharacterPool characterPool, DadRunResult displayRun, uint windowRootId)
     {
         var tabLabels = new[] { "Home", "Plan", "Trust", "Schedules", "Crew", "Clients", "Status" };
         var icons = new[] { MaterialIcon.Home, MaterialIcon.Document, MaterialIcon.Crown, MaterialIcon.Calendar,
@@ -354,7 +354,7 @@ public sealed partial class MainWindow : Window, IDisposable
                 case 0: DrawOverviewTab(runState, profile, windowRootId); break;
                 case 1: DrawPresetPlannerTab(characterPool, runState); break;
                 case 2: DrawTrustWorkspace(runState); break;
-                case 3: DrawSchedulesTab(runState, scheduleSnapshot); break;
+                case 3: DrawSchedulesTab(runState); break;
                 case 4: DrawCrewTab(characterPool, runState); break;
                 case 5: DrawMultiplayerTab(characterPool, runState); break;
                 case 6: DrawStatusTab(characterPool, runState, profile, displayRun); break;
@@ -370,8 +370,7 @@ public sealed partial class MainWindow : Window, IDisposable
         CharacterConfig profile,
         DadVisibleRunState runState,
         DadCharacterPool characterPool,
-        string version,
-        out DadScheduleSnapshot? workspaceScheduleSnapshot)
+        string version)
     {
         var scale=MaterialTheme.Metrics.Scale;
         using var headerFont=UiText.Font(UiFontRole.Body);
@@ -394,18 +393,16 @@ public sealed partial class MainWindow : Window, IDisposable
         DadUi.IconBadge(configuration.RunAsServerDad?"Coordinator":"Client",configuration.RunAsServerDad?MaterialIcon.Crown:MaterialIcon.Person,DadUiTone.Accent);
         DadUi.SameLineIfFits(DadUi.BadgeWidth(configuration.PluginEnabled?"Enabled":"Paused"));
         DadUi.Badge(configuration.PluginEnabled?"Enabled":"Paused",configuration.PluginEnabled?DadUiTone.Success:DadUiTone.Neutral);
-        var scheduleSnapshot = plugin.SchedulerService.GetScheduleSnapshot();
-        workspaceScheduleSnapshot = scheduleSnapshot;
-        EnsureScheduleSelection(scheduleSnapshot);
-        var headerSchedule = scheduleSnapshot.Schedules.FirstOrDefault(candidate =>
-            string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
+        IReadOnlyList<DadScheduleDefinition> schedules = configuration.Schedules;
+        var headerSchedule = EnsureScheduleSelection(schedules);
+        var hasActiveSchedule = configuration.ActiveScheduleRun?.IsActive == true;
         DadUi.SameLineIfFits(MaterialText.Measure(UiText.T("Schedule")).X / scale);
         UiGui.TextUnformatted("Schedule");
         DadUi.SameLineIfFits(220f);
         ImGui.SetNextItemWidth(MathF.Max(1f, MathF.Min(220f * scale, ImGui.GetContentRegionAvail().X)));
         if (MaterialText.BeginCombo("##dad-header-schedule", UiText.T(headerSchedule?.DisplayName ?? "(none)")))
         {
-            foreach (var candidate in scheduleSnapshot.Schedules)
+            foreach (var candidate in schedules)
             {
                 var selected = string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase);
                 if (UiGui.Selectable($"{candidate.DisplayName}##dad-header-schedule-{candidate.ScheduleId}", selected))
@@ -417,30 +414,25 @@ public sealed partial class MainWindow : Window, IDisposable
                     ImGui.SetItemDefaultFocus();
             }
             ImGui.EndCombo();
+            headerSchedule = schedules.FirstOrDefault(candidate =>
+                string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
         }
-        headerSchedule = scheduleSnapshot.Schedules.FirstOrDefault(candidate =>
-            string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
-        var knownGroupIds = configuration.PlannerGroups.Select(static group => group.GroupId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var canRunSchedule = headerSchedule != null &&
-                             plugin.SchedulerService.CanRunScheduleHere(headerSchedule) &&
-                             headerSchedule.Entries.Count > 0 &&
-                             headerSchedule.Entries.All(entry => !string.IsNullOrWhiteSpace(entry.GroupId) && knownGroupIds.Contains(entry.GroupId)) &&
-                             !scheduleSnapshot.ActiveRun.IsActive && !Plugin.IsBusy(runState.VisibleRun);
+        var canRunSchedule = false;
+        if (!hasActiveSchedule && !Plugin.IsBusy(runState.VisibleRun) && headerSchedule != null &&
+            headerSchedule.Entries.Count > 0 && plugin.SchedulerService.CanRunScheduleHere(headerSchedule))
+        {
+            var knownGroupIds = configuration.PlannerGroups.Select(static group => group.GroupId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            canRunSchedule = headerSchedule.Entries.All(entry => !string.IsNullOrWhiteSpace(entry.GroupId) && knownGroupIds.Contains(entry.GroupId));
+        }
         DadUi.SameLineIfFits(DadUi.ButtonWidth("Run now"));
         ImGui.BeginDisabled(!canRunSchedule);
         if (UiGui.SmallButton("Run now##dad-header-schedule-run") && headerSchedule != null)
-        {
             plugin.StartScheduleRunFromShell(headerSchedule.ScheduleId, dryRun: false, requestedBy: "schedule-ui");
-            workspaceScheduleSnapshot = null;
-        }
         ImGui.EndDisabled();
         DadUi.SameLineIfFits(DadUi.ButtonWidth("Cancel active schedule"));
-        ImGui.BeginDisabled(!scheduleSnapshot.ActiveRun.IsActive);
+        ImGui.BeginDisabled(!hasActiveSchedule);
         if (UiGui.SmallButton("Cancel active schedule##dad-header-schedule-cancel"))
-        {
             plugin.CancelScheduleRunFromShell("Schedule cancelled.");
-            workspaceScheduleSnapshot = null;
-        }
         ImGui.EndDisabled();
         DadUi.SameLineIfFits(DadUi.IconButtonWidth("Settings"));
         if (DadUi.IconButton("Settings",MaterialIcon.Settings,DadUiTone.Neutral,new Vector2(0,28*scale))) plugin.ToggleConfigUi();
@@ -481,8 +473,7 @@ public sealed partial class MainWindow : Window, IDisposable
 
     private void DrawActiveRunBanner(
         DadVisibleRunState runState,
-        DadRunResult displayRun,
-        ref DadScheduleSnapshot? scheduleSnapshot)
+        DadRunResult displayRun)
     {
         var activeRun = displayRun;
         var plannerLocked = IsPlannerLocked(runState);
@@ -501,10 +492,7 @@ public sealed partial class MainWindow : Window, IDisposable
             {
                 ImGui.SameLine();
                 if (DadUi.Button("Cancel active run##top-banner", DadUiTone.Danger))
-                {
                     CancelOwnedOperation();
-                    scheduleSnapshot = null;
-                }
             }
 
             UiGui.TextWrapped(keyStatus);
@@ -1231,14 +1219,14 @@ public sealed partial class MainWindow : Window, IDisposable
         DrawDutySupportRuntimeSection(activeRun);
     }
 
-    private void DrawSchedulesTab(DadVisibleRunState runState, DadScheduleSnapshot? scheduleSnapshot)
+    private void DrawSchedulesTab(DadVisibleRunState runState)
     {
         DadUi.Heading("SCHEDULES", "Build an ordered chain, choose its cadence, then dry-run or start it deliberately.");
         if (DadUi.Button("Schedule Wizard", DadUiTone.Accent))
             plugin.OpenSetupWizard(DadGuideFlow.Schedule);
         ImGui.SameLine();
         UiGui.TextDisabled("Create, order, set cadence, validate, and dry-run with guidance.");
-        DrawScheduleBuilderTab(runState, scheduleSnapshot ?? plugin.SchedulerService.GetScheduleSnapshot());
+        DrawScheduleBuilderTab(runState);
     }
 
     private void DrawStatusTab(
@@ -2178,42 +2166,44 @@ public sealed partial class MainWindow : Window, IDisposable
         DrawRosterBulkTools(filtered, selectedFiltered);
     }
 
-    private void DrawScheduleBuilderTab(DadVisibleRunState runState, DadScheduleSnapshot snapshot)
+    private void DrawScheduleBuilderTab(DadVisibleRunState runState)
     {
-        var groups = plugin.Configuration.PlannerGroups
+        var configuration = plugin.Configuration;
+        IReadOnlyList<DadScheduleDefinition> schedules = configuration.Schedules;
+        var selected = EnsureScheduleSelection(schedules);
+        var generatedAtUtc = DadClock.UtcNow;
+        var activeRun = configuration.ActiveScheduleRun?.Clone() ?? new DadScheduleRunState();
+        var activeScheduleLocked = activeRun.IsActive;
+        var groups = configuration.PlannerGroups
             .OrderBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static group => group.GroupId, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        EnsureScheduleSelection(snapshot);
-        var schedule = snapshot.Schedules.FirstOrDefault(candidate =>
-            string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
-        var activeRun = snapshot.ActiveRun;
-        var activeScheduleLocked = activeRun.IsActive;
         var identityWidth = ImGui.GetContentRegionAvail().X;
         var identityFieldsShareRow = identityWidth >= ImGui.GetFontSize() * 36f;
         var identityActionsShareRow = identityWidth >= ImGui.GetFontSize() * 34f;
 
         DrawSectionHeader("Schedule", "Select or create the saved schedule, then edit its ordered work below.");
         ImGui.SetNextItemWidth(MathF.Min(280f, ImGui.GetContentRegionAvail().X));
-        if (UiGui.BeginCombo("Schedule", schedule == null ? "(none)" : schedule.DisplayName))
+        if (UiGui.BeginCombo("Schedule", selected?.DisplayName ?? "(none)"))
         {
-            foreach (var candidate in snapshot.Schedules)
+            foreach (var candidate in schedules)
             {
-                var selected = string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase);
-                if (UiGui.Selectable(candidate.DisplayName, selected))
+                var isSelected = string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase);
+                if (UiGui.Selectable(candidate.DisplayName, isSelected))
                 {
                     selectedScheduleId = candidate.ScheduleId;
                     schedulerScheduleNameBuffer = candidate.DisplayName;
                 }
-                if (selected)
+                if (isSelected)
                     ImGui.SetItemDefaultFocus();
             }
 
             UiGui.EndCombo();
+            selected = schedules.FirstOrDefault(candidate =>
+                string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
         }
 
-        schedule = snapshot.Schedules.FirstOrDefault(candidate =>
-            string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
+        var schedule = selected?.Clone();
         if (identityFieldsShareRow)
             ImGui.SameLine();
         ImGui.SetNextItemWidth(MathF.Min(260f, MathF.Max(120f, ImGui.GetContentRegionAvail().X)));
@@ -2264,7 +2254,7 @@ public sealed partial class MainWindow : Window, IDisposable
         ImGui.EndDisabled();
         ImGui.EndDisabled();
 
-        DrawDeleteSchedulePopup(snapshot);
+        DrawDeleteSchedulePopup(schedules);
         DrawScheduleShareControls(schedule);
 
         if (schedule == null)
@@ -2295,14 +2285,15 @@ public sealed partial class MainWindow : Window, IDisposable
                         : !plugin.SchedulerService.CanRunScheduleHere(schedule)
                             ? DadLocalDutySupportRules.CoordinatorOnlyReason
                             : string.Empty;
-        var lastDryRun = snapshot.RecentResults.FirstOrDefault(result =>
+        var recentResults = plugin.SchedulerService.GetRecentScheduleResults();
+        var lastDryRun = recentResults.FirstOrDefault(result =>
             result.DryRun && string.Equals(result.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase));
         var canRunSchedule = plugin.SchedulerService.CanRunScheduleHere(schedule) &&
                               schedule.Entries.Count > 0 &&
                               missingPresetCount == 0 &&
                               !activeScheduleLocked &&
                               !Plugin.IsBusy(runState.VisibleRun);
-        var latestFailedRun = snapshot.RecentResults.FirstOrDefault(result =>
+        var latestFailedRun = recentResults.FirstOrDefault(result =>
             string.Equals(result.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase) &&
             result.Status == DadScheduleRunStatus.Blocked);
         var retryEligibility = activeScheduleLocked
@@ -2320,7 +2311,7 @@ public sealed partial class MainWindow : Window, IDisposable
         var skipBadges = DadScheduleSkipBadgeProjection.Build(
             schedule,
             activeRun,
-            snapshot.RecentResults,
+            recentResults,
             schedulerHistory);
         var openRetryFailedEntryPopup = false;
         if (!ImGui.BeginTable(
@@ -2371,8 +2362,8 @@ public sealed partial class MainWindow : Window, IDisposable
                 DadUi.Badge("Locked while a schedule is active", DadUiTone.Warning);
             if (activeRun.IsActive)
             {
-                DrawStatusRow("Running now", DadScheduleCursorFormatter.Format(activeRun, snapshot.Schedules));
-                DrawScheduleTiming(activeRun, schedulerHistory, snapshot.GeneratedAtUtc);
+                DrawStatusRow("Running now", DadScheduleCursorFormatter.Format(activeRun, schedules));
+                DrawScheduleTiming(activeRun, schedulerHistory, generatedAtUtc);
             }
 
             var stayVisited = schedule.StayOnVisitedWorldBetweenPresets;
@@ -2507,28 +2498,29 @@ public sealed partial class MainWindow : Window, IDisposable
         ImGui.EndPopup();
     }
 
-    private void EnsureScheduleSelection(DadScheduleSnapshot snapshot)
+    private DadScheduleDefinition? EnsureScheduleSelection(IReadOnlyList<DadScheduleDefinition> schedules)
     {
-        var selected = snapshot.Schedules.FirstOrDefault(schedule =>
+        var selected = schedules.FirstOrDefault(schedule =>
             string.Equals(schedule.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase));
         if (selected != null)
         {
             if (string.IsNullOrWhiteSpace(schedulerScheduleNameBuffer))
                 schedulerScheduleNameBuffer = selected.DisplayName;
-            return;
+            return selected;
         }
 
-        selected = snapshot.Schedules.FirstOrDefault();
+        selected = schedules.FirstOrDefault();
         selectedScheduleId = selected?.ScheduleId ?? string.Empty;
         schedulerScheduleNameBuffer = selected?.DisplayName ?? schedulerScheduleNameBuffer;
+        return selected;
     }
 
-    private void DrawDeleteSchedulePopup(DadScheduleSnapshot snapshot)
+    private void DrawDeleteSchedulePopup(IReadOnlyList<DadScheduleDefinition> schedules)
     {
         if (!UiGui.BeginConfirmationPopup("Confirm delete schedule##dad-delete-schedule", ImGuiWindowFlags.AlwaysAutoResize))
             return;
 
-        var pending = snapshot.Schedules.FirstOrDefault(schedule =>
+        var pending = schedules.FirstOrDefault(schedule =>
             string.Equals(schedule.ScheduleId, pendingDeleteScheduleId, StringComparison.OrdinalIgnoreCase));
         UiGui.TextWrapped(pending == null
             ? "Delete this schedule?"

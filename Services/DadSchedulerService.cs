@@ -601,25 +601,30 @@ public sealed partial class DadSchedulerService
     public DadScheduleSnapshot GetScheduleSnapshot()
     {
         NormalizeSchedules();
-        NormalizeScheduleHistory();
         var activeRun = configuration.ActiveScheduleRun ?? new DadScheduleRunState();
         return new DadScheduleSnapshot
         {
             GeneratedAtUtc = DadClock.UtcNow,
             ActiveRun = activeRun.Clone(),
             Schedules = configuration.Schedules.Select(static schedule => schedule.Clone()).ToList(),
-            RecentResults = configuration.ScheduleHistory
-                .OrderByDescending(static result => result.CompletedAtUtc)
-                .ThenByDescending(static result => result.StartedAtUtc)
-                .Take(MaxScheduleHistory)
-                .Select(static result => result.Clone())
-                .ToList(),
+            RecentResults = GetRecentScheduleResults(),
             Summary = activeRun.IsActive
                 ? activeRun.Summary
                 : configuration.Schedules.Count == 0
                     ? "No schedules configured."
                     : $"{configuration.Schedules.Count} schedule(s) configured.",
         };
+    }
+
+    internal List<DadScheduleRunResult> GetRecentScheduleResults()
+    {
+        NormalizeScheduleHistory();
+        return configuration.ScheduleHistory
+            .OrderByDescending(static result => result.CompletedAtUtc)
+            .ThenByDescending(static result => result.StartedAtUtc)
+            .Take(MaxScheduleHistory)
+            .Select(static result => result.Clone())
+            .ToList();
     }
 
     public DadScheduleDefinition CreateSchedule(string displayName)

@@ -205,7 +205,7 @@ public sealed class DadP1191PerformanceAndCrewUxTests
             source.IndexOf("private void DrawRetryFailedEntryPopup(", StringComparison.Ordinal)];
         var retryPopup = source[
             source.IndexOf("private void DrawRetryFailedEntryPopup(", StringComparison.Ordinal)..
-            source.IndexOf("private void EnsureScheduleSelection(", StringComparison.Ordinal)];
+            source.IndexOf("private DadScheduleDefinition? EnsureScheduleSelection(", StringComparison.Ordinal)];
         var editor = source[
             source.IndexOf("private void DrawScheduleEntryEditor(", StringComparison.Ordinal)..
             source.IndexOf("private bool DrawSchedulePresetCombo(", StringComparison.Ordinal)];
@@ -216,16 +216,25 @@ public sealed class DadP1191PerformanceAndCrewUxTests
             source.IndexOf("private void DrawActiveScheduleStatus(", StringComparison.Ordinal)..
             source.IndexOf("private static void DrawScheduleTiming(", StringComparison.Ordinal)];
 
-        Assert.Contains("version, out var scheduleSnapshot)", source, StringComparison.Ordinal);
-        Assert.Contains("DrawActiveRunBanner(runState, activityDisplay.Run, ref scheduleSnapshot)", source, StringComparison.Ordinal);
-        Assert.Contains("DrawMainWorkspaceRail(runState, profile, characterPool, activityDisplay.Run, windowRootId, scheduleSnapshot)", source, StringComparison.Ordinal);
-        Assert.Contains("case 3: DrawSchedulesTab(runState, scheduleSnapshot)", source, StringComparison.Ordinal);
-        Assert.Contains("workspaceScheduleSnapshot = scheduleSnapshot;", header, StringComparison.Ordinal);
-        Assert.Matches(@"StartScheduleRunFromShell\([^\r\n]+\);\s+workspaceScheduleSnapshot = null;", header);
-        Assert.Matches(@"CancelScheduleRunFromShell\([^\r\n]+\);\s+workspaceScheduleSnapshot = null;", header);
-        Assert.Matches(@"CancelOwnedOperation\(\);\s+scheduleSnapshot = null;", banner);
-        Assert.Contains("scheduleSnapshot ?? plugin.SchedulerService.GetScheduleSnapshot()", schedulesTab, StringComparison.Ordinal);
+        var headerDraw = source.IndexOf("DrawShellHeader(configuration, profile, runState, characterPool, version);", StringComparison.Ordinal);
+        var bannerDraw = source.IndexOf("DrawActiveRunBanner(runState, activityDisplay.Run);", StringComparison.Ordinal);
+        var workspaceDraw = source.IndexOf("DrawMainWorkspaceRail(runState, profile, characterPool, activityDisplay.Run, windowRootId);", StringComparison.Ordinal);
+        Assert.True(headerDraw >= 0 && bannerDraw > headerDraw && workspaceDraw > bannerDraw);
+        Assert.Contains("case 3: DrawSchedulesTab(runState)", source, StringComparison.Ordinal);
+        Assert.Contains("EnsureScheduleSelection(schedules)", header, StringComparison.Ordinal);
+        Assert.Contains("configuration.ActiveScheduleRun?.IsActive == true", header, StringComparison.Ordinal);
+        Assert.Contains("StartScheduleRunFromShell(", header, StringComparison.Ordinal);
+        Assert.Contains("CancelScheduleRunFromShell(", header, StringComparison.Ordinal);
+        Assert.Contains("CancelOwnedOperation();", banner, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetScheduleSnapshot()", header, StringComparison.Ordinal);
+        Assert.DoesNotContain(".Clone()", header, StringComparison.Ordinal);
+        Assert.Contains("DrawScheduleBuilderTab(runState);", schedulesTab, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetScheduleSnapshot()", schedulesTab, StringComparison.Ordinal);
         Assert.DoesNotContain("GetScheduleSnapshot()", builder, StringComparison.Ordinal);
+        Assert.Contains("configuration.ActiveScheduleRun?.Clone()", builder, StringComparison.Ordinal);
+        Assert.Contains("GetRecentScheduleResults()", builder, StringComparison.Ordinal);
+        Assert.Matches(@"selected = schedules.FirstOrDefault\([^;]+;\s+\}\s+var schedule = selected\?\.Clone\(\);", builder);
+        Assert.Contains("DadScheduleCursorFormatter.Format(activeRun, schedules)", builder, StringComparison.Ordinal);
         Assert.Contains("activeScheduleLocked ? null : plugin.GetPlannerUiSnapshot(runState)", builder, StringComparison.Ordinal);
         var shoppingEditor = builder.IndexOf("if (UiGui.CollapsingHeader(\"MEMBER SHOPPING & FINAL COMMANDS\"))", StringComparison.Ordinal);
         Assert.True(shoppingEditor >= 0);

@@ -2,6 +2,7 @@
 
 - Resolve common shopping members only while the shopping and final commands editor is open, and normalize each preset once per refresh.
 - Reuse preset lookups across the ordered entries so large schedules take less work to display during a run.
+- Read saved schedule names in the header and copy only the selected schedule when drawing its editor.
 
 2026-11-18 - 2.1.0.11 - Schedule responsiveness and recovery
 
