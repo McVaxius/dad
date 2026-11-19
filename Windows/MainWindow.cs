@@ -2189,7 +2189,7 @@ public sealed partial class MainWindow : Window, IDisposable
             foreach (var candidate in schedules)
             {
                 var isSelected = string.Equals(candidate.ScheduleId, selectedScheduleId, StringComparison.OrdinalIgnoreCase);
-                if (UiGui.Selectable(candidate.DisplayName, isSelected))
+                if (UiGui.Selectable($"{candidate.DisplayName}##dad-header-schedule-{candidate.ScheduleId}", isSelected))
                 {
                     selectedScheduleId = candidate.ScheduleId;
                     schedulerScheduleNameBuffer = candidate.DisplayName;
@@ -2217,8 +2217,10 @@ public sealed partial class MainWindow : Window, IDisposable
             plugin.PrintStatus($"Created schedule '{created.DisplayName}'.");
         }
 
+        var selectedScheduleIsActive = activeScheduleLocked && schedule != null &&
+            string.Equals(activeRun.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase);
         ImGui.SameLine();
-        ImGui.BeginDisabled(schedule == null);
+        ImGui.BeginDisabled(schedule == null || selectedScheduleIsActive);
         if (UiGui.SmallButton("Rename") && schedule != null)
         {
             schedule.DisplayName = schedulerScheduleNameBuffer;
@@ -2230,7 +2232,10 @@ public sealed partial class MainWindow : Window, IDisposable
             }
         }
 
+        ImGui.EndDisabled();
+
         ImGui.SameLine();
+        ImGui.BeginDisabled(schedule == null);
         if (UiGui.SmallButton("Duplicate") && schedule != null)
         {
             var duplicate = plugin.SchedulerService.DuplicateSchedule(schedule.ScheduleId, $"{schedule.DisplayName} Copy");
@@ -2242,16 +2247,16 @@ public sealed partial class MainWindow : Window, IDisposable
             }
         }
 
+        ImGui.EndDisabled();
+
         if (identityActionsShareRow)
             ImGui.SameLine();
-        ImGui.BeginDisabled(activeScheduleLocked && schedule != null &&
-                            string.Equals(activeRun.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase));
+        ImGui.BeginDisabled(schedule == null || selectedScheduleIsActive);
         if (UiGui.SmallButton("Delete") && schedule != null)
         {
             pendingDeleteScheduleId = schedule.ScheduleId;
             ImGui.OpenPopup("Confirm delete schedule##dad-delete-schedule");
         }
-        ImGui.EndDisabled();
         ImGui.EndDisabled();
 
         DrawDeleteSchedulePopup(schedules);

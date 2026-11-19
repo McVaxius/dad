@@ -233,6 +233,19 @@ public sealed class DadP1191PerformanceAndCrewUxTests
         Assert.DoesNotContain("GetScheduleSnapshot()", builder, StringComparison.Ordinal);
         Assert.Contains("configuration.ActiveScheduleRun?.Clone()", builder, StringComparison.Ordinal);
         Assert.Contains("GetRecentScheduleResults()", builder, StringComparison.Ordinal);
+        Assert.Contains("UiGui.Selectable($\"{candidate.DisplayName}##dad-header-schedule-{candidate.ScheduleId}\", isSelected)", builder, StringComparison.Ordinal);
+        Assert.Matches(
+            @"var selectedScheduleIsActive = activeScheduleLocked && schedule != null &&\s+string\.Equals\(activeRun\.ScheduleId, schedule\.ScheduleId, StringComparison\.OrdinalIgnoreCase\);",
+            builder);
+        Assert.Matches(
+            @"ImGui\.BeginDisabled\(schedule == null \|\| selectedScheduleIsActive\);\s+if \(UiGui\.SmallButton\(""Rename""\)",
+            builder);
+        Assert.Matches(
+            @"ImGui\.EndDisabled\(\);\s+ImGui\.SameLine\(\);\s+ImGui\.BeginDisabled\(schedule == null\);\s+if \(UiGui\.SmallButton\(""Duplicate""\)",
+            builder);
+        Assert.Matches(
+            @"ImGui\.BeginDisabled\(schedule == null \|\| selectedScheduleIsActive\);\s+if \(UiGui\.SmallButton\(""Delete""\)",
+            builder);
         Assert.Matches(@"selected = schedules.FirstOrDefault\([^;]+;\s+\}\s+var schedule = selected\?\.Clone\(\);", builder);
         Assert.Contains("DadScheduleCursorFormatter.Format(activeRun, schedules)", builder, StringComparison.Ordinal);
         Assert.Contains("activeScheduleLocked ? null : plugin.GetPlannerUiSnapshot(runState)", builder, StringComparison.Ordinal);
