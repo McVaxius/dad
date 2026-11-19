@@ -415,26 +415,31 @@ public static class DadShoppingAssociationRules
         if (referenced.Count == 0)
             return [];
 
-        var firstSlots = DadPlannerSlotRules.NormalizeGroupSlots(referenced[0].Slots)
+        var commonSlots = DadPlannerSlotRules.NormalizeGroupSlots(referenced[0].Slots)
             .Where(static slot =>
                 !slot.IsSubstitute &&
                 slot.SharedIdentity == null &&
                 !slot.RequiredAccountKey.IsEmpty &&
                 !slot.RequiredCharacterKey.IsEmpty)
             .ToList();
-        return firstSlots
-            .Where(candidate => referenced.Skip(1).All(plan =>
-                DadPlannerSlotRules.NormalizeGroupSlots(plan.Slots).Count(slot =>
-                    !slot.IsSubstitute &&
-                    slot.SharedIdentity == null &&
-                    string.Equals(slot.SlotId, candidate.SlotId, StringComparison.OrdinalIgnoreCase) &&
-                    DadRosterIdentity.SameAccount(slot.RequiredAccountKey, candidate.RequiredAccountKey) &&
-                    string.Equals(
-                        slot.RequiredCharacterKey.Value,
-                        candidate.RequiredCharacterKey.Value,
-                        StringComparison.OrdinalIgnoreCase)) == 1))
-            .Select(CloneShopperSlot)
-            .ToList();
+        foreach (var plan in referenced.Skip(1))
+        {
+            if (commonSlots.Count == 0)
+                break;
+
+            var planSlots = DadPlannerSlotRules.NormalizeGroupSlots(plan.Slots);
+            commonSlots.RemoveAll(candidate => planSlots.Count(slot =>
+                !slot.IsSubstitute &&
+                slot.SharedIdentity == null &&
+                string.Equals(slot.SlotId, candidate.SlotId, StringComparison.OrdinalIgnoreCase) &&
+                DadRosterIdentity.SameAccount(slot.RequiredAccountKey, candidate.RequiredAccountKey) &&
+                string.Equals(
+                    slot.RequiredCharacterKey.Value,
+                    candidate.RequiredCharacterKey.Value,
+                    StringComparison.OrdinalIgnoreCase)) != 1);
+        }
+
+        return commonSlots.Select(CloneShopperSlot).ToList();
     }
 
     public static bool TryBindToSchedulePlans(

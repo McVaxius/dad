@@ -209,6 +209,9 @@ public sealed class DadP1191PerformanceAndCrewUxTests
         var editor = source[
             source.IndexOf("private void DrawScheduleEntryEditor(", StringComparison.Ordinal)..
             source.IndexOf("private bool DrawSchedulePresetCombo(", StringComparison.Ordinal)];
+        var presetCombo = source[
+            source.IndexOf("private bool DrawSchedulePresetCombo(", StringComparison.Ordinal)..
+            source.IndexOf("private void DrawScheduleRecentResults(", StringComparison.Ordinal)];
         var status = source[
             source.IndexOf("private void DrawActiveScheduleStatus(", StringComparison.Ordinal)..
             source.IndexOf("private static void DrawScheduleTiming(", StringComparison.Ordinal)];
@@ -224,7 +227,24 @@ public sealed class DadP1191PerformanceAndCrewUxTests
         Assert.Contains("scheduleSnapshot ?? plugin.SchedulerService.GetScheduleSnapshot()", schedulesTab, StringComparison.Ordinal);
         Assert.DoesNotContain("GetScheduleSnapshot()", builder, StringComparison.Ordinal);
         Assert.Contains("activeScheduleLocked ? null : plugin.GetPlannerUiSnapshot(runState)", builder, StringComparison.Ordinal);
+        var shoppingEditor = builder.IndexOf("if (UiGui.CollapsingHeader(\"MEMBER SHOPPING & FINAL COMMANDS\"))", StringComparison.Ordinal);
+        Assert.True(shoppingEditor >= 0);
+        Assert.DoesNotContain("ResolveCommonScheduleShopperSlots", builder[..shoppingEditor], StringComparison.Ordinal);
+        Assert.Matches(
+            @"if \(memberDraftOwner != \(DadShoppingAssociationOwnerKind\.Schedule, schedule\.ScheduleId\)\)\s+memberDraftOwner = null;",
+            builder[..shoppingEditor]);
+        Assert.Matches(
+            @"if \(UiGui.CollapsingHeader\(""MEMBER SHOPPING & FINAL COMMANDS""\)\)\s+\{\s+var memberSlots = DadShoppingAssociationRules\.ResolveCommonScheduleShopperSlots",
+            builder[shoppingEditor..]);
         Assert.Matches(@"plannerSnapshot == null\s+\? DadLevelSeekDisplayState\.None\s+: plugin\.BuildScheduleLevelSeekDisplay", editor);
+        var entryRows = editor.IndexOf("for (var index = 0; index < schedule.Entries.Count; index++)", StringComparison.Ordinal);
+        Assert.True(entryRows >= 0);
+        Assert.Contains("groups.ToLookup(static group => group.GroupId, StringComparer.OrdinalIgnoreCase)", editor[..entryRows], StringComparison.Ordinal);
+        Assert.Contains(".GroupBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase)", editor[..entryRows], StringComparison.Ordinal);
+        Assert.Contains("groupsById[entry.GroupId].FirstOrDefault()", editor[entryRows..], StringComparison.Ordinal);
+        Assert.DoesNotContain("groups.FirstOrDefault", editor[entryRows..], StringComparison.Ordinal);
+        Assert.DoesNotContain(".GroupBy(", presetCombo, StringComparison.Ordinal);
+        Assert.DoesNotContain("groups.FirstOrDefault", presetCombo, StringComparison.Ordinal);
         Assert.Contains("skipBadges.Badges.TryGetValue(entry.EntryId", editor, StringComparison.Ordinal);
         Assert.Contains("GetRecentSchedulerResults()", builder, StringComparison.Ordinal);
         Assert.Contains("GetRecentSchedulerResults()", status, StringComparison.Ordinal);

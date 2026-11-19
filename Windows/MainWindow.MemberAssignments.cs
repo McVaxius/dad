@@ -6,7 +6,7 @@ namespace dad.Windows;
 
 public sealed partial class MainWindow
 {
-    private string memberDraftOwner = string.Empty;
+    private (DadShoppingAssociationOwnerKind Kind, string Id)? memberDraftOwner;
     private List<DadShoppingAssociation> memberDrafts = [];
 
     private void DrawMemberAssignmentsEditor(DadShoppingAssociationOwnerKind kind, string ownerId, string ownerName,
@@ -62,10 +62,10 @@ public sealed partial class MainWindow
         {
             var saved = plugin.TrySaveMemberAssignments(kind, ownerId, memberDrafts, out var error);
             shoppingEditorStatus = saved ? "Member assignments saved." : error;
-            if (saved) memberDraftOwner = string.Empty;
+            if (saved) memberDraftOwner = null;
         }
         ImGui.SameLine();
-        if (UiGui.Button("Discard edits")) memberDraftOwner = string.Empty;
+        if (UiGui.Button("Discard edits")) memberDraftOwner = null;
         ImGui.EndDisabled();
         if (locked && blocker.Length > 0) UiGui.TextWrapped(blocker);
         if (shoppingEditorStatus.Length > 0) UiGui.TextWrapped(shoppingEditorStatus);
@@ -77,7 +77,7 @@ public sealed partial class MainWindow
     private void PrepareMemberAssignmentsDraft(DadShoppingAssociationOwnerKind kind, string ownerId,
         IReadOnlyList<DadPlannerGroupSlot> slots)
     {
-        var ownerKey = $"{kind}:{ownerId}";
+        var ownerKey = (kind, ownerId);
         if (memberDraftOwner != ownerKey)
         {
             memberDraftOwner = ownerKey;

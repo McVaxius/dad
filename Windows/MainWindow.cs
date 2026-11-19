@@ -2277,8 +2277,8 @@ public sealed partial class MainWindow : Window, IDisposable
             return;
         }
 
-        var memberSlots = DadShoppingAssociationRules.ResolveCommonScheduleShopperSlots(schedule, groups);
-        PrepareMemberAssignmentsDraft(DadShoppingAssociationOwnerKind.Schedule, schedule.ScheduleId, memberSlots);
+        if (memberDraftOwner != (DadShoppingAssociationOwnerKind.Schedule, schedule.ScheduleId))
+            memberDraftOwner = null;
         var scheduleRoot = ImGui.GetID("");
 
         var knownGroupIds = groups.Select(static group => group.GroupId).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -2450,6 +2450,7 @@ public sealed partial class MainWindow : Window, IDisposable
 
         if (UiGui.CollapsingHeader("MEMBER SHOPPING & FINAL COMMANDS"))
         {
+            var memberSlots = DadShoppingAssociationRules.ResolveCommonScheduleShopperSlots(schedule, groups);
             ImGuiP.PushOverrideID(scheduleRoot);
             DrawMemberAssignmentsEditor(DadShoppingAssociationOwnerKind.Schedule, schedule.ScheduleId,
                 schedule.DisplayName, schedule.ShoppingAssociation, memberSlots, activeScheduleLocked);
@@ -2755,6 +2756,13 @@ public sealed partial class MainWindow : Window, IDisposable
         DadPlannerUiSnapshot? plannerSnapshot,
         DadScheduleSkipBadgeProjectionResult skipBadges)
     {
+        var groupsById = groups.ToLookup(static group => group.GroupId, StringComparer.OrdinalIgnoreCase);
+        var duplicateNames = groups
+            .GroupBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Where(static group => group.Count() > 1)
+            .Select(static group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         if (groups.Count == 0)
         {
             DrawMutedNotice("No saved presets are available. Create a preset before adding schedule rows.");
@@ -2764,18 +2772,18 @@ public sealed partial class MainWindow : Window, IDisposable
         else
         {
             if (string.IsNullOrWhiteSpace(schedulerAddPresetGroupId) ||
-                groups.All(group => !string.Equals(group.GroupId, schedulerAddPresetGroupId, StringComparison.OrdinalIgnoreCase)))
+                !groupsById.Contains(schedulerAddPresetGroupId))
             {
                 schedulerAddPresetGroupId = groups[0].GroupId;
             }
 
             ImGui.BeginDisabled(activeScheduleLocked);
-            DrawSchedulePresetCombo("Add preset", ref schedulerAddPresetGroupId, groups, "add");
+            DrawSchedulePresetCombo("Add preset", ref schedulerAddPresetGroupId,
+                groupsById[schedulerAddPresetGroupId].FirstOrDefault(), groups, duplicateNames, "add");
             ImGui.SameLine();
             if (UiGui.SmallButton("Add"))
             {
-                var group = groups.FirstOrDefault(candidate =>
-                    string.Equals(candidate.GroupId, schedulerAddPresetGroupId, StringComparison.OrdinalIgnoreCase));
+                var group = groupsById[schedulerAddPresetGroupId].FirstOrDefault();
                 if (group != null)
                 {
                     schedule.Entries.Add(new DadScheduleEntry
@@ -2813,8 +2821,7 @@ public sealed partial class MainWindow : Window, IDisposable
         for (var index = 0; index < schedule.Entries.Count; index++)
         {
             var entry = schedule.Entries[index];
-            var group = groups.FirstOrDefault(candidate =>
-                string.Equals(candidate.GroupId, entry.GroupId, StringComparison.OrdinalIgnoreCase));
+            var group = groupsById[entry.GroupId].FirstOrDefault();
             var levelSeekDisplay = plannerSnapshot == null
                 ? DadLevelSeekDisplayState.None
                 : plugin.BuildScheduleLevelSeekDisplay(group, plannerSnapshot);
@@ -2845,7 +2852,9 @@ public sealed partial class MainWindow : Window, IDisposable
             var presetChanged = DrawSchedulePresetCombo(
                 $"##schedule-entry-preset-{entry.EntryId}",
                 ref entryGroupId,
+                group,
                 groups,
+                duplicateNames,
                 entry.EntryId);
             if (levelSeekDisplay.IsSkipIndicated)
                 ImGui.PopStyleColor();
@@ -2856,8 +2865,7 @@ public sealed partial class MainWindow : Window, IDisposable
             }
             if (presetChanged)
             {
-                var selected = groups.FirstOrDefault(candidate =>
-                    string.Equals(candidate.GroupId, entryGroupId, StringComparison.OrdinalIgnoreCase));
+                var selected = groupsById[entryGroupId].FirstOrDefault();
                 if (selected != null)
                 {
                     entry.GroupId = selected.GroupId;
@@ -2926,17 +2934,12 @@ public sealed partial class MainWindow : Window, IDisposable
     private bool DrawSchedulePresetCombo(
         string label,
         ref string groupId,
+        DadPlannerGroup? selectedGroup,
         IReadOnlyList<DadPlannerGroup> groups,
+        IReadOnlySet<string> duplicateNames,
         string idSuffix)
     {
         var currentGroupId = groupId;
-        var duplicateNames = groups
-            .GroupBy(static group => group.DisplayName, StringComparer.OrdinalIgnoreCase)
-            .Where(static group => group.Count() > 1)
-            .Select(static group => group.Key)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var selectedGroup = groups.FirstOrDefault(group =>
-            string.Equals(group.GroupId, currentGroupId, StringComparison.OrdinalIgnoreCase));
         var preview = selectedGroup == null
             ? "(missing)"
             : FormatPlannerGroupChoice(selectedGroup.DisplayName, selectedGroup.GroupId, duplicateNames);
