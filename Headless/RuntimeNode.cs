@@ -66,6 +66,9 @@ internal sealed class RuntimeNode : IDisposable
     private readonly VirtualGatherClient gathering;
     private readonly VirtualProfileIpc profileIpc;
     private readonly VirtualShoppingIpc shoppingIpc;
+#if ADS_SHOPPING_LAB
+    private readonly VirtualAurianaShop? aurianaShop;
+#endif
     private readonly VirtualAutomationIpc automation;
     private readonly DadTitleMenuReadinessService title;
     private readonly List<Delegate> frameworkUpdates = [];
@@ -114,6 +117,10 @@ internal sealed class RuntimeNode : IDisposable
     public RuntimeNode(JsonElement input)
     {
         directory = input.GetProperty("directory").GetString()!;
+#if !ADS_SHOPPING_LAB
+        if (input.TryGetProperty("aurianaCleanupBlocked", out _))
+            throw new InvalidOperationException("The Auriana scenario requires Dad.Headless built with -p:EnableAdsShoppingLab=true.");
+#endif
         // The parent allocates and owns this explicit isolated runtime directory.
         if (!Path.IsPathFullyQualified(directory) || !Directory.Exists(directory))
             throw new ArgumentException("An existing isolated runtime directory is required.");
@@ -187,6 +194,10 @@ internal sealed class RuntimeNode : IDisposable
             CurrentLevel = participantInput.ValueKind == JsonValueKind.Object ? participantInput.GetProperty("Level").GetInt32() : 100,
             DataCenterId = 1, DataCenterName = "Synthetic DC", TerritoryId = 1,
         };
+#if ADS_SHOPPING_LAB
+        if (input.TryGetProperty("aurianaCleanupBlocked", out var cleanupBlocked))
+            aurianaShop = new(directory, clock, character.ContentId, cleanupBlocked.GetBoolean(), log, events.Enqueue);
+#endif
         if (input.TryGetProperty("additionalCharacter", out var additional) && additional.ValueKind == JsonValueKind.Object)
         {
             var known = character.Clone();
@@ -439,6 +450,9 @@ internal sealed class RuntimeNode : IDisposable
                     Plugin.PluginInterface.GetIpcSubscriber<object>("Synthetic.UnknownCallback").InvokeFunc();
                 clock.Now = command.TryGetProperty("now", out var observedNow) ? observedNow.GetDateTimeOffset()
                     : clock.Now.AddMilliseconds(command.TryGetProperty("milliseconds", out var ms) ? ms.GetInt32() : 250);
+#if ADS_SHOPPING_LAB
+                aurianaShop?.Update();
+#endif
                 presence.CurrentParticipant.LastHeartbeatUtc = clock.Now.UtcDateTime;
                 foreach (var update in frameworkUpdates.ToArray()) update.DynamicInvoke(Plugin.Framework);
                 while (frameworkWork.TryDequeue(out var callback)) callback();
@@ -677,6 +691,9 @@ internal sealed class RuntimeNode : IDisposable
         memberCompletionReceipts = configuration.MemberCompletionReceipts,
         controlResult, autoParty = autoParty?.Snapshot(), helperRunning = helpers.IsRunning,
         gathering = gathering.Snapshot(),
+#if ADS_SHOPPING_LAB
+        aurianaShop = aurianaShop?.Snapshot(),
+#endif
         cancellationCleanupPending = coordinator.HasPendingCancellationCleanup,
         alliance = allianceService?.GetStatus(), allianceReceiver = allianceService?.BuildUiSnapshot(),
         automation = new { automation.Suppressed, automation.MultiMode, automation.Surface },
@@ -872,7 +889,12 @@ internal sealed class RuntimeNode : IDisposable
                 if (call.Name == "InvokeFunc" && endpoint == "ADS.GetStatusJson")
                     return DadIpcJson.Serialize(new { utilityRunning = repairBusy, utilityTask = "repair", utilityMode = "self", utilityStatus = "Synthetic repair observation" });
                 if (call.Name == "InvokeFunc" && endpoint is "ADS.StartShopListPreset" or "ADS.GetShopListPresetStatusJson" or "ADS.CancelShopListPreset")
+                {
+#if ADS_SHOPPING_LAB
+                    if (aurianaShop != null) return aurianaShop.Invoke(endpoint, values);
+#endif
                     return shoppingIpc.Invoke(endpoint, values);
+                }
                 if (call.Name == "InvokeFunc" && endpoint == "ADS.StartRepair")
                 {
                     if (values is not [string mode] || mode != "self") throw Unexpected("Unsupported synthetic repair mode.");
