@@ -194,6 +194,9 @@ public sealed class DadP1191PerformanceAndCrewUxTests
         var builder = source[
             source.IndexOf("private void DrawScheduleBuilderTab(", StringComparison.Ordinal)..
             source.IndexOf("private void DrawRetryFailedEntryPopup(", StringComparison.Ordinal)];
+        var retryPopup = source[
+            source.IndexOf("private void DrawRetryFailedEntryPopup(", StringComparison.Ordinal)..
+            source.IndexOf("private void EnsureScheduleSelection(", StringComparison.Ordinal)];
         var editor = source[
             source.IndexOf("private void DrawScheduleEntryEditor(", StringComparison.Ordinal)..
             source.IndexOf("private bool DrawSchedulePresetCombo(", StringComparison.Ordinal)];
@@ -209,10 +212,17 @@ public sealed class DadP1191PerformanceAndCrewUxTests
         Assert.DoesNotContain("GetQueueSnapshot()", builder, StringComparison.Ordinal);
         Assert.DoesNotContain("GetQueueSnapshot()", status, StringComparison.Ordinal);
         Assert.Matches(
-            @"var retryEligibility = activeScheduleLocked\s+\? new DadScheduleRetryResult \{ Summary = activeScheduleBlocker \}" +
+            @"var retryEligibility = activeScheduleLocked\s+\? new DadScheduleRetryResult \{ Summary = ActiveScheduleBlocker \}" +
             @"\s+: latestFailedRun == null\s+\? [^\r\n]+\s+: plugin\.SchedulerService\.EvaluateFailedEntryRetry\(",
             builder);
         Assert.Contains("UiGui.SetTooltip(retryEligibility.Summary)", builder, StringComparison.Ordinal);
+        Assert.Contains("DrawRetryFailedEntryPopup(runState, activeScheduleLocked)", builder, StringComparison.Ordinal);
+        Assert.Matches(
+            @"var eligibility = activeScheduleLocked\s+\? new DadScheduleRetryResult \{ Summary = ActiveScheduleBlocker \}" +
+            @"\s+: plugin\.SchedulerService\.EvaluateFailedEntryRetry\(",
+            retryPopup);
+        Assert.Contains("ImGui.BeginDisabled(!eligibility.Eligible)", retryPopup, StringComparison.Ordinal);
+        Assert.Matches(@"ImGui\.EndDisabled\(\);\s+ImGui\.SameLine\(\);\s+if \(UiGui\.Button\(""Cancel""\)\)", retryPopup);
     }
 
     [Fact]

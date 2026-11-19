@@ -43,6 +43,7 @@ public sealed partial class MainWindow : Window, IDisposable
     }
 
     private static readonly Vector2 MinimumWindowSize = new(760f, 600f);
+    private const string ActiveScheduleBlocker = "A schedule is already running.";
     private const string RosterUnassignedAccountFilter = "__unassigned";
     private const string RosterNeedsUpdateFilter = "NeedsUpdate";
     private readonly Plugin plugin;
@@ -2272,13 +2273,12 @@ public sealed partial class MainWindow : Window, IDisposable
         var knownGroupIds = groups.Select(static group => group.GroupId).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var missingPresetCount = schedule.Entries.Count(entry =>
             string.IsNullOrWhiteSpace(entry.GroupId) || !knownGroupIds.Contains(entry.GroupId));
-        const string activeScheduleBlocker = "A schedule is already running.";
         var firstBlocker = schedule.Entries.Count == 0
             ? "Add at least one saved preset entry."
             : missingPresetCount > 0
                 ? $"{missingPresetCount} entry/entries reference a missing preset."
                 : activeScheduleLocked
-                    ? activeScheduleBlocker
+                    ? ActiveScheduleBlocker
                     : Plugin.IsBusy(runState.VisibleRun)
                         ? "A DAD run is active."
                         : !plugin.SchedulerService.CanRunScheduleHere(schedule)
@@ -2295,7 +2295,7 @@ public sealed partial class MainWindow : Window, IDisposable
             string.Equals(result.ScheduleId, schedule.ScheduleId, StringComparison.OrdinalIgnoreCase) &&
             result.Status == DadScheduleRunStatus.Blocked);
         var retryEligibility = activeScheduleLocked
-            ? new DadScheduleRetryResult { Summary = activeScheduleBlocker }
+            ? new DadScheduleRetryResult { Summary = ActiveScheduleBlocker }
             : latestFailedRun == null
                 ? new DadScheduleRetryResult { Summary = "No failed schedule entry is available to resume." }
                 : plugin.SchedulerService.EvaluateFailedEntryRetry(
@@ -2448,10 +2448,10 @@ public sealed partial class MainWindow : Window, IDisposable
         ImGui.EndTable();
         if (openRetryFailedEntryPopup)
             ImGui.OpenPopup("Confirm retry failed schedule entry##dad-schedule-retry-confirm");
-        DrawRetryFailedEntryPopup(runState);
+        DrawRetryFailedEntryPopup(runState, activeScheduleLocked);
     }
 
-    private void DrawRetryFailedEntryPopup(DadVisibleRunState runState)
+    private void DrawRetryFailedEntryPopup(DadVisibleRunState runState, bool activeScheduleLocked)
     {
         if (!UiGui.BeginConfirmationPopup(
                 "Confirm retry failed schedule entry##dad-schedule-retry-confirm",
@@ -2465,9 +2465,9 @@ public sealed partial class MainWindow : Window, IDisposable
             FailedRunId = pendingRetryScheduleRunId,
             RequestedBy = "schedule-ui-retry",
         };
-        var eligibility = plugin.SchedulerService.EvaluateFailedEntryRetry(
-            request,
-            Plugin.IsBusy(runState.VisibleRun));
+        var eligibility = activeScheduleLocked
+            ? new DadScheduleRetryResult { Summary = ActiveScheduleBlocker }
+            : plugin.SchedulerService.EvaluateFailedEntryRetry(request, Plugin.IsBusy(runState.VisibleRun));
         UiGui.TextWrapped("Resume this failed Schedule entry from its persisted entry and repeat cursor?");
         UiGui.TextWrapped("This creates a new Schedule run at the persisted cursor, retains prior history, requires every client and DAD/scheduler lane to be idle, and never replays automatically.");
         DrawStatusRow("Eligibility", eligibility.Summary);
