@@ -496,6 +496,9 @@ public sealed class DadReliabilityIntegrationSourceContractTests
         Assert.True(sharedStart > actionStart && sharedStart < cancelOwnerStart);
         var sharedActions = windowSource[sharedStart..cancelOwnerStart];
         Assert.Contains("if (CurrentPlannerActions().CanRun) plugin.StartPlannerRunFromShell();", sharedActions, StringComparison.Ordinal);
+        Assert.Matches(@"Click = button => \{ if \(button == ImGuiMouseButton\.Left\) CancelPresetOperation\(\); \},\s+ShowTooltip = .*CurrentPlannerActions\(includeRunPreview: false\)\.CancelTooltip", windowSource);
+        Assert.Contains("var preview = includeRunPreview ? plugin.BuildPlannerRunRequestPreview() : null;", sharedActions, StringComparison.Ordinal);
+        Assert.Contains("var actions = CurrentPlannerActions(includeRunPreview: false);", sharedActions, StringComparison.Ordinal);
         Assert.Contains("if (actions.CanCancel) CancelOwnedOperation(actions.Job, \"Planner\");", sharedActions, StringComparison.Ordinal);
         Assert.Contains("HasPendingCancellationCleanup", sharedActions, StringComparison.Ordinal);
         Assert.Contains("DadRunCancellationState.Cancelling", sharedActions, StringComparison.Ordinal);

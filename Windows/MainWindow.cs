@@ -185,7 +185,7 @@ public sealed partial class MainWindow : Window, IDisposable
         {
             Icon = FontAwesomeIcon.Stop, Priority = -50, IconOffset = new(2, 1),
             Click = button => { if (button == ImGuiMouseButton.Left) CancelPresetOperation(); },
-            ShowTooltip = () => MaterialText.SetTooltip(UiText.T("Cancel preset operation") + "\n" + UiText.T(CurrentPlannerActions().CancelTooltip)),
+            ShowTooltip = () => MaterialText.SetTooltip(UiText.T("Cancel preset operation") + "\n" + UiText.T(CurrentPlannerActions(includeRunPreview: false).CancelTooltip)),
         });
     }
 
@@ -5017,9 +5017,9 @@ public sealed partial class MainWindow : Window, IDisposable
 
     }
 
-    private (bool CanRun, bool CanCancel, DadScheduledCrewJob? Job, string RunTooltip, string CancelTooltip) CurrentPlannerActions()
+    private (bool CanRun, bool CanCancel, DadScheduledCrewJob? Job, string RunTooltip, string CancelTooltip) CurrentPlannerActions(bool includeRunPreview = true)
     {
-        var preview = plugin.BuildPlannerRunRequestPreview();
+        var preview = includeRunPreview ? plugin.BuildPlannerRunRequestPreview() : null;
         var runState = plugin.GetVisibleRunState();
         var activeRun = GetActiveRun(runState);
         var selectedGroup = plugin.GetSelectedPlannerGroup();
@@ -5036,10 +5036,10 @@ public sealed partial class MainWindow : Window, IDisposable
         var directRunActive = jobToCancel == null && Plugin.IsBusy(activeRun)
             && (string.Equals(activeRun.RequestedBy, "planner", StringComparison.OrdinalIgnoreCase)
                 || activeRun.RequestedBy.StartsWith("planner-group:", StringComparison.OrdinalIgnoreCase));
-        var canRun = !IsPlannerLocked(runState) && !cleanupPending && queue.ActiveJob == null && selectedJob == null && preview.CanStart;
+        var canRun = !IsPlannerLocked(runState) && !cleanupPending && queue.ActiveJob == null && selectedJob == null && preview?.CanStart == true;
         var canCancel = !cleanupPending && (jobToCancel != null || directRunActive);
-        var runTooltip = cleanupPending
-            ? "Cancellation cleanup is awaiting exact acknowledgement before another preset operation can start."
+        var runTooltip = preview == null ? string.Empty
+            : cleanupPending ? "Cancellation cleanup is awaiting exact acknowledgement before another preset operation can start."
             : selectedJob != null ? $"This preset already has an active or pending scheduler job. Job ID {selectedJob.JobId}."
             : IsPlannerLocked(runState) ? FormatText(activeRun.Summary, preview.StatusSummary)
             : preview.CanStart ? "Starts the existing direct Planner request for online participants only. It does not enter the scheduler, wake, relog, or request VERMAXION takeover."
@@ -5059,7 +5059,7 @@ public sealed partial class MainWindow : Window, IDisposable
 
     internal void CancelPresetOperation()
     {
-        var actions = CurrentPlannerActions();
+        var actions = CurrentPlannerActions(includeRunPreview: false);
         if (actions.CanCancel) CancelOwnedOperation(actions.Job, "Planner");
     }
 
