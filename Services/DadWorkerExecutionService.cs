@@ -550,6 +550,12 @@ public sealed class DadWorkerExecutionService
         var finalState = pendingCancellationState;
         var finalSummary = pendingCancellationSummary;
         var finalFailureReason = pendingCancellationFailureReason;
+        if (status.ShoppingResults.LastOrDefault() is { FailureCode: DadShoppingRuntimeService.CancellationUnverifiedFailureCode })
+        {
+            finalSummary = $"{finalSummary} {decision.Summary}".Trim();
+            finalFailureReason = $"{finalFailureReason} {decision.Summary}".Trim();
+        }
+
         Finish(finalState, false, finalSummary, finalFailureReason);
         if (completedCommand != null)
             DrainPendingForRun(completedCommand.RunId);

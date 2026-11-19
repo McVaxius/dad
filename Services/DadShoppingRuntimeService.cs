@@ -11,6 +11,7 @@ public sealed class DadShoppingRuntimeService
     private static readonly TimeSpan PostCommandTimeout = TimeSpan.FromMinutes(20);
     private const int MaximumOperationIdLength = 128;
     private const string AutoRetainerDeliveryCommand = "/ays deliver";
+    internal const string CancellationUnverifiedFailureCode = "dad-shopping-cancellation-unverified";
 
     private enum RuntimePhase
     {
@@ -390,6 +391,13 @@ public sealed class DadShoppingRuntimeService
         nextStatusPollUtc = now + StatusPollInterval;
         var association = associations[associationIndex];
         var statusResult = adsService.GetShopListPresetStatus(operationId, association.PresetId);
+        if (statusResult.OperationNotFound)
+        {
+            const string summary = "ADS no longer reports the exact shopping operation. Cancellation could not be verified.";
+            CompleteCancellationFailure(CancellationUnverifiedFailureCode, summary);
+            return Reject(summary);
+        }
+
         if (statusResult.Readable && statusResult.Response != null)
         {
             MergeEvidence(

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Ipc;
@@ -17,6 +18,7 @@ public sealed unsafe class DadDutySupportAdsService
     private const string AdsOutsideCommand = "/ads outside";
     private const string AdsLeaveCommand = "/ads leave";
     private const string AdsStopCommand = "/ads stop";
+    private const string ShopListOperationNotFound = "operation-not-found";
     private readonly IPluginLog log;
     private readonly ICallGateSubscriber<string, string> patchConfiguration;
     private readonly ICallGateSubscriber<string, string> validateDutyLootPolicy;
@@ -408,6 +410,17 @@ public sealed unsafe class DadDutySupportAdsService
         {
             var responseJson = getShopListPresetStatusJson.InvokeFunc(operationId);
             var response = DadIpcJson.DeserializeRaw<DadAdsShopListStatusResponse>(responseJson);
+            if (response is { Disposition: ShopListOperationNotFound } or { FailureCode: ShopListOperationNotFound })
+            {
+                if (response is { Disposition: ShopListOperationNotFound, FailureCode: ShopListOperationNotFound } &&
+                    IsExactMissingShopListStatus(responseJson, operationId))
+                {
+                    return new(false, null, "ADS no longer reports the exact shopping operation.") { OperationNotFound = true };
+                }
+
+                return new(false, null, "ADS returned an invalid missing shopping operation status.");
+            }
+
             if (response == null || response.Version != 1 ||
                 !string.Equals(response.OperationId?.Trim(), operationId, StringComparison.Ordinal) ||
                 !string.Equals(
@@ -450,6 +463,26 @@ public sealed unsafe class DadDutySupportAdsService
         {
             return new(false, null, $"ADS shopping status IPC failed: {ex.Message}");
         }
+    }
+
+    private static bool IsExactMissingShopListStatus(string json, string operationId)
+    {
+        // Require explicit wire values so missing fields cannot look like a default-valued sentinel.
+        using var document = JsonDocument.Parse(json);
+        var status = document.RootElement;
+        return status.GetProperty("version").GetInt32() == 1 &&
+               string.Equals(status.GetProperty("operationId").GetString(), operationId, StringComparison.Ordinal) &&
+               status.GetProperty("presetId").GetGuid() == Guid.Empty &&
+               status.GetProperty("running").ValueKind == JsonValueKind.False &&
+               status.GetProperty("done").ValueKind == JsonValueKind.False &&
+               status.GetProperty("succeeded").ValueKind == JsonValueKind.Null &&
+               status.GetProperty("completedRows").GetInt32() == 0 &&
+               status.GetProperty("totalRows").GetInt32() == 0 &&
+               status.GetProperty("completedAtUtc").ValueKind == JsonValueKind.Null &&
+               status.GetProperty("completedNonRepeatableRowIds").GetArrayLength() == 0 &&
+               status.GetProperty("skippedRowIds").GetArrayLength() == 0 &&
+               status.GetProperty("rows").GetArrayLength() == 0 &&
+               status.GetProperty("creditedQuantities").ValueKind == JsonValueKind.Null;
     }
 
     public bool CancelShopListPreset(string operationId, out string failureReason)

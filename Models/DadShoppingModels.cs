@@ -779,7 +779,10 @@ public readonly record struct DadAdsShoppingStartResult(
 public readonly record struct DadAdsShoppingStatusResult(
     bool Readable,
     DadAdsShopListStatusResponse? Response,
-    string Summary);
+    string Summary)
+{
+    internal bool OperationNotFound { get; init; }
+}
 
 public readonly record struct DadAdsShoppingCatalogResult(
     bool Readable,

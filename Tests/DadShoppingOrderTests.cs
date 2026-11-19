@@ -1,6 +1,15 @@
+extern alias DadRuntime;
+extern alias DalamudApi;
+
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using dad.Models;
 using dad.Services;
+using DalamudApi::Dalamud.Plugin.Ipc;
+using DalamudApi::Dalamud.Plugin.Services;
 using Xunit;
+using M = DadRuntime::dad.Models;
+using S = DadRuntime::dad.Services;
 
 namespace dad.Tests;
 
@@ -239,6 +248,127 @@ public sealed class DadShoppingOrderTests
         Assert.True(wizard.TrySave(_ => { saves++; return (true, "persisted"); }, out _));
         Assert.False(wizard.TrySave(_ => { saves++; return (true, "persisted"); }, out _));
         Assert.Equal(1, saves);
+    }
+
+    [Fact]
+    public void CancellationEndsUnverifiedOnlyWhenAdsReportsExactAbsenceAndRetainsObservedCredit()
+    {
+        var association = new M.DadShoppingRunAssociation
+        {
+            OwnerKind = M.DadShoppingAssociationOwnerKind.Schedule,
+            OwnerId = "fixture-schedule",
+            AssociationId = "33333333333333333333333333333333",
+            PresetId = "11111111-1111-1111-1111-111111111111",
+            ShopperSlotId = "Slot1",
+            ShopperAccountKey = new("fixture-account"),
+            ShopperCharacterKey = new("fixture-a"),
+            CreditedQuantities = new() { [Row] = 20 },
+        };
+        var ads = (S.DadDutySupportAdsService)RuntimeHelpers.GetUninitializedObject(typeof(S.DadDutySupportAdsService));
+        var log = DispatchProxy.Create<IPluginLog, DadScheduleDutyExitRetryRuntimeTests.QuietLog>();
+        var service = new S.DadShoppingRuntimeService(ads, null!, log);
+        var starts = 0;
+        var cancels = new List<string>();
+        var operation = "";
+        string? statusReply = null;
+        SetEndpoint<string>("startShopListPreset", json =>
+        {
+            starts++;
+            var request = DadIpcJson.DeserializeRaw<M.DadAdsShopListPresetRequest>(json)!;
+            operation = request.OperationId;
+            return DadIpcJson.Serialize(new M.DadAdsShopListStartResponse
+            {
+                Version = 1, Accepted = true, OperationId = operation, PresetId = association.PresetId, Disposition = "accepted",
+            });
+        });
+        SetEndpoint<string>("getShopListPresetStatusJson", id =>
+        {
+            Assert.Equal(operation, id);
+            return statusReply ?? throw new InvalidOperationException("Fixture ADS IPC unavailable");
+        });
+        SetEndpoint<bool>("cancelShopListPreset", id => { cancels.Add(id); return true; });
+
+        var now = DateTime.UtcNow;
+        service.Begin(new M.DadRunRequest { RequestId = "fixture-run", ShoppingAssociations = [association] }, 0,
+            new M.DadParticipantSnapshot
+            {
+                AssignedSlotId = association.ShopperSlotId,
+                ManagedAccountKey = association.ShopperAccountKey,
+                ActiveCharacterKey = association.ShopperCharacterKey,
+            }, now);
+        Assert.Equal(M.DadShoppingRuntimeAction.Wait, service.Update(now).Action);
+        Assert.NotEmpty(operation);
+        statusReply = DadIpcJson.Serialize(new M.DadAdsShopListStatusResponse
+        {
+            Version = 1, OperationId = operation, PresetId = association.PresetId, Running = true,
+            CreditedQuantities = new() { [Row] = 30 },
+            CompletedNonRepeatableRowIds = [Row],
+            Rows = [new() { RowId = Row, PurchasedQuantity = 10 }],
+        });
+        Assert.Equal(M.DadShoppingRuntimeAction.Wait, service.Update(now).Action);
+
+        service.CancelActive("Fixture operator cancelled.");
+        Assert.True(service.IsCancellationPending);
+        now = DateTime.UtcNow.AddSeconds(1);
+        var sentinel = new Dictionary<string, object?>
+        {
+            ["version"] = 1, ["operationId"] = operation, ["presetId"] = Guid.Empty,
+            ["running"] = false, ["done"] = false, ["succeeded"] = null,
+            ["disposition"] = "operation-not-found", ["failureCode"] = "operation-not-found",
+            ["completedRows"] = 0, ["totalRows"] = 0, ["completedAtUtc"] = null,
+            ["completedNonRepeatableRowIds"] = Array.Empty<string>(), ["skippedRowIds"] = Array.Empty<string>(),
+            ["rows"] = Array.Empty<object>(), ["creditedQuantities"] = null,
+        };
+        CheckStillPending(null);
+        CheckStillPending("{");
+        sentinel["operationId"] = "other-operation";
+        CheckStillPending(DadIpcJson.Serialize(sentinel));
+        sentinel["operationId"] = operation;
+        sentinel.Remove("running");
+        CheckStillPending(DadIpcJson.Serialize(sentinel));
+        sentinel["running"] = false;
+        sentinel["creditedQuantities"] = new Dictionary<string, long> { [Row] = 999 };
+        CheckStillPending(DadIpcJson.Serialize(sentinel));
+        sentinel["creditedQuantities"] = null;
+        sentinel["presetId"] = association.PresetId;
+        sentinel["done"] = true;
+        CheckStillPending(DadIpcJson.Serialize(sentinel));
+        sentinel["presetId"] = Guid.Empty;
+        sentinel["done"] = false;
+
+        statusReply = DadIpcJson.Serialize(sentinel);
+        Assert.Equal(M.DadShoppingRuntimeAction.Reject, service.Update(now).Action);
+        Assert.False(service.IsCancellationPending);
+        Assert.Equal(M.DadShoppingRuntimeAction.Reject, service.Update(now.AddSeconds(1)).Action);
+        var result = Assert.Single(service.Results);
+        Assert.Equal(operation, result.OperationId);
+        Assert.False(result.Succeeded);
+        Assert.Equal("dad-shopping-cancellation-unverified", result.FailureCode);
+        Assert.Equal("failed", result.Disposition);
+        Assert.Equal(30L, result.CreditedQuantities![Row]);
+        Assert.Equal(Row, Assert.Single(result.CompletedNonRepeatableRowIds));
+        Assert.Equal(10L, Assert.Single(result.Rows).PurchasedQuantity);
+        Assert.Empty(result.AcknowledgedPostCommands);
+        Assert.Equal(1, starts);
+        Assert.Equal(operation, Assert.Single(cancels));
+
+        void CheckStillPending(string? reply)
+        {
+            statusReply = reply;
+            Assert.Equal(M.DadShoppingRuntimeAction.Wait, service.Update(now).Action);
+            Assert.True(service.IsCancellationPending);
+            Assert.Empty(service.Results);
+            now = now.AddSeconds(1);
+        }
+
+        void SetEndpoint<TResult>(string field, Func<string, object?> invoke)
+        {
+            var endpoint = DispatchProxy.Create<ICallGateSubscriber<string, TResult>, DadQuestionableTestProxy>();
+            ((DadQuestionableTestProxy)endpoint).Handler = (method, args) => method.Name == "InvokeFunc"
+                ? invoke((string)args![0]!)
+                : throw new NotSupportedException(method.Name);
+            ads.GetType().GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(ads, endpoint);
+        }
     }
 
     private static DadShoppingAssociation Association() => new()

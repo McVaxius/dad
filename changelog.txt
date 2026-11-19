@@ -6,6 +6,7 @@
 - Avoid reprocessing saved schedules and unrelated run history on each active schedule update.
 - Skip the run preview when hovering or clicking the main window’s Stop button.
 - Show the resolved IP endpoint when a TCP connection to a Coordinator hostname fails.
+- If ADS no longer reports the exact operation during shopping cancellation, record the cancellation as unverified and retain verified purchase credit.
 
 2026-11-18 - 2.1.0.11 - Schedule responsiveness and recovery
 
