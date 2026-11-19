@@ -3113,11 +3113,10 @@ public sealed partial class DadSchedulerService
         if (!string.IsNullOrWhiteSpace(GetAdmissionBlocker(HasLocalDutySupportSchedulerWork)))
             return false;
 
-        NormalizeSchedules();
-        configuration.ActiveScheduleRun ??= new DadScheduleRunState();
-        if (configuration.ActiveScheduleRun.IsActive)
+        if (configuration.ActiveScheduleRun is { IsActive: true })
             return false;
 
+        NormalizeSchedules();
         var schedule = configuration.Schedules
             .Where(schedule => DadScheduleRules.IsDailyResetDue(schedule, now))
             .Where(CanRunScheduleHere)
@@ -5649,14 +5648,12 @@ public sealed partial class DadSchedulerService
 
     private void UpdateActiveScheduleRun(DadRunResult visibleRun)
     {
-        NormalizeSchedules();
-        NormalizeScheduleHistory();
-        configuration.ActiveScheduleRun ??= new DadScheduleRunState();
-        if (!configuration.ActiveScheduleRun.IsActive)
+        if (configuration.ActiveScheduleRun is not { IsActive: true } activeRun)
             return;
 
+        NormalizeActiveScheduleRun(activeRun);
         var now = DadClock.UtcNow;
-        var state = configuration.ActiveScheduleRun.Clone();
+        var state = activeRun.Clone();
         var schedule = FindSchedule(state.ScheduleId);
         if (schedule == null)
         {
@@ -6310,36 +6307,33 @@ public sealed partial class DadSchedulerService
     private void NormalizeSchedules()
     {
         configuration.Schedules = DadScheduleRules.NormalizeSchedules(configuration.Schedules);
-        configuration.ActiveScheduleRun ??= new DadScheduleRunState();
-        configuration.ActiveScheduleRun.RunId = configuration.ActiveScheduleRun.RunId?.Trim() ?? string.Empty;
-        configuration.ActiveScheduleRun.ScheduleId = configuration.ActiveScheduleRun.ScheduleId?.Trim() ?? string.Empty;
-        configuration.ActiveScheduleRun.ScheduleName = configuration.ActiveScheduleRun.ScheduleName?.Trim() ?? string.Empty;
-        configuration.ActiveScheduleRun.RequestedBy = string.IsNullOrWhiteSpace(configuration.ActiveScheduleRun.RequestedBy)
+        NormalizeActiveScheduleRun(configuration.ActiveScheduleRun ??= new DadScheduleRunState());
+    }
+
+    private static void NormalizeActiveScheduleRun(DadScheduleRunState run)
+    {
+        run.RunId = run.RunId?.Trim() ?? string.Empty;
+        run.ScheduleId = run.ScheduleId?.Trim() ?? string.Empty;
+        run.ScheduleName = run.ScheduleName?.Trim() ?? string.Empty;
+        run.RequestedBy = string.IsNullOrWhiteSpace(run.RequestedBy)
             ? string.Empty
-            : configuration.ActiveScheduleRun.RequestedBy.Trim();
-        configuration.ActiveScheduleRun.CurrentEntryId = configuration.ActiveScheduleRun.CurrentEntryId?.Trim() ?? string.Empty;
-        configuration.ActiveScheduleRun.CurrentGroupId = configuration.ActiveScheduleRun.CurrentGroupId?.Trim() ?? string.Empty;
-        configuration.ActiveScheduleRun.CurrentPresetName = configuration.ActiveScheduleRun.CurrentPresetName?.Trim() ?? string.Empty;
-        configuration.ActiveScheduleRun.ActiveSchedulerJobId = configuration.ActiveScheduleRun.ActiveSchedulerJobId?.Trim() ?? string.Empty;
-        configuration.ActiveScheduleRun.ActivePlannerRequestId = configuration.ActiveScheduleRun.ActivePlannerRequestId?.Trim() ?? string.Empty;
-        configuration.ActiveScheduleRun.Summary = configuration.ActiveScheduleRun.Summary?.Trim() ?? string.Empty;
-        configuration.ActiveScheduleRun.BlockedReason = configuration.ActiveScheduleRun.BlockedReason?.Trim() ?? string.Empty;
-        configuration.ActiveScheduleRun.RetriedFromRunId = configuration.ActiveScheduleRun.RetriedFromRunId?.Trim() ?? string.Empty;
-        configuration.ActiveScheduleRun.ScheduleRevisionAtStart = Math.Max(0, configuration.ActiveScheduleRun.ScheduleRevisionAtStart);
-        configuration.ActiveScheduleRun.DutyExitRetryCount = Math.Clamp(
-            configuration.ActiveScheduleRun.DutyExitRetryCount, 0, DadScheduleDutyExitRetryRules.MaximumRetries);
-        configuration.ActiveScheduleRun.PartialFailureRestartCount = Math.Clamp(
-            configuration.ActiveScheduleRun.PartialFailureRestartCount, 0, 20);
-        configuration.ActiveScheduleRun.RepeatIteration = Math.Max(1, configuration.ActiveScheduleRun.RepeatIteration);
-        configuration.ActiveScheduleRun.TotalEntryExecutions = Math.Max(0, configuration.ActiveScheduleRun.TotalEntryExecutions);
-        configuration.ActiveScheduleRun.CompletedEntryExecutions = Math.Clamp(
-            configuration.ActiveScheduleRun.CompletedEntryExecutions,
-            0,
-            Math.Max(configuration.ActiveScheduleRun.TotalEntryExecutions, configuration.ActiveScheduleRun.CompletedEntryExecutions));
-        configuration.ActiveScheduleRun.SkippedEntryExecutions = Math.Clamp(
-            configuration.ActiveScheduleRun.SkippedEntryExecutions,
-            0,
-            configuration.ActiveScheduleRun.CompletedEntryExecutions);
+            : run.RequestedBy.Trim();
+        run.CurrentEntryId = run.CurrentEntryId?.Trim() ?? string.Empty;
+        run.CurrentGroupId = run.CurrentGroupId?.Trim() ?? string.Empty;
+        run.CurrentPresetName = run.CurrentPresetName?.Trim() ?? string.Empty;
+        run.ActiveSchedulerJobId = run.ActiveSchedulerJobId?.Trim() ?? string.Empty;
+        run.ActivePlannerRequestId = run.ActivePlannerRequestId?.Trim() ?? string.Empty;
+        run.Summary = run.Summary?.Trim() ?? string.Empty;
+        run.BlockedReason = run.BlockedReason?.Trim() ?? string.Empty;
+        run.RetriedFromRunId = run.RetriedFromRunId?.Trim() ?? string.Empty;
+        run.ScheduleRevisionAtStart = Math.Max(0, run.ScheduleRevisionAtStart);
+        run.DutyExitRetryCount = Math.Clamp(run.DutyExitRetryCount, 0, DadScheduleDutyExitRetryRules.MaximumRetries);
+        run.PartialFailureRestartCount = Math.Clamp(run.PartialFailureRestartCount, 0, 20);
+        run.RepeatIteration = Math.Max(1, run.RepeatIteration);
+        run.TotalEntryExecutions = Math.Max(0, run.TotalEntryExecutions);
+        run.CompletedEntryExecutions = Math.Clamp(run.CompletedEntryExecutions, 0,
+            Math.Max(run.TotalEntryExecutions, run.CompletedEntryExecutions));
+        run.SkippedEntryExecutions = Math.Clamp(run.SkippedEntryExecutions, 0, run.CompletedEntryExecutions);
     }
 
     private void NormalizeScheduleHistory()

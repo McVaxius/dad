@@ -53,7 +53,21 @@ public sealed class DadScheduleDutyExitRetryRuntimeTests
             CompletedAtUtc = Now.AddMinutes(10), Summary = "Preset completed.",
         };
 
-        Invoke(scheduler, "TryProcessWaitingDadRun", schedule, run, Now.AddMinutes(12));
+        var definitions = config.Schedules;
+        var history = new DadRuntime::dad.Models.DadScheduleRunResult { RunId = " earlier-run " };
+        config.ScheduleHistory.Add(history);
+        if (scenario == "active")
+            Invoke(scheduler, "TryStartDueDailySchedule", Now);
+
+        Invoke(scheduler, "UpdateActiveScheduleRun", run);
+
+        Assert.Same(definitions, config.Schedules);
+        if (scenario == "active")
+        {
+            Assert.Same(history, Assert.Single(config.ScheduleHistory));
+            Assert.Equal(" earlier-run ", history.RunId);
+            Assert.Equal("earlier-run", Assert.Single(scheduler.GetScheduleSnapshot().RecentResults).RunId);
+        }
 
         var retained = Assert.Single(config.SchedulerHistory);
         Assert.Same(started, retained);
