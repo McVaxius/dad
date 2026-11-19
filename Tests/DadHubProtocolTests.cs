@@ -16,9 +16,10 @@ namespace dad.Tests;
 public sealed class DadHubProtocolTests
 {
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ReconnectStatusDistinguishesTcpRefusalAndHelloTimeout(bool acceptsConnection)
+    [InlineData(false, "127.0.0.1")]
+    [InlineData(false, "localhost")]
+    [InlineData(true, "127.0.0.1")]
+    public async Task ReconnectStatusDistinguishesTcpRefusalAndHelloTimeout(bool acceptsConnection, string host)
     {
         const string secret = "synthetic-reconnect-secret";
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
@@ -36,7 +37,7 @@ public sealed class DadHubProtocolTests
         {
             PluginEnabled = false,
             RunAsServerDad = false,
-            ServerDadHost = endpoint.Address.ToString(),
+            ServerDadHost = host,
             ServerDadPort = endpoint.Port,
             TransportSharedSecret = secret,
         };
@@ -80,9 +81,10 @@ public sealed class DadHubProtocolTests
             var reason = transport.CurrentTransport.LastDisconnectReason;
             Assert.True(firstRetry.Task.IsCompletedSuccessfully, $"Connection loop ended before scheduling a retry. Last reason: {reason}");
             Assert.DoesNotContain(secret, reason, StringComparison.Ordinal);
+            var tcpDestination = host == "localhost" ? $"localhost:{endpoint.Port} (resolved to {endpoint})" : endpoint.ToString();
             Assert.Contains(acceptsConnection
                 ? $"Timed out during Dad Coordinator authenticated hello at {endpoint}."
-                : $"Dad Coordinator TCP connect to {endpoint} failed (ConnectionRefused):", reason, StringComparison.Ordinal);
+                : $"Dad Coordinator TCP connect to {tcpDestination} failed (ConnectionRefused):", reason, StringComparison.Ordinal);
         }
         finally
         {

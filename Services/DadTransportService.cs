@@ -1320,7 +1320,9 @@ public sealed class DadTransportService : IDisposable
                     throw;
                 }
 
-                failureContext = $"Dad Coordinator TCP connect to {endpoint}";
+                failureContext = IPAddress.TryParse(host, out _)
+                    ? $"Dad Coordinator TCP connect to {endpoint}"
+                    : $"Dad Coordinator TCP connect to {endpoint} (resolved to {new IPEndPoint(address, port)})";
                 using var client = new TcpClient(address.AddressFamily) { NoDelay = true };
                 await client.ConnectAsync(address, port, cancellationToken)
                     .AsTask()
