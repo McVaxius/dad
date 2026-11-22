@@ -1,5 +1,6 @@
 using System.Numerics;
 using AethertekUI;
+using AethertekUI.Dalamud;
 using Dalamud.Bindings.ImGui;
 
 namespace dad.Windows;
@@ -28,7 +29,8 @@ internal static class DadPresentation
     internal static float Gap => Compact ? 10 : 14;
     internal const uint ReferenceAccent = 0xFFAF74;
     internal static readonly float[] FontSizes = [16, 16, 38, 14, 12];
-    internal static readonly string[] FontFiles = ["segoeui.ttf", "seguisb.ttf", "segoeuib.ttf", "segoeui.ttf", "segoeui.ttf"];
+    internal static readonly MaterialFontWeight[] FontWeights = [MaterialFontWeight.Regular, MaterialFontWeight.Semibold,
+        MaterialFontWeight.Bold, MaterialFontWeight.Regular, MaterialFontWeight.Regular];
     internal static float AtlasHeight(UiFontRole role) => FontSizes[(int)role] * 4 / 3;
     internal readonly struct FontScaleScope : IDisposable
     {

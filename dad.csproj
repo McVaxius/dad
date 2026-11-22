@@ -72,11 +72,14 @@
       <PluginRuntimeFiles Include="$(TargetDir)ECommons.dll" Condition="Exists('$(TargetDir)ECommons.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)System.Formats.Cbor.dll" Condition="Exists('$(TargetDir)System.Formats.Cbor.dll')" />
       <PluginRuntimeFiles Include="$(TargetDir)System.Interactive.Async.dll" Condition="Exists('$(TargetDir)System.Interactive.Async.dll')" />
+      <PluginFontFiles Include="$(TargetDir)Fonts\Selawik\selawk.ttf;$(TargetDir)Fonts\Selawik\selawksb.ttf;$(TargetDir)Fonts\Selawik\selawkb.ttf;$(TargetDir)Fonts\Selawik\LICENSE.txt" />
     </ItemGroup>
 
     <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(PluginOutput)" />
     <Copy SourceFiles="@(PluginRuntimeFiles)" DestinationFolder="$(PluginOutput)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(PluginFontFiles)" DestinationFolder="$(PluginOutput)\Fonts\Selawik" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(PluginFiles)" DestinationFolder="$(DadDevPluginOutput)" Condition="'$(DadDevPluginOutput)' != ''" />
     <Copy SourceFiles="@(PluginRuntimeFiles)" DestinationFolder="$(DadDevPluginOutput)" SkipUnchangedFiles="true" Condition="'$(DadDevPluginOutput)' != ''" />
+    <Copy SourceFiles="@(PluginFontFiles)" DestinationFolder="$(DadDevPluginOutput)\Fonts\Selawik" SkipUnchangedFiles="true" Condition="'$(DadDevPluginOutput)' != ''" />
   </Target>
 </Project>

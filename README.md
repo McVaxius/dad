@@ -243,12 +243,12 @@ AutoParty windows retain their functional layouts with the shared typography, co
 Accent changes recolour decorative surfaces, fields and borders; success, warning and stop colours retain
 independent meanings. Preferences default to `UiLanguage=en`, `UiAccentRgb=0xFFAF74` and `UiCompact=true`.
 
-The UI uses managed Segoe UI regular, semibold and bold fonts, Segoe UI Symbol and Dalamud-owned CJK coverage.
+The UI uses bundled Selawik regular, semibold and bold fonts with Dalamud-owned CJK and game symbols.
 Hindi uses Windows-shaped Nirmala UI text at the original font-role heights, including retained text editors.
 Font loading or required-glyph failures appear explicitly; Windows font files are never distributed.
 Native game font rendering and final mockup fidelity require mcvaxius's game screenshot acceptance.
 
-Local plugin builds also require the private AethertekUI 0.3.0 checkout at `../../aethertekUI` relative
+Local plugin builds also require a compatible AethertekUI checkout, pinned to 0.3.4 in CI, at `../../aethertekUI` relative
 to `dad.csproj`, SDK **10.0.201**, Windows x64 and Dalamud API 15. The existing DAD batch launcher enters
 the library environment and builds the plugin directly. CI checks out the library separately using this
 repository's read-only `AETHERTEKUI_DEPLOY_KEY`; its compiled library DLL is included in plugin artifacts.
