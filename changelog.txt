@@ -1,6 +1,6 @@
-Unreleased
+2026-11-22 - 2.1.0.13 - Bundled UI fonts
 
-- Load the bundled Selawik UI fonts from the DAD installation directory.
+- **Fixed UI font loading on Linux/Wine.** DAD loads bundled Selawik fonts from its plugin installation directory.
 
 2026-11-19 - 2.1.0.12 - Schedules controls and connection diagnostics
 
