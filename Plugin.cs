@@ -3,6 +3,7 @@ using AethertekUI.Dalamud;
 using Dalamud.Interface.ImGuiFileDialog;
 using Dalamud.Interface.Utility;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.ManagedFontAtlas;
 using System.Numerics;
 using System.Diagnostics;
 using System.Globalization;
@@ -774,6 +775,12 @@ public sealed partial class Plugin : IDalamudPlugin
 
     private void ReleaseBackgroundGlassResources() => backgroundGlass?.ReleaseResources();
 
+    private void DisposeBackgroundGlass()
+    {
+        backgroundGlass?.Dispose();
+        backgroundGlass = null;
+    }
+
     internal void DrawWindowBackdrop(Window window)
     {
         PrepareBackgroundOpacity(window);
@@ -804,12 +811,19 @@ public sealed partial class Plugin : IDalamudPlugin
     {
         ApplyAppearance();
         glassImagePicker.Draw();
-        if (!WindowSystem.Windows.Any(window => window.IsOpen)) { backgroundGlass?.EndFrame(false); return; }
+        if (!WindowSystem.Windows.Any(window => window.IsOpen))
+        {
+            ReleaseWindowFonts();
+            DisposeBackgroundGlass();
+            return;
+        }
+
+        EnsureWindowFonts();
         using var text = uiText.Enter();
         using var shaping = shapedText.Push();
         if (!uiFonts.Ready)
         {
-            backgroundGlass?.EndFrame(false);
+            DisposeBackgroundGlass();
             if (!fontIssueLogged && uiFonts.LoadException is { } error)
             { Log.Error(error,"[dad] Required UI fonts failed to load."); fontIssueLogged=true; }
             DrawFontStatus(uiFonts.LoadException is null);
@@ -823,7 +837,7 @@ public sealed partial class Plugin : IDalamudPlugin
                 uiFonts.CheckGlyphs(uiText.RequiredText, shapedText.Renderer);
                 var hindiLabel = UiText.Languages.Single(l => l.Code == "hi").Name;
                 var hindiAvailable = true;
-                foreach (var size in Enum.GetValues<UiFontRole>())
+                foreach (var size in uiFonts.Roles)
                     hindiAvailable &= shapedText.Renderer.TryCheckGlyphs([hindiLabel], DadPresentation.AtlasHeight(size) * ImGui.GetIO().FontGlobalScale, out _);
                 languageOptions.Replace(UiText.Languages.Select(l => new MaterialOption<string>(l.Code, l.Code,
                     l.Code == "hi" && !hindiAvailable ? "Hindi (unavailable)" : l.Name,
@@ -832,7 +846,7 @@ public sealed partial class Plugin : IDalamudPlugin
             }
             catch (Exception error)
             {
-                backgroundGlass?.EndFrame(false);
+                DisposeBackgroundGlass();
                 if (!fontIssueLogged) { Log.Error(error,"[dad] Required UI glyph coverage failed."); fontIssueLogged=true; }
                 DrawFontStatus(false);return;
             }
@@ -840,9 +854,13 @@ public sealed partial class Plugin : IDalamudPlugin
         var useGlass = BackgroundBlurEnabled;
         var useImage = Configuration.UiStylingEnabled && colorDraft.Mode == MaterialColorMode.Glassmorphism &&
             colorDraft.GlassBackground == MaterialGlassBackground.Image;
-        if (useGlass || useImage) backgroundGlass ??= new(PluginInterface, Log);
-        backgroundGlass?.ConfigureImage(TextureProvider, useImage, colorDraft.GlassImagePath);
-        backgroundGlass?.BeginFrame();
+        if (useGlass || useImage)
+        {
+            backgroundGlass ??= new(PluginInterface, Log);
+            backgroundGlass.BeginFrame(useGlass, useImage);
+            backgroundGlass.ConfigureImage(TextureProvider, useImage, colorDraft.GlassImagePath);
+        }
+        else DisposeBackgroundGlass();
         var completed = false;
         try
         {
@@ -939,18 +957,36 @@ public sealed partial class Plugin : IDalamudPlugin
         }
     }
 
+    private void EnsureWindowFonts()
+    {
+        if (uiFonts is not null) return;
+
+        shapedText ??= new(TextureProvider);
+        var ranges = uiText.GlyphRanges();
+        var atlas = PluginInterface.UiBuilder.CreateFontAtlas(FontAtlasAutoRebuildMode.OnNewFrame, true, "DAD UI");
+        uiFonts = new(atlas, ranges, appliedLanguage, PluginInterface.AssemblyLocation.DirectoryName!);
+    }
+
+    private void ReleaseWindowFonts()
+    {
+        uiFonts?.Dispose();
+        uiFonts = null!;
+        shapedText?.Dispose();
+        shapedText = null!;
+        checkedFontGeneration = -1;
+        fontIssueLogged = false;
+    }
+
     private void ApplyAppearance()
     {
-        shapedText ??= new(TextureProvider);
-        var language=UiText.Languages.Any(l=>l.Code==Configuration.UiLanguage)?Configuration.UiLanguage:"en";
-        if (language!=appliedLanguage)
+        var language = UiText.Languages.Any(l => l.Code == Configuration.UiLanguage) ? Configuration.UiLanguage : "en";
+        if (language != appliedLanguage)
         {
-            uiFonts?.Dispose();uiText?.Dispose();
-            uiText=new(language,role=>uiFonts!.Push(role));
-            uiFonts = new(PluginInterface.UiBuilder.FontAtlas, uiText.GlyphRanges(), language,
-                PluginInterface.AssemblyLocation.DirectoryName!);
-            languageOptions=new(UiText.Languages.Select(l=>new MaterialOption<string>(l.Code,l.Code,l.Name)).ToArray());
-            appliedLanguage=language;checkedFontGeneration=-1;fontIssueLogged=false;
+            ReleaseWindowFonts();
+            uiText?.Dispose();
+            uiText = new(language, role => uiFonts.Push(role));
+            languageOptions = new(UiText.Languages.Select(l => new MaterialOption<string>(l.Code, l.Code, l.Name)).ToArray());
+            appliedLanguage = language;
         }
         var savedColors = Configuration.UiColors ??= new MaterialColorSettings();
         if (savedColors != appliedSavedColors)
@@ -1026,11 +1062,10 @@ public sealed partial class Plugin : IDalamudPlugin
         ClientState.Login -= OnLogin;
         PluginInterface.UiBuilder.Draw -= DrawUi;
         PluginInterface.UiBuilder.ResizeBuffers -= ReleaseBackgroundGlassResources;
-        backgroundGlass?.Dispose();
+        DisposeBackgroundGlass();
         uiSounds.Dispose();
-        uiFonts?.Dispose();
+        ReleaseWindowFonts();
         uiText?.Dispose();
-        shapedText?.Dispose();
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
         CommandManager.RemoveHandler(PluginInfo.Command);

@@ -1,3 +1,7 @@
+﻿2026-11-28 - 2.1.0.14 - On-demand interface resources
+
+- DAD loads window fonts and supported backdrop resources when a window needs them and releases them when the last window closes.
+
 2026-11-22 - 2.1.0.13 - Bundled UI fonts
 
 - **Fixed UI font loading on Linux/Wine.** DAD loads bundled Selawik fonts from its plugin installation directory.

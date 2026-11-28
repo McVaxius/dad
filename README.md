@@ -248,7 +248,7 @@ Hindi uses Windows-shaped Nirmala UI text at the original font-role heights, inc
 Font loading or required-glyph failures appear explicitly; Windows font files are never distributed.
 Native game font rendering and final mockup fidelity require mcvaxius's game screenshot acceptance.
 
-Local plugin builds also require a compatible AethertekUI checkout, pinned to 0.3.4 in CI, at `../../aethertekUI` relative
+Local plugin builds also require a compatible AethertekUI checkout, pinned to 0.3.7 in CI, at `../../aethertekUI` relative
 to `dad.csproj`, SDK **10.0.201**, Windows x64 and Dalamud API 15. The existing DAD batch launcher enters
 the library environment and builds the plugin directly. CI checks out the library separately using this
 repository's read-only `AETHERTEKUI_DEPLOY_KEY`; its compiled library DLL is included in plugin artifacts.
